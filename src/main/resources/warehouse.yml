@@ -14,3 +14,31 @@ warehouses:
       label: 武汉光谷仓
     - city: 西安市
       label: 西安国际港仓
+    - city: 哈尔滨市
+      label: 哈尔滨冷链仓
+    - city: 乌鲁木齐市
+      label: 乌鲁木齐西站仓
+    - city: 拉萨市
+      label: 拉萨高原仓
+    - city: 海口市
+      label: 海口保税仓
+    - city: 昆明市
+      label: 昆明花卉仓
+    - city: 沈阳市
+      label: 沈阳装备仓
+    - city: 郑州市
+      label: 郑州中转仓
+    - city: 长沙市
+      label: 长沙电商仓
+    - city: 福州市
+      label: 福州海丝仓
+    - city: 南宁市
+      label: 南宁东盟仓
+    - city: 呼和浩特市
+      label: 呼市乳业仓
+    - city: 银川市
+      label: 银川能源仓
+    - city: 兰州市
+      label: 兰州陆港仓
+    - city: 贵阳市
+      label: 贵阳数据仓

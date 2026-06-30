@@ -8,6 +8,7 @@ spring:
       - classpath:simulation.yml
       - classpath:temp.yml
       - classpath:warehouse.yml
+      - classpath:camera.yml
   application:
     name: jushen-digital-twin-backend
 

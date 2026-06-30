@@ -1,0 +1,5 @@
+camera:
+  sequence:
+    focus-duration: 8000          # 单个城市聚焦时长（毫秒）
+    overview-duration: 8000       # 俯瞰时长
+    headquarters-duration: 8000   # 总部停留时长
