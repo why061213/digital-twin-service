@@ -1,0 +1,16 @@
+warehouses:
+  warehouses:
+    - city: 佛山市
+      label: 佛山一号仓
+    - city: 北京市
+      label: 北京中心仓
+    - city: 上海市
+      label: 上海浦东仓
+    - city: 广州市
+      label: 广州南沙仓
+    - city: 成都市
+      label: 成都高新仓
+    - city: 武汉市
+      label: 武汉光谷仓
+    - city: 西安市
+      label: 西安国际港仓
