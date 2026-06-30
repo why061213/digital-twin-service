@@ -1,0 +1,32 @@
+server:
+  port: 8080
+
+
+spring:
+  config:
+    import:
+      - classpath:simulation.yml
+      - classpath:temp.yml
+  application:
+    name: jushen-digital-twin-backend
+
+dashboard:
+  websocket:
+    token: jushen-screen-token
+    allowed-origin-patterns:
+      - "*"
+  route:
+    simulation-profile: test
+    external-position-url: ""
+    passive-position-push-enabled: false
+    group-size: 5
+    truck-position-push-rate-ms: 60000
+    low-speed-threshold-kmh: 50
+    test:
+      simulation-speed-kmh: 36000
+      position-query-interval-ms: 60000
+      slow-position-query-interval-ms: 15000
+    real:
+      simulation-speed-kmh: 80
+      position-query-interval-ms: 1800000
+      slow-position-query-interval-ms: 300000
