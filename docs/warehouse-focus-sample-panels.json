@@ -1,0 +1,29 @@
+[
+  {
+    "id": "inventory-table",
+    "rows": [
+      { "metric": "总库存", "value": 5280, "unit": "吨" },
+      { "metric": "今日入库", "value": 318, "unit": "吨" },
+      { "metric": "今日出库", "value": 276, "unit": "吨" }
+    ]
+  },
+  {
+    "id": "throughput-bar",
+    "rows": [
+      { "name": "08:00", "value": 126 },
+      { "name": "10:00", "value": 188 },
+      { "name": "12:00", "value": 242 },
+      { "name": "14:00", "value": 216 },
+      { "name": "16:00", "value": 174 }
+    ]
+  },
+  {
+    "id": "category-ring",
+    "rows": [
+      { "name": "铝锭", "value": 760 },
+      { "name": "铜材", "value": 520 },
+      { "name": "钢材", "value": 880 },
+      { "name": "化工", "value": 310 }
+    ]
+  }
+]
