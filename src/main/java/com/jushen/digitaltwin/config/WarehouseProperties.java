@@ -34,6 +34,10 @@ public class WarehouseProperties {
     public static class PanelStyle {
         private int width = 240;
         private int maxHeight = 360;
+        private int padding = 12;
+        private int titleFontSize = 13;
+        private int bodyFontSize = 11;
+        private int chartTextFontSize = 10;
         private String placement = "right";
         private String theme = "cyan-dark";
     }

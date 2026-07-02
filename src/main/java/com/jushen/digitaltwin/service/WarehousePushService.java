@@ -88,7 +88,7 @@ public class WarehousePushService {
         Map<String, Object> panel = panelFromConfig(config, rows);
         Map<String, Object> message = warehouseFocusMessage(cityName, List.of(panel));
         webSocketHandler.broadcast(message);
-        System.out.println("Broadcasting warehouse_focus for " + cityName);
+        log.info("Broadcasting warehouse_focus for {}", cityName);
         return message;
     }
 
@@ -175,58 +175,146 @@ public class WarehousePushService {
     }
 
     private List<Map<String, Object>> mockRows(WarehouseProperties.PanelConfig config, String cityName) {
-        return switch (config.getChartType()) {
-            case "bar", "line" -> timeRows();
-            case "pie", "ring" -> categoryRows();
-            default -> metricRows(cityName);
+        return switch (config.getId()) {
+            case "inventory-table" -> inventoryRows(cityName);
+            case "throughput-bar" -> throughputRows(cityName);
+            case "category-ring" -> categoryRows(cityName);
+            case "stock-line" -> stockTrendRows(cityName);
+            case "capacity-pie" -> capacityRows(cityName);
+            case "inbound-table" -> inboundTaskRows(cityName);
+            case "outbound-bar" -> outboundRows(cityName);
+            case "warning-table" -> statusRows(cityName);
+            default -> switch (config.getChartType()) {
+                case "bar", "line" -> throughputRows(cityName);
+                case "pie", "ring" -> categoryRows(cityName);
+                default -> inventoryRows(cityName);
+            };
         };
     }
 
-    private List<Map<String, Object>> metricRows(String cityName) {
-        int seed = Math.abs(cityName.hashCode() % 2000);
+    private int citySeed(String cityName) {
+        return Math.abs(cityName.hashCode());
+    }
+
+    private List<Map<String, Object>> inventoryRows(String cityName) {
+        int seed = citySeed(cityName);
+        int total = 3600 + seed % 2600 + random.nextInt(260);
+        int todayIn = 160 + seed % 90 + random.nextInt(40);
+        int todayOut = 140 + seed % 80 + random.nextInt(36);
         return List.of(
-                row("metric", "总库存", "value", 3200 + seed + random.nextInt(400), "unit", "吨"),
-                row("metric", "今日入库", "value", 180 + random.nextInt(120), "unit", "吨"),
-                row("metric", "今日出库", "value", 140 + random.nextInt(100), "unit", "吨")
+                row("metric", "总库存", "value", total, "unit", "吨"),
+                row("metric", "今日入库", "value", todayIn, "unit", "吨"),
+                row("metric", "今日出库", "value", todayOut, "unit", "吨")
         );
     }
 
-    private List<Map<String, Object>> timeRows() {
+    private List<Map<String, Object>> throughputRows(String cityName) {
+        int seed = citySeed(cityName) % 60;
         List<Map<String, Object>> rows = new ArrayList<>();
+        int[] base = {90, 150, 220, 260, 190};
+        int index = 0;
         for (String name : List.of("08:00", "10:00", "12:00", "14:00", "16:00")) {
-            rows.add(row("name", name, "value", 120 + random.nextInt(220)));
+            rows.add(row("name", name, "value", base[index++] + seed + random.nextInt(28)));
         }
         return rows;
     }
 
-    private List<Map<String, Object>> categoryRows() {
+    private List<Map<String, Object>> categoryRows(String cityName) {
+        int seed = citySeed(cityName) % 120;
         return List.of(
-                row("name", "铝锭", "value", 420 + random.nextInt(300)),
-                row("name", "铜材", "value", 360 + random.nextInt(260)),
-                row("name", "钢材", "value", 520 + random.nextInt(340)),
-                row("name", "化工", "value", 260 + random.nextInt(180))
+                row("name", "铝锭", "value", 720 + seed + random.nextInt(80)),
+                row("name", "铜材", "value", 560 + seed / 2 + random.nextInt(70)),
+                row("name", "钢材", "value", 840 + seed + random.nextInt(90)),
+                row("name", "化工", "value", 360 + seed / 3 + random.nextInt(50)),
+                row("name", "其他", "value", 220 + random.nextInt(40))
+        );
+    }
+
+    private List<Map<String, Object>> stockTrendRows(String cityName) {
+        int seed = citySeed(cityName) % 400;
+        int start = 4200 + seed;
+        int[] delta = {0, 80, 150, 90, 180};
+        List<Map<String, Object>> rows = new ArrayList<>();
+        int index = 0;
+        for (String name : List.of("08:00", "10:00", "12:00", "14:00", "16:00")) {
+            rows.add(row("name", name, "value", start + delta[index++] + random.nextInt(36)));
+        }
+        return rows;
+    }
+
+    private List<Map<String, Object>> capacityRows(String cityName) {
+        int seed = citySeed(cityName) % 100;
+        return List.of(
+                row("name", "已用", "value", 64 + seed % 10),
+                row("name", "空余", "value", 22 + seed % 6),
+                row("name", "预留", "value", 10 + seed % 5)
+        );
+    }
+
+    private List<Map<String, Object>> inboundTaskRows(String cityName) {
+        int seed = citySeed(cityName);
+        return List.of(
+                row("metric", "待入库", "value", 8 + seed % 7, "unit", "车"),
+                row("metric", "卸货中", "value", 3 + seed % 4, "unit", "车"),
+                row("metric", "平均等待", "value", 12 + seed % 8, "unit", "分钟")
+        );
+    }
+
+    private List<Map<String, Object>> outboundRows(String cityName) {
+        int seed = citySeed(cityName) % 40;
+        int[] base = {70, 120, 175, 210, 160};
+        List<Map<String, Object>> rows = new ArrayList<>();
+        int index = 0;
+        for (String name : List.of("08:00", "10:00", "12:00", "14:00", "16:00")) {
+            rows.add(row("name", name, "value", base[index++] + seed + random.nextInt(22)));
+        }
+        return rows;
+    }
+
+    private List<Map<String, Object>> statusRows(String cityName) {
+        int seed = citySeed(cityName);
+        return List.of(
+                row("metric", "设备在线", "value", 96 + seed % 4, "unit", "%"),
+                row("metric", "当前告警", "value", seed % 3, "unit", "条"),
+                row("metric", "库内温度", "value", 22 + seed % 5, "unit", "℃"),
+                row("metric", "库内湿度", "value", 48 + seed % 8, "unit", "%")
         );
     }
 
     private Map<String, Object> chartOption(WarehouseProperties.PanelConfig config, List<Map<String, Object>> rows) {
         String type = config.getChartType();
         if ("bar".equals(type) || "line".equals(type)) {
+            Map<String, Object> series = new LinkedHashMap<>();
+            series.put("type", type);
+            series.put("smooth", true);
+            series.put("data", rows.stream().map(row -> row.get("value")).toList());
+            if ("bar".equals(type)) {
+                series.put("barWidth", "42%");
+            } else {
+                series.put("symbolSize", 6);
+            }
             return Map.of(
-                    "grid", Map.of("left", 28, "right", 10, "top", 18, "bottom", 22),
+                    "grid", Map.of("left", 34, "right", 12, "top", 18, "bottom", 24),
                     "xAxis", Map.of("type", "category", "data", rows.stream().map(row -> row.get("name")).toList()),
-                    "yAxis", Map.of("type", "value"),
-                    "series", List.of(Map.of(
-                            "type", type,
-                            "smooth", true,
-                            "data", rows.stream().map(row -> row.get("value")).toList()
-                    ))
+                    "yAxis", Map.of("type", "value", "scale", "line".equals(type)),
+                    "series", List.of(series)
             );
         }
         if ("pie".equals(type) || "ring".equals(type)) {
             return Map.of(
+                    "legend", Map.of(
+                            "show", true,
+                            "bottom", 0,
+                            "left", "center",
+                            "textStyle", Map.of("color", "#cbd5e1", "fontSize", 10)
+                    ),
                     "series", List.of(Map.of(
                             "type", "pie",
-                            "radius", "ring".equals(type) ? List.of("48%", "72%") : "68%",
+                            "radius", "ring".equals(type) ? List.of("46%", "66%") : "58%",
+                            "center", List.of("50%", "44%"),
+                            "avoidLabelOverlap", true,
+                            "label", Map.of("show", false),
+                            "labelLine", Map.of("show", false),
                             "data", rows
                     ))
             );

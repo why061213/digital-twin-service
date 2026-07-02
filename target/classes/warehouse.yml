@@ -14,17 +14,21 @@ warehouses:
       label: 武汉光谷仓
 
   focus-panels:
-    count: 3
+    count: 8
     style:
-      width: 260
-      max-height: 420
+      width: 180
+      max-height: 240
+      padding: 10
+      title-font-size: 12
+      body-font-size: 10
+      chart-text-font-size: 10
       placement: right
       theme: cyan-dark
     panels:
       - id: inventory-table
         title: 实时库存明细
         chart-type: table
-        height: 112
+        height: 118
         required-columns: [metric, value, unit]
         columns:
           - key: metric
@@ -36,7 +40,7 @@ warehouses:
       - id: throughput-bar
         title: 今日吞吐量
         chart-type: bar
-        height: 132
+        height: 110
         required-columns: [name, value]
         columns:
           - key: name
@@ -46,10 +50,64 @@ warehouses:
       - id: category-ring
         title: 品类占比
         chart-type: ring
-        height: 132
+        height: 110
         required-columns: [name, value]
         columns:
           - key: name
             label: 品类
           - key: value
             label: 吨
+      - id: stock-line
+        title: 库存波动
+        chart-type: line
+        height: 110
+        required-columns: [name, value]
+        columns:
+          - key: name
+            label: 时间
+          - key: value
+            label: 吨
+      - id: capacity-pie
+        title: 仓容使用
+        chart-type: pie
+        height: 110
+        required-columns: [name, value]
+        columns:
+          - key: name
+            label: 区域
+          - key: value
+            label: 吨
+      - id: inbound-table
+        title: 入库任务
+        chart-type: table
+        height: 118
+        required-columns: [metric, value, unit]
+        columns:
+          - key: metric
+            label: 指标
+          - key: value
+            label: 数值
+          - key: unit
+            label: 单位
+      - id: outbound-bar
+        title: 出库节奏
+        chart-type: bar
+        height: 110
+        required-columns: [name, value]
+        columns:
+          - key: name
+            label: 时段
+          - key: value
+            label: 吨
+      - id: warning-table
+        title: 运行状态
+        chart-type: table
+        height: 136
+        required-columns: [metric, value, unit]
+        columns:
+          - key: metric
+            label: 指标
+          - key: value
+            label: 数值
+          - key: unit
+            label: 单位

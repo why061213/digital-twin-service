@@ -25,7 +25,7 @@ dashboard:
     truck-position-push-rate-ms: 60000
     low-speed-threshold-kmh: 50
     test:
-      simulation-speed-kmh: 36000
+      simulation-speed-kmh: 360000
       position-query-interval-ms: 60000
       slow-position-query-interval-ms: 15000
     real:

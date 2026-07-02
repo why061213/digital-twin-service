@@ -1,8 +1,10 @@
 package com.jushen.digitaltwin.websocket;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
 import org.slf4j.Logger;
@@ -34,13 +36,36 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         sessions.remove(session);
-        log.info("Dashboard websocket disconnected: {}, online={}", session.getId(), sessions.size());
+        log.info(
+                "Dashboard websocket disconnected: {}, status={} {}, online={}",
+                session.getId(),
+                status.getCode(),
+                status.getReason(),
+                sessions.size()
+        );
     }
 
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) {
         sessions.remove(session);
         log.warn("Dashboard websocket transport error: {}", session.getId(), exception);
+        closeQuietly(session);
+    }
+
+    @Override
+    protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        // 前端会定时发送应用层心跳。服务端立即回 pong，避免代理/浏览器把长连接误判为空闲连接。
+        try {
+            JsonNode node = objectMapper.readTree(message.getPayload());
+            if ("ping".equals(node.path("type").asText())) {
+                send(session, objectMapper.writeValueAsString(Map.of(
+                        "type", "pong",
+                        "serverTime", System.currentTimeMillis()
+                )));
+            }
+        } catch (Exception e) {
+            log.debug("Ignored non-dashboard websocket client message: {}", message.getPayload(), e);
+        }
     }
 
     public void broadcast(Object message) {
@@ -73,6 +98,18 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         } catch (IOException e) {
             sessions.remove(session);
             log.warn("Failed to send websocket message: {}", session.getId(), e);
+            closeQuietly(session);
+        }
+    }
+
+    private void closeQuietly(WebSocketSession session) {
+        if (!session.isOpen()) {
+            return;
+        }
+        try {
+            session.close(CloseStatus.SERVER_ERROR);
+        } catch (IOException ignored) {
+            // 连接已经不可用时无需再次抛出，下一轮广播会清理 session 集合。
         }
     }
 }
