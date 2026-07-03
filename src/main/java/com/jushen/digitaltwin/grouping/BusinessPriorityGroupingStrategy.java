@@ -2,8 +2,10 @@ package com.jushen.digitaltwin.grouping;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.springframework.stereotype.Component;
 
 /**
@@ -35,9 +37,38 @@ public class BusinessPriorityGroupingStrategy implements AdvancedGroupingStrateg
         List<RouteInfo> compactBuffer = new ArrayList<>();
         int groupIndex = 0;
 
+        Set<RouteInfo> orderGroupedRoutes = new HashSet<>();
+        List<Map.Entry<String, List<RouteInfo>>> orderBuckets = new ArrayList<>(
+                GroupingUtils.groupBy(routes, GroupingUtils::orderKey).entrySet()
+        );
+        orderBuckets.sort(
+                Comparator.<Map.Entry<String, List<RouteInfo>>>comparingInt((entry) -> entry.getValue().size())
+                        .reversed()
+                        .thenComparing(Map.Entry::getKey)
+        );
+        for (Map.Entry<String, List<RouteInfo>> entry : orderBuckets) {
+            List<RouteInfo> bucketRoutes = entry.getValue();
+            if (bucketRoutes.size() <= 1) {
+                continue;
+            }
+            orderGroupedRoutes.addAll(bucketRoutes);
+            result.add(buildBusinessGroup(
+                    "biz-order",
+                    "订单 " + entry.getKey(),
+                    groupIndex++,
+                    1,
+                    new ArrayList<>(bucketRoutes),
+                    RouteGroupType.SAME_ORDER
+            ));
+        }
+
+        List<RouteInfo> routeCandidates = GroupingUtils.sortedCopy(routes).stream()
+                .filter((route) -> !orderGroupedRoutes.contains(route))
+                .toList();
+
         // 业务视角下，地图首先需要“看得清”：同方向车辆优先放在一起，减少小碎组。
         List<Map.Entry<String, List<RouteInfo>>> routeBuckets = new ArrayList<>(
-                GroupingUtils.groupBy(routes, GroupingUtils::routeKey).entrySet()
+                GroupingUtils.groupBy(routeCandidates, GroupingUtils::routeKey).entrySet()
         );
         routeBuckets.sort(
                 Comparator.<Map.Entry<String, List<RouteInfo>>>comparingInt((entry) -> entry.getValue().size())

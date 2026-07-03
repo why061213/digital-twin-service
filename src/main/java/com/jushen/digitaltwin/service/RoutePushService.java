@@ -128,6 +128,10 @@ public class RoutePushService {
         return Path.of(tokenCachePathStr);
     }
 
+//    public ProviderPosition queryPositionByCarId(String carId) {
+//        return fetchPositionByCarId(carId);
+//    }
+
     private String loadTokenFromFile() {
         if (!tokenCacheEnabled) return null;
         Path path = resolveTokenCachePath();
@@ -291,19 +295,23 @@ public class RoutePushService {
         String orderId = "BULK-" + System.currentTimeMillis();
         String orderName = "大宗运输订单";
         int totalTons = count * ThreadLocalRandom.current().nextInt(22, 38);
+        /*
 
         // 大宗订单默认拆成两条可复用路径，便于验证“单订单多路径”和不同策略下的表现。
         List<List<double[]>> pathVariants = List.of(
-                buildRandomRoadCoordinates(from, to),
-                buildRandomRoadCoordinates(from, to)
-        );
+        */
+        List<double[]> bulkCoordinates = buildRandomRoadCoordinates(from, to);
+        String bulkPathKey = pathKey(from.name(), to.name(), bulkCoordinates);
+        double bulkRouteLengthKm = pathLengthKm(bulkCoordinates);
+        double bulkSpeedKmh = simulationSpeedKmh();
+        long bulkTravelDurationMs = Math.max(60_000L, Math.round(bulkRouteLengthKm / bulkSpeedKmh * 3_600_000));
         List<Map<String, Object>> messages = new ArrayList<>();
         for (int i = 0; i < count; i++) {
             String lineId = UUID.randomUUID().toString();
-            List<double[]> coordinates = pathVariants.get(i % pathVariants.size());
-            double routeLengthKm = pathLengthKm(coordinates);
-            double speedKmh = simulationSpeedKmh();
-            long travelDurationMs = Math.max(60_000L, Math.round(routeLengthKm / speedKmh * 3_600_000));
+            List<double[]> coordinates = bulkCoordinates;
+            double routeLengthKm = bulkRouteLengthKm;
+            double speedKmh = bulkSpeedKmh;
+            long travelDurationMs = bulkTravelDurationMs;
             ScheduledRoute route = new ScheduledRoute(
                     lineId,
                     orderId,
@@ -313,12 +321,13 @@ public class RoutePushService {
                     from.name(),
                     to.name(),
                     coordinates,
-                    pathKey(from.name(), to.name(), coordinates),
+                    bulkPathKey,
                     System.currentTimeMillis(),
                     routeLengthKm,
                     speedKmh,
                     travelDurationMs
             );
+            lineIdPlateMap.put(lineId, dataFactory.randomPlate());
             activeRoutes.put(lineId, route);
             Map<String, Object> message = routeMessage(route, true);
             messages.add(message);
@@ -874,6 +883,18 @@ public class RoutePushService {
             double[] position,
             double speedKmh
     ) {
+    }
+
+    public Map<String, Object> queryPositionByCarId(String carId) {
+        ProviderPosition pos = fetchPositionByCarId(carId);
+        if (pos == null) {
+            return null;
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("lng", pos.position()[0]);
+        result.put("lat", pos.position()[1]);
+        result.put("speedKmh", pos.speedKmh());
+        return result;
     }
 
     private record PositionSample(
