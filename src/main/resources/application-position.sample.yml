@@ -1,0 +1,16 @@
+dashboard:
+  route:
+    # 外部车辆位置模块样本配置：复制为 application-private.yml 后填写真实值。
+    # 主配置中本文件默认注释掉，仅用于字段参考。
+    auth-enabled: false
+    auth-url: ""
+    auth-id: ""
+    auth-secret: ""
+    external-position-url: ""
+    external-position-token: ""
+    external-position-batch-size: 50
+    test-plate: ""
+    test-car-id: ""
+    test-on-startup: false
+    token-cache-enabled: true
+    token-cache-path: target/local-cache/token-cache.json

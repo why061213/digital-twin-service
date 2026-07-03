@@ -1,0 +1,12 @@
+# Local/private runtime configuration
+src/main/resources/application-private.yml
+src/main/resources/*private*.yml
+
+# Runtime token/cache files
+src/main/resources/token-cache.json
+target/
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store

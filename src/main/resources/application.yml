@@ -1,7 +1,6 @@
 server:
   port: 8080
 
-
 spring:
   config:
     import:
@@ -9,6 +8,9 @@ spring:
       - classpath:temp.yml
       - classpath:warehouse.yml
       - classpath:camera.yml
+      - optional:classpath:application-private.yml
+      # 仅作为字段参考，不参与运行；需要核对字段时可临时取消下一行注释。
+      # - optional:classpath:application-position.sample.yml
   application:
     name: jushen-digital-twin-backend
 
@@ -19,13 +21,28 @@ dashboard:
       - "*"
   route:
     simulation-profile: test
-    external-position-url: ""
     passive-position-push-enabled: false
-    group-size: 5
+    group-size: 12
     truck-position-push-rate-ms: 60000
     low-speed-threshold-kmh: 50
+    default-group-strategy: business-priority
+
+    # 以下为外部车辆位置模块的公开默认值；真实地址、账号、测试车辆请放到 application-private.yml。
+    auth-enabled: false
+    auth-url: ""
+    auth-id: ""
+    auth-secret: ""
+    external-position-url: ""
+    external-position-token: ""
+    external-position-batch-size: 50
+    test-plate: ""
+    test-car-id: ""
+    test-on-startup: false
+    token-cache-enabled: true
+    token-cache-path: target/local-cache/token-cache.json
+
     test:
-      simulation-speed-kmh: 360000
+      simulation-speed-kmh: 30000
       position-query-interval-ms: 60000
       slow-position-query-interval-ms: 15000
     real:

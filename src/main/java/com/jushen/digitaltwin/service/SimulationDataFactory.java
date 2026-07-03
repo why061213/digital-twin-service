@@ -215,7 +215,7 @@ public class SimulationDataFactory {
                 .doubleValue();
     }
 
-    private String randomPlate() {
+    String randomPlate() {
         return plates.get(integer(0, plates.size() - 1));
     }
 

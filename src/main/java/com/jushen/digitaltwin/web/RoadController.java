@@ -25,14 +25,24 @@ public class RoadController {
         return routePushService.dispatchRandomRoute();
     }
 
+    @PostMapping("/dispatch/bulk")
+    public Map<String, Object> dispatchBulkOrder(
+            @RequestParam(defaultValue = "24") int vehicleCount
+    ) {
+        return routePushService.dispatchBulkOrder(vehicleCount);
+    }
+
     @GetMapping("/groups")
-    public Map<String, Object> listRouteGroups() {
-        return routePushService.listRouteGroups();
+    public Map<String, Object> listRouteGroups(@RequestParam(required = false) String strategy) {
+        return routePushService.listRouteGroups(strategy);
     }
 
     @GetMapping("/groups/{groupId}/routes")
-    public Map<String, Object> listRoutesByGroup(@PathVariable String groupId) {
-        return routePushService.listRoutesByGroup(groupId);
+    public Map<String, Object> listRoutesByGroup(
+            @PathVariable String groupId,
+            @RequestParam(required = false) String strategy
+    ) {
+        return routePushService.listRoutesByGroup(groupId, strategy);
     }
 
     @GetMapping("/routes/{lineId}/position")

@@ -1,7 +1,15 @@
 package com.jushen.digitaltwin.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jushen.digitaltwin.grouping.GroupSummary;
+import com.jushen.digitaltwin.grouping.GroupingContext;
+import com.jushen.digitaltwin.grouping.OrderAwareRouteInfo;
+import com.jushen.digitaltwin.grouping.PathAwareRouteInfo;
+import com.jushen.digitaltwin.grouping.RouteInfo;
+import com.jushen.digitaltwin.grouping.RouteGroupingEngine;
+import com.jushen.digitaltwin.grouping.RouteGroupingResult;
 import com.jushen.digitaltwin.model.City;
 import com.jushen.digitaltwin.websocket.RealtimeWebSocketHandler;
 import org.slf4j.Logger;
@@ -10,6 +18,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -22,11 +31,18 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
+
+import jakarta.annotation.PostConstruct;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 @Service
 public class RoutePushService {
 
     private static final Logger log = LoggerFactory.getLogger(RoutePushService.class);
+    private final Path tokenCachePath = Path.of(System.getProperty("java.io.tmpdir"), "jushen_token_cache.json");
 
     private final RealtimeWebSocketHandler webSocketHandler;
     private final SimulationDataFactory dataFactory;
@@ -40,28 +56,191 @@ public class RoutePushService {
     private final double testSimulationSpeedKmh;
     private final double realSimulationSpeedKmh;
     private final int groupSize;
+    private final String defaultGroupStrategy;
+    private final RouteGroupingEngine routeGroupingEngine;
+    private final String externalPositionToken;
+    private final int externalPositionBatchSize;
+    private final ConcurrentHashMap<String, String> lineIdPlateMap = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> lineIdCarIdMap = new ConcurrentHashMap<>();
+    private final String testPlate;
+    private final String testCarId;
+    private final boolean testOnStartup;
+    private final boolean authEnabled;
+    private final String authUrl;
+    private final String authId;
+    private final String authSecret;
+    private final AtomicReference<String> cachedToken = new AtomicReference<>();
+    private volatile long tokenExpiresAt = 0;
+    private final ReentrantLock tokenLock = new ReentrantLock();
+    private final boolean tokenCacheEnabled;
+    private final String tokenCachePathStr;
 
     public RoutePushService(
             RealtimeWebSocketHandler webSocketHandler,
             SimulationDataFactory dataFactory,
             ObjectMapper objectMapper,
+            RouteGroupingEngine routeGroupingEngine,
             @Value("${dashboard.route.passive-position-push-enabled:false}") boolean passivePositionPushEnabled,
             @Value("${dashboard.route.simulation-profile:test}") String simulationProfile,
             @Value("${dashboard.route.external-position-url:}") String externalPositionUrl,
             @Value("${dashboard.route.test.simulation-speed-kmh:36000}") double testSimulationSpeedKmh,
             @Value("${dashboard.route.real.simulation-speed-kmh:80}") double realSimulationSpeedKmh,
-            @Value("${dashboard.route.group-size:5}") int groupSize
+            @Value("${dashboard.route.group-size:5}") int groupSize,
+            @Value("${dashboard.route.default-group-strategy:sequential}") String defaultGroupStrategy,
+            @Value("${dashboard.route.external-position-token:}") String externalPositionToken,
+            @Value("${dashboard.route.external-position-batch-size:50}") int externalPositionBatchSize,
+            @Value("${dashboard.route.test-plate:}") String testPlate,
+            @Value("${dashboard.route.test-car-id:}") String testCarId,
+            @Value("${dashboard.route.test-on-startup:false}") boolean testOnStartup,
+            @Value("${dashboard.route.auth-enabled:false}") boolean authEnabled,
+            @Value("${dashboard.route.auth-url:}") String authUrl,
+            @Value("${dashboard.route.auth-id:}") String authId,
+            @Value("${dashboard.route.auth-secret:}") String authSecret,
+            @Value("${dashboard.route.token-cache-enabled:true}") boolean tokenCacheEnabled,
+            @Value("${dashboard.route.token-cache-path:target/local-cache/token-cache.json}") String tokenCachePathStr
     ) {
         this.webSocketHandler = webSocketHandler;
         this.dataFactory = dataFactory;
         this.objectMapper = objectMapper;
+        this.routeGroupingEngine = routeGroupingEngine;
         this.passivePositionPushEnabled = passivePositionPushEnabled;
         this.simulationProfile = simulationProfile;
         this.externalPositionUrl = externalPositionUrl;
         this.testSimulationSpeedKmh = testSimulationSpeedKmh;
         this.realSimulationSpeedKmh = realSimulationSpeedKmh;
         this.groupSize = Math.max(1, groupSize);
+        this.defaultGroupStrategy = defaultGroupStrategy;
+        this.externalPositionToken = externalPositionToken;
+        this.externalPositionBatchSize = externalPositionBatchSize;
+        this.testPlate = testPlate;
+        this.testCarId = testCarId;
+        this.testOnStartup = testOnStartup;
+        this.authEnabled = authEnabled;
+        this.authUrl = authUrl;
+        this.authId = authId;
+        this.authSecret = authSecret;
+        this.tokenCacheEnabled = tokenCacheEnabled;
+        this.tokenCachePathStr = tokenCachePathStr;
     }
+
+
+    private Path resolveTokenCachePath() {
+        return Path.of(tokenCachePathStr);
+    }
+
+    private String loadTokenFromFile() {
+        if (!tokenCacheEnabled) return null;
+        Path path = resolveTokenCachePath();
+        if (!Files.exists(path)) return null;
+        try {
+            String content = Files.readString(path);
+            Map<String, Object> data = objectMapper.readValue(content, new TypeReference<>() {});
+            String token = (String) data.get("token");
+            long expiresAt = ((Number) data.get("expiresAt")).longValue();
+            if (System.currentTimeMillis() < expiresAt - 300_000) {
+                cachedToken.set(token);
+                tokenExpiresAt = expiresAt;
+                log.info("Token loaded from file cache, expires at {}", expiresAt);
+                return token;
+            }
+        } catch (Exception e) {
+            log.warn("Failed to load token cache file", e);
+        }
+        return null;
+    }
+
+    private void saveTokenToFile(String token, long expiresAt) {
+        if (!tokenCacheEnabled) return;
+        Path path = resolveTokenCachePath();
+        try {
+            Path parent = path.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("token", token);
+            data.put("expiresAt", expiresAt);
+            Files.writeString(path, objectMapper.writeValueAsString(data));
+            log.debug("Token cache saved to {}", path);
+        } catch (IOException e) {
+            log.warn("Failed to save token cache", e);
+        }
+    }
+
+
+    /**
+     * 获取有效的 accessToken，如果需要则自动获取或刷新。
+     */
+    private String getAccessToken() throws IOException, InterruptedException {
+        if (!authEnabled) {
+            return externalPositionToken;
+        }
+
+        long now = System.currentTimeMillis();
+        String token = cachedToken.get();
+
+        // 1) 若内存无 token，尝试从文件加载
+        if (token == null) {
+            token = loadTokenFromFile();
+            if (token != null) {
+                return token;
+            }
+        }
+
+        // 2) 内存中的 token 是否有效
+        if (token != null && now < tokenExpiresAt - 300_000) {
+            log.info("Using cached token (memory)");
+            return token;
+        }
+
+        tokenLock.lock();
+        try {
+            // 双重检查
+            token = cachedToken.get();
+            if (token != null && now < tokenExpiresAt - 300_000) {
+                log.info("Using cached token (memory)");
+                return token;
+            }
+
+            // 3) 登录获取新 token
+            Map<String, String> body = new LinkedHashMap<>();
+            body.put("id", authId);
+            body.put("secret", authSecret);
+            String json = objectMapper.writeValueAsString(body);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(authUrl))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(json))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                throw new RuntimeException("Token fetch failed with status " + response.statusCode());
+            }
+
+            Map<String, Object> result = objectMapper.readValue(response.body(), new TypeReference<>() {});
+            if (!(result.get("code") instanceof Number code) || code.intValue() != 200) {
+                throw new RuntimeException("Token API returned error: " + result);
+            }
+
+            Map<String, Object> data = (Map<String, Object>) result.get("data");
+            String newToken = (String) data.get("token");
+            int expiresIn = ((Number) data.get("expires_in")).intValue(); // 秒
+
+            cachedToken.set(newToken);
+            tokenExpiresAt = now + expiresIn * 1000L;
+            log.info("New access token obtained, expires at {}", tokenExpiresAt);
+
+            // 4) 保存到文件（供下次启动使用）
+            saveTokenToFile(newToken, tokenExpiresAt);
+
+            return newToken;
+        } finally {
+            tokenLock.unlock();
+        }
+    }
+
 
     public synchronized Map<String, Object> dispatchRandomRoute() {
         cleanupExpiredRoutes(System.currentTimeMillis());
@@ -75,14 +254,26 @@ public class RoutePushService {
         long travelDurationMs = Math.max(60_000L, Math.round(routeLengthKm / speedKmh * 3_600_000));
         ScheduledRoute route = new ScheduledRoute(
                 lineId,
+                lineId,
+                "临时运输任务",
+                ThreadLocalRandom.current().nextInt(18, 46),
+                1,
                 from.name(),
                 to.name(),
                 coordinates,
+                pathKey(from.name(), to.name(), coordinates),
                 System.currentTimeMillis(),
                 routeLengthKm,
                 speedKmh,
                 travelDurationMs
         );
+        // 随机车牌（用于测试）
+        String plate = dataFactory.randomPlate();
+        lineIdPlateMap.put(lineId, plate);
+
+        // 如果将来有真实的车辆ID，可以从订单信息中获取，然后存入 lineIdCarIdMap
+        // String carId = order.getCarId();   // 假设有
+        // if (carId != null) lineIdCarIdMap.put(lineId, carId);
         activeRoutes.put(lineId, route);
 
         Map<String, Object> message = routeMessage(route, true);
@@ -91,43 +282,208 @@ public class RoutePushService {
         return message;
     }
 
-    public Map<String, Object> listRouteGroups() {
+    public synchronized Map<String, Object> dispatchBulkOrder(int vehicleCount) {
         cleanupExpiredRoutes(System.currentTimeMillis());
-        List<ScheduledRoute> routes = sortedActiveRoutes();
-        List<Map<String, Object>> groups = new ArrayList<>();
-        for (int start = 0; start < routes.size(); start += groupSize) {
-            int index = start / groupSize;
-            int end = Math.min(routes.size(), start + groupSize);
-            Map<String, Object> group = new LinkedHashMap<>();
-            group.put("groupId", groupId(index));
-            group.put("index", index);
-            group.put("count", end - start);
-            groups.add(group);
+
+        int count = Math.max(1, Math.min(vehicleCount, 80));
+        City from = dataFactory.randomCity();
+        City to = dataFactory.randomDifferentCity(from);
+        String orderId = "BULK-" + System.currentTimeMillis();
+        String orderName = "大宗运输订单";
+        int totalTons = count * ThreadLocalRandom.current().nextInt(22, 38);
+
+        // 大宗订单默认拆成两条可复用路径，便于验证“单订单多路径”和不同策略下的表现。
+        List<List<double[]>> pathVariants = List.of(
+                buildRandomRoadCoordinates(from, to),
+                buildRandomRoadCoordinates(from, to)
+        );
+        List<Map<String, Object>> messages = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            String lineId = UUID.randomUUID().toString();
+            List<double[]> coordinates = pathVariants.get(i % pathVariants.size());
+            double routeLengthKm = pathLengthKm(coordinates);
+            double speedKmh = simulationSpeedKmh();
+            long travelDurationMs = Math.max(60_000L, Math.round(routeLengthKm / speedKmh * 3_600_000));
+            ScheduledRoute route = new ScheduledRoute(
+                    lineId,
+                    orderId,
+                    orderName,
+                    totalTons,
+                    count,
+                    from.name(),
+                    to.name(),
+                    coordinates,
+                    pathKey(from.name(), to.name(), coordinates),
+                    System.currentTimeMillis(),
+                    routeLengthKm,
+                    speedKmh,
+                    travelDurationMs
+            );
+            activeRoutes.put(lineId, route);
+            Map<String, Object> message = routeMessage(route, true);
+            messages.add(message);
+            webSocketHandler.broadcast(message);
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
+        response.put("orderId", orderId);
+        response.put("orderName", orderName);
+        response.put("totalTons", totalTons);
+        response.put("vehicleCount", count);
+        response.put("from", from.name());
+        response.put("to", to.name());
+        response.put("routes", messages);
+        return response;
+    }
+
+    public Map<String, Object> listRouteGroups() {
+        return listRouteGroups(null);
+    }
+
+    public Map<String, Object> listRouteGroups(String strategyName) {
+        cleanupExpiredRoutes(System.currentTimeMillis());
+        String strategy = resolveGroupStrategy(strategyName);
+        List<RouteInfo> routes = activeRouteInfos();
+        List<Map<String, Object>> groups = groupSummaries(strategy).stream()
+                .map(this::groupSummaryMessage)
+                .toList();
+
+        Map<String, Object> response = new LinkedHashMap<>();
         response.put("groupSize", groupSize);
+        response.put("strategy", strategy);
         response.put("totalRoutes", routes.size());
         response.put("groups", groups);
         return response;
     }
 
     public Map<String, Object> listRoutesByGroup(String groupId) {
+        return listRoutesByGroup(groupId, null);
+    }
+
+    public Map<String, Object> listRoutesByGroup(String groupId, String strategyName) {
         cleanupExpiredRoutes(System.currentTimeMillis());
-        int groupIndex = parseGroupIndex(groupId);
-        List<ScheduledRoute> routes = sortedActiveRoutes();
-        int start = groupIndex * groupSize;
-        int end = Math.min(routes.size(), start + groupSize);
-        List<Map<String, Object>> routeMessages = new ArrayList<>();
-        if (start < routes.size()) {
-            routes.subList(start, end).forEach((route) -> routeMessages.add(routeMessage(route, false)));
-        }
+        String strategy = resolveGroupStrategy(strategyName);
+        List<RouteInfo> routes = routesByGroup(groupId, strategy);
+        List<Map<String, Object>> routeMessages = routes.stream()
+                .map((route) -> routeMessage(route, false))
+                .toList();
 
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("groupId", groupId(groupIndex));
+        response.put("groupId", groupId);
         response.put("groupSize", groupSize);
+        response.put("strategy", strategy);
         response.put("routes", routeMessages);
         return response;
+    }
+
+    /**
+     * 通过车牌查询位置
+     */
+    private ProviderPosition fetchPositionByPlate(String plate) {
+        if (externalPositionUrl == null || externalPositionUrl.isBlank()) {
+            return null;
+        }
+
+        try {
+            String token = getAccessToken();
+            String url = externalPositionUrl + "/video/webapi/location/get-location-use-plates";
+            Map<String, Object> body = Map.of("plates", plate);
+            String json = objectMapper.writeValueAsString(body);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", token)
+                    .POST(HttpRequest.BodyPublishers.ofString(json))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                log.warn("Plate API returned status {}", response.statusCode());
+                return null;
+            }
+
+            Map<String, Object> result = objectMapper.readValue(response.body(), new TypeReference<>() {});
+            if (!(result.get("code") instanceof Number code) || code.intValue() != 200) {
+                log.warn("Plate API code not 200: {}", result);
+                return null;
+            }
+
+            Map<String, Object> dataBlock = (Map<String, Object>) result.get("data");
+            List<Map<String, Object>> vehicleList = (List<Map<String, Object>>) dataBlock.get("data");
+            if (vehicleList == null || vehicleList.isEmpty()) {
+                return null;
+            }
+
+            Map<String, Object> vehicle = vehicleList.get(0);
+            double lng = Double.parseDouble(String.valueOf(vehicle.get("lng")));
+            double lat = Double.parseDouble(String.valueOf(vehicle.get("lat")));
+            double speed = 0;
+            try {
+                speed = Double.parseDouble(String.valueOf(vehicle.get("speed")));
+            } catch (NumberFormatException ignored) {}
+
+            return new ProviderPosition(new double[]{lng, lat}, speed);
+
+        } catch (Exception e) {
+            log.warn("Failed to fetch position by plate", e);
+            return null;
+        }
+    }
+
+    /**
+     * 通过车辆ID查询位置
+     */
+    private ProviderPosition fetchPositionByCarId(String carIds) {
+        if (externalPositionUrl == null || externalPositionUrl.isBlank()) {
+            return null;
+        }
+
+        try {
+            String token = getAccessToken();  // 动态获取 token
+            String url = externalPositionUrl + "/video/webapi/location/get-location-use-carids";
+            Map<String, Object> body = Map.of("car_ids", carIds);
+            String json = objectMapper.writeValueAsString(body);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", token)
+                    .POST(HttpRequest.BodyPublishers.ofString(json))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                log.warn("CarID API returned status {}", response.statusCode());
+                return null;
+            }
+
+            Map<String, Object> result = objectMapper.readValue(response.body(), new TypeReference<>() {});
+            if (!(result.get("code") instanceof Number code) || code.intValue() != 200) {
+                log.warn("CarID API code not 200: {}", result);
+                return null;
+            }
+
+            Map<String, Object> dataBlock = (Map<String, Object>) result.get("data");
+            List<Map<String, Object>> vehicleList = (List<Map<String, Object>>) dataBlock.get("data");
+            if (vehicleList == null || vehicleList.isEmpty()) {
+                return null;
+            }
+
+            Map<String, Object> vehicle = vehicleList.get(0);
+            double lng = Double.parseDouble(String.valueOf(vehicle.get("lng")));
+            double lat = Double.parseDouble(String.valueOf(vehicle.get("lat")));
+            double speed = 0;
+            try {
+                speed = Double.parseDouble(String.valueOf(vehicle.get("speed")));
+            } catch (NumberFormatException ignored) {}
+
+            return new ProviderPosition(new double[]{lng, lat}, speed);
+
+        } catch (Exception e) {
+            log.warn("Failed to fetch position by carId", e);
+            return null;
+        }
     }
 
     public Map<String, Object> getPosition(String lineId) {
@@ -172,18 +528,29 @@ public class RoutePushService {
         return dataFactory.simulateMultiPointPath(waypoints, 200);
     }
 
-    private Map<String, Object> routeMessage(ScheduledRoute route, boolean created) {
+    private Map<String, Object> routeMessage(RouteInfo route, boolean created) {
         Map<String, Object> message = new LinkedHashMap<>();
         message.put("type", "road_path");
-        message.put("lineId", route.lineId());
-        message.put("groupId", groupIdFor(route.lineId()));
-        message.put("from", route.from());
-        message.put("to", route.to());
-        message.put("coordinates", route.coordinates());
+        message.put("lineId", route.getLineId());
+        message.put("groupId", groupIdFor(route.getLineId()));
+        if (route instanceof OrderAwareRouteInfo orderAwareRoute) {
+            message.put("orderId", orderAwareRoute.getOrderId());
+        }
+        if (route instanceof ScheduledRoute scheduledRoute) {
+            message.put("orderName", scheduledRoute.orderName());
+            message.put("orderTotalTons", scheduledRoute.orderTotalTons());
+            message.put("orderVehicleCount", scheduledRoute.orderVehicleCount());
+        }
+        if (route instanceof PathAwareRouteInfo pathAwareRoute) {
+            message.put("pathKey", pathAwareRoute.getPathKey());
+        }
+        message.put("from", route.getFrom());
+        message.put("to", route.getTo());
+        message.put("coordinates", route.getCoordinates());
         message.put("created", created);
-        message.put("routeLengthKm", route.routeLengthKm());
-        message.put("speedKmh", route.speedKmh());
-        message.put("travelDurationMs", route.travelDurationMs());
+        message.put("routeLengthKm", route.getRouteLengthKm());
+        message.put("speedKmh", route.getSpeedKmh());
+        message.put("travelDurationMs", route.getTravelDurationMs());
         return message;
     }
 
@@ -194,10 +561,11 @@ public class RoutePushService {
     }
 
     private String groupIdFor(String lineId) {
-        List<ScheduledRoute> routes = sortedActiveRoutes();
-        for (int i = 0; i < routes.size(); i++) {
-            if (routes.get(i).lineId().equals(lineId)) {
-                return groupId(i / groupSize);
+        for (GroupSummary group : groupSummaries(defaultGroupStrategy)) {
+            for (Object route : group.getRoutes()) {
+                if (route instanceof RouteInfo routeInfo && routeInfo.getLineId().equals(lineId)) {
+                    return group.getGroupId();
+                }
             }
         }
         return groupId(0);
@@ -270,37 +638,59 @@ public class RoutePushService {
     }
 
     private ProviderPosition fetchExternalVehiclePosition(String lineId) {
-        if (externalPositionUrl == null || externalPositionUrl.isBlank()) {
-            return null;
+        // 优先使用车辆ID
+        String carId = lineIdCarIdMap.get(lineId);
+        if (carId != null) {
+            ProviderPosition pos = fetchPositionByCarId(carId);
+            if (pos != null) return pos;
         }
 
-        String url = externalPositionUrl.replace("{lineId}", lineId);
-        try {
-            HttpRequest request = HttpRequest.newBuilder(URI.create(url)).GET().build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                log.warn("External vehicle position request failed: status={}, lineId={}", response.statusCode(), lineId);
-                return null;
-            }
-
-            Map<String, Object> body = objectMapper.readValue(response.body(), new TypeReference<>() {});
-            double[] position = readPosition(body.get("position"));
-            if (position == null) {
-                return null;
-            }
-
-            double speedKmh = readDouble(body.get("speedKmh"));
-            if (speedKmh <= 0) {
-                speedKmh = readDouble(body.get("velocityKmh"));
-            }
-            if (speedKmh <= 0) {
-                speedKmh = readDouble(body.get("speed"));
-            }
-            return new ProviderPosition(position, speedKmh);
-        } catch (Exception error) {
-            log.warn("External vehicle position request failed: lineId={}", lineId, error);
-            return null;
+        // 其次使用车牌
+        String plate = lineIdPlateMap.get(lineId);
+        if (plate != null) {
+            ProviderPosition pos = fetchPositionByPlate(plate);
+            if (pos != null) return pos;
         }
+
+        // 都没有或接口失败，返回 null，使用模拟位置
+        return null;
+    }
+
+    @PostConstruct
+    public void testExternalPositionAPI() {
+        if (!testOnStartup) return;
+
+        log.info("===== 外部位置接口启动测试开始 =====");
+
+        if (!testPlate.isBlank()) {
+            log.info("测试车牌: {}", testPlate);
+            try {
+                ProviderPosition pos = fetchPositionByPlate(testPlate);
+                if (pos != null) {
+                    log.info("车牌查询成功: lng={}, lat={}, speed={}", pos.position()[0], pos.position()[1], pos.speedKmh());
+                } else {
+                    log.warn("车牌查询失败，请检查配置和网络");
+                }
+            } catch (Exception e) {
+                log.warn("车牌查询异常", e);
+            }
+        }
+
+        if (!testCarId.isBlank()) {
+            log.info("测试车辆ID: {}", testCarId);
+            try {
+                ProviderPosition pos = fetchPositionByCarId(testCarId);
+                if (pos != null) {
+                    log.info("车辆ID查询成功: lng={}, lat={}, speed={}", pos.position()[0], pos.position()[1], pos.speedKmh());
+                } else {
+                    log.warn("车辆ID查询失败，请检查配置和网络");
+                }
+            } catch (Exception e) {
+                log.warn("车辆ID查询异常", e);
+            }
+        }
+
+        log.info("===== 外部位置接口启动测试结束 =====");
     }
 
     private double[] readPosition(Object value) {
@@ -441,14 +831,43 @@ public class RoutePushService {
 
     private record ScheduledRoute(
             String lineId,
+            String orderId,
+            String orderName,
+            int orderTotalTons,
+            int orderVehicleCount,
             String from,
             String to,
             List<double[]> coordinates,
+            String pathKey,
             long startTime,
             double routeLengthKm,
             double speedKmh,
             long travelDurationMs
-    ) {
+    ) implements RouteInfo, OrderAwareRouteInfo, PathAwareRouteInfo {
+        @Override
+        public String getLineId() { return lineId; }
+        @Override
+        public String getOrderId() { return orderId; }
+        @Override
+        public String getFrom() { return from; }
+        @Override
+        public String getTo() { return to; }
+        @Override
+        public double[] getFromCoords() { return coordinates.get(0); }
+        @Override
+        public double[] getToCoords() { return coordinates.get(coordinates.size() - 1); }
+        @Override
+        public double getRouteLengthKm() { return routeLengthKm; }
+        @Override
+        public double getSpeedKmh() { return speedKmh; }
+        @Override
+        public long getTravelDurationMs() { return travelDurationMs; }
+        @Override
+        public long getStartTime() { return startTime; }
+        @Override
+        public List<double[]> getCoordinates() { return coordinates; }
+        @Override
+        public String getPathKey() { return pathKey; }
     }
 
     private record ProviderPosition(
@@ -461,5 +880,52 @@ public class RoutePushService {
             double[] position,
             long time
     ) {
+    }
+    private List<RouteInfo> activeRouteInfos() {
+        return sortedActiveRoutes().stream()
+                .map(RouteInfo.class::cast)
+                .toList();
+    }
+
+    private List<GroupSummary> groupSummaries(String strategyName) {
+        RouteGroupingResult result = routeGroupingEngine.group(
+                activeRouteInfos(),
+                GroupingContext.defaults(strategyName, groupSize)
+        );
+        return result.getGroups();
+    }
+
+    private List<RouteInfo> routesByGroup(String groupId, String strategyName) {
+        return routeGroupingEngine.routesByGroup(
+                activeRouteInfos(),
+                GroupingContext.defaults(strategyName, groupSize),
+                groupId
+        );
+    }
+
+    private Map<String, Object> groupSummaryMessage(GroupSummary summary) {
+        Map<String, Object> group = new LinkedHashMap<>();
+        group.put("groupId", summary.getGroupId());
+        group.put("groupKey", summary.getGroupKey());
+        group.put("index", summary.getIndex());
+        group.put("subIndex", summary.getSubIndex());
+        group.put("count", summary.getCount());
+        group.put("groupType", summary.getGroupType());
+        group.put("groupScenario", summary.getGroupScenario());
+        group.put("scenarioReason", summary.getScenarioReason());
+        group.put("displayTemplate", summary.getDisplayTemplate());
+        group.put("styleHint", summary.getStyleHint());
+        group.put("orderIds", summary.getOrderIds());
+        group.put("routeKey", summary.getRouteKey());
+        group.put("pathKey", summary.getPathKey());
+        return group;
+    }
+
+    private String resolveGroupStrategy(String strategyName) {
+        return strategyName == null || strategyName.isBlank() ? defaultGroupStrategy : strategyName;
+    }
+
+    private String pathKey(String from, String to, List<double[]> coordinates) {
+        return from + "->" + to + "-" + Integer.toHexString(coordinates.hashCode());
     }
 }
