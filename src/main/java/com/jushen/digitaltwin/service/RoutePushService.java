@@ -635,11 +635,17 @@ public class RoutePushService {
     }
 
     private ProviderPosition fetchVehiclePosition(ScheduledRoute route, long now) {
-        ProviderPosition externalPosition = fetchExternalVehiclePosition(route.lineId());
-        if (externalPosition != null) {
-            return externalPosition;
+        if (isRealPositionProfile()) {
+            ProviderPosition externalPosition = fetchExternalVehiclePosition(route.lineId());
+            if (externalPosition != null) {
+                return externalPosition;
+            }
         }
 
+        return simulatedPosition(route, now);
+    }
+
+    private ProviderPosition simulatedPosition(ScheduledRoute route, long now) {
         long elapsed = Math.max(0, now - route.startTime());
         double progress = Math.min(1.0, elapsed / (double) route.travelDurationMs());
         double[] position = coordinateAtProgress(route.coordinates(), progress);
@@ -647,6 +653,10 @@ public class RoutePushService {
     }
 
     private ProviderPosition fetchExternalVehiclePosition(String lineId) {
+        if (!isRealPositionProfile()) {
+            return null;
+        }
+
         // 优先使用车辆ID
         String carId = lineIdCarIdMap.get(lineId);
         if (carId != null) {
@@ -667,7 +677,7 @@ public class RoutePushService {
 
     @PostConstruct
     public void testExternalPositionAPI() {
-        if (!testOnStartup) return;
+        if (!testOnStartup || !isRealPositionProfile()) return;
 
         log.info("===== 外部位置接口启动测试开始 =====");
 
@@ -838,6 +848,10 @@ public class RoutePushService {
         return Math.max(1, testSimulationSpeedKmh);
     }
 
+    private boolean isRealPositionProfile() {
+        return "real".equalsIgnoreCase(simulationProfile);
+    }
+
     private record ScheduledRoute(
             String lineId,
             String orderId,
@@ -886,7 +900,9 @@ public class RoutePushService {
     }
 
     public Map<String, Object> queryPositionByCarId(String carId) {
-        ProviderPosition pos = fetchPositionByCarId(carId);
+        ProviderPosition pos = isRealPositionProfile()
+                ? fetchPositionByCarId(carId)
+                : querySimulatedPosition(carId);
         if (pos == null) {
             return null;
         }
@@ -895,6 +911,24 @@ public class RoutePushService {
         result.put("lat", pos.position()[1]);
         result.put("speedKmh", pos.speedKmh());
         return result;
+    }
+
+    private ProviderPosition querySimulatedPosition(String query) {
+        if (query == null || query.isBlank()) {
+            return null;
+        }
+        String normalized = query.trim();
+        long now = System.currentTimeMillis();
+        return activeRoutes.values().stream()
+                .filter(route -> route.lineId().equalsIgnoreCase(normalized)
+                        || normalized.equalsIgnoreCase(lineIdPlateMap.get(route.lineId()))
+                        || normalized.equalsIgnoreCase(lineIdCarIdMap.get(route.lineId())))
+                .findFirst()
+                .map(route -> {
+                    ProviderPosition pos = simulatedPosition(route, now);
+                    return new ProviderPosition(pos.position(), route.speedKmh());
+                })
+                .orElse(null);
     }
 
     private record PositionSample(
