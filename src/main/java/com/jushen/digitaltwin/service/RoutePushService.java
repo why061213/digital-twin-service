@@ -26,7 +26,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -34,6 +37,7 @@ import java.net.http.HttpResponse;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
+import jakarta.annotation.PreDestroy;
 import jakarta.annotation.PostConstruct;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -48,6 +52,11 @@ public class RoutePushService {
     private final SimulationDataFactory dataFactory;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient = HttpClient.newHttpClient();
+    private final ScheduledExecutorService bulkDispatchExecutor = Executors.newSingleThreadScheduledExecutor((runnable) -> {
+        Thread thread = new Thread(runnable, "bulk-dispatch-simulator");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final Map<String, ScheduledRoute> activeRoutes = new ConcurrentHashMap<>();
     private final Map<String, PositionSample> lastPositionSamples = new ConcurrentHashMap<>();
     private final boolean passivePositionPushEnabled;
@@ -259,6 +268,7 @@ public class RoutePushService {
         ScheduledRoute route = new ScheduledRoute(
                 lineId,
                 lineId,
+                lineId,
                 "临时运输任务",
                 ThreadLocalRandom.current().nextInt(18, 46),
                 1,
@@ -305,33 +315,47 @@ public class RoutePushService {
         double bulkRouteLengthKm = pathLengthKm(bulkCoordinates);
         double bulkSpeedKmh = simulationSpeedKmh();
         long bulkTravelDurationMs = Math.max(60_000L, Math.round(bulkRouteLengthKm / bulkSpeedKmh * 3_600_000));
+        long departureStepMs = Math.max(800L, Math.min(2_500L, bulkTravelDurationMs / Math.max(2, count * 3L)));
         List<Map<String, Object>> messages = new ArrayList<>();
         for (int i = 0; i < count; i++) {
-            String lineId = UUID.randomUUID().toString();
-            List<double[]> coordinates = bulkCoordinates;
-            double routeLengthKm = bulkRouteLengthKm;
-            double speedKmh = bulkSpeedKmh;
-            long travelDurationMs = bulkTravelDurationMs;
-            ScheduledRoute route = new ScheduledRoute(
-                    lineId,
-                    orderId,
-                    orderName,
-                    totalTons,
-                    count,
-                    from.name(),
-                    to.name(),
-                    coordinates,
-                    bulkPathKey,
-                    System.currentTimeMillis(),
-                    routeLengthKm,
-                    speedKmh,
-                    travelDurationMs
-            );
-            lineIdPlateMap.put(lineId, dataFactory.randomPlate());
-            activeRoutes.put(lineId, route);
-            Map<String, Object> message = routeMessage(route, true);
-            messages.add(message);
-            webSocketHandler.broadcast(message);
+            int routeIndex = i;
+            String childOrderId = bulkOrderIdFor(orderId, routeIndex, count);
+            String childOrderName = bulkOrderNameFor(routeIndex);
+            if (i == 0) {
+                messages.add(dispatchBulkRoute(
+                        orderId,
+                        childOrderId,
+                        childOrderName,
+                        totalTons,
+                        count,
+                        from.name(),
+                        to.name(),
+                        bulkCoordinates,
+                        bulkPathKey,
+                        bulkRouteLengthKm,
+                        bulkSpeedKmh,
+                        bulkTravelDurationMs
+                ));
+            } else {
+                bulkDispatchExecutor.schedule(
+                        () -> dispatchBulkRoute(
+                                orderId,
+                                childOrderId,
+                                childOrderName,
+                                totalTons,
+                                count,
+                                from.name(),
+                                to.name(),
+                                bulkCoordinates,
+                                bulkPathKey,
+                                bulkRouteLengthKm,
+                                bulkSpeedKmh,
+                                bulkTravelDurationMs
+                        ),
+                        routeIndex * departureStepMs,
+                        TimeUnit.MILLISECONDS
+                );
+            }
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
@@ -342,7 +366,66 @@ public class RoutePushService {
         response.put("from", from.name());
         response.put("to", to.name());
         response.put("routes", messages);
+        response.put("dispatchedRouteCount", messages.size());
+        response.put("scheduledRouteCount", Math.max(0, count - messages.size()));
+        response.put("dispatchIntervalMs", departureStepMs);
         return response;
+    }
+
+    private synchronized Map<String, Object> dispatchBulkRoute(
+            String orderFamilyId,
+            String orderId,
+            String orderName,
+            int totalTons,
+            int vehicleCount,
+            String from,
+            String to,
+            List<double[]> coordinates,
+            String pathKey,
+            double routeLengthKm,
+            double speedKmh,
+            long travelDurationMs
+    ) {
+        cleanupExpiredRoutes(System.currentTimeMillis());
+        String lineId = UUID.randomUUID().toString();
+        ScheduledRoute route = new ScheduledRoute(
+                lineId,
+                orderId,
+                orderFamilyId,
+                orderName,
+                totalTons,
+                vehicleCount,
+                from,
+                to,
+                coordinates,
+                pathKey,
+                System.currentTimeMillis(),
+                routeLengthKm,
+                speedKmh,
+                travelDurationMs
+        );
+        lineIdPlateMap.put(lineId, dataFactory.randomPlate());
+        activeRoutes.put(lineId, route);
+        Map<String, Object> message = routeMessage(route, true);
+        webSocketHandler.broadcast(message);
+        log.debug("Dispatched bulk route: {} -> {}, orderId: {}, family: {}, lineId: {}",
+                from, to, orderId, orderFamilyId, lineId);
+        return message;
+    }
+
+    private String bulkOrderIdFor(String rootOrderId, int routeIndex, int vehicleCount) {
+        int firstBatchSize = Math.max(1, Math.min(vehicleCount, Math.max(3, vehicleCount / 3)));
+        if (routeIndex < firstBatchSize) {
+            return rootOrderId;
+        }
+        int appendIndex = ((routeIndex - firstBatchSize) / Math.max(1, groupSize)) + 1;
+        return rootOrderId + "-ADD-" + appendIndex;
+    }
+
+    private String bulkOrderNameFor(int routeIndex) {
+        return routeIndex == 0
+                ? "\u5927\u5b97\u8fd0\u8f93\u8ba2\u5355"
+                : "\u5927\u5b97\u8fd0\u8f93\u8ba2\u5355-\u8ffd\u52a0\u914d\u9001";
     }
 
     public Map<String, Object> listRouteGroups() {
@@ -544,6 +627,7 @@ public class RoutePushService {
         message.put("groupId", groupIdFor(route.getLineId()));
         if (route instanceof OrderAwareRouteInfo orderAwareRoute) {
             message.put("orderId", orderAwareRoute.getOrderId());
+            message.put("orderFamilyId", orderAwareRoute.getOrderFamilyId());
         }
         if (route instanceof ScheduledRoute scheduledRoute) {
             message.put("orderName", scheduledRoute.orderName());
@@ -604,14 +688,15 @@ public class RoutePushService {
 
     private Map<String, Object> positionMessage(ScheduledRoute route, long now) {
         ProviderPosition providerPosition = fetchVehiclePosition(route, now);
-        double speedKmh = providerPosition.speedKmh();
+        boolean waitingDeparture = now < route.startTime();
+        double speedKmh = waitingDeparture ? 0 : providerPosition.speedKmh();
         if (speedKmh <= 0) {
-            speedKmh = calculateSpeedKmh(route.lineId(), providerPosition.position(), now, route.speedKmh());
+            speedKmh = waitingDeparture ? 0 : calculateSpeedKmh(route.lineId(), providerPosition.position(), now, route.speedKmh());
         }
 
         long elapsed = Math.max(0, now - route.startTime());
         double progress = Math.min(1.0, elapsed / (double) route.travelDurationMs());
-        double[] velocity = velocityFromSpeed(route.coordinates(), progress, speedKmh);
+        double[] velocity = waitingDeparture ? new double[]{0, 0} : velocityFromSpeed(route.coordinates(), progress, speedKmh);
 
         Map<String, Object> message = new LinkedHashMap<>();
         message.put("type", "truck_position");
@@ -646,6 +731,9 @@ public class RoutePushService {
     }
 
     private ProviderPosition simulatedPosition(ScheduledRoute route, long now) {
+        if (now < route.startTime()) {
+            return new ProviderPosition(coordinateAtProgress(route.coordinates(), 0), 0);
+        }
         long elapsed = Math.max(0, now - route.startTime());
         double progress = Math.min(1.0, elapsed / (double) route.travelDurationMs());
         double[] position = coordinateAtProgress(route.coordinates(), progress);
@@ -852,9 +940,15 @@ public class RoutePushService {
         return "real".equalsIgnoreCase(simulationProfile);
     }
 
+    @PreDestroy
+    public void shutdownBulkDispatchExecutor() {
+        bulkDispatchExecutor.shutdownNow();
+    }
+
     private record ScheduledRoute(
             String lineId,
             String orderId,
+            String orderFamilyId,
             String orderName,
             int orderTotalTons,
             int orderVehicleCount,
@@ -871,6 +965,8 @@ public class RoutePushService {
         public String getLineId() { return lineId; }
         @Override
         public String getOrderId() { return orderId; }
+        @Override
+        public String getOrderFamilyId() { return orderFamilyId; }
         @Override
         public String getFrom() { return from; }
         @Override

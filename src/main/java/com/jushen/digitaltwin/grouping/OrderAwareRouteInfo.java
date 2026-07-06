@@ -8,4 +8,8 @@ package com.jushen.digitaltwin.grouping;
  */
 public interface OrderAwareRouteInfo extends RouteInfo {
     String getOrderId();
+
+    default String getOrderFamilyId() {
+        return getOrderId();
+    }
 }

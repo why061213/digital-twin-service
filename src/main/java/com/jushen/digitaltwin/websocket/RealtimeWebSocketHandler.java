@@ -48,6 +48,10 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) {
         sessions.remove(session);
+        if (isConnectionReset(exception)) {
+            log.info("Dashboard websocket transport closed by client: {}", session.getId());
+            return;
+        }
         log.warn("Dashboard websocket transport error: {}", session.getId(), exception);
         closeQuietly(session);
     }
@@ -97,9 +101,31 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
             }
         } catch (IOException e) {
             sessions.remove(session);
+            if (isConnectionReset(e)) {
+                log.debug("Skipped websocket send because client already closed: {}", session.getId());
+                return;
+            }
             log.warn("Failed to send websocket message: {}", session.getId(), e);
             closeQuietly(session);
         }
+    }
+
+    private boolean isConnectionReset(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null) {
+                String normalized = message.toLowerCase();
+                if (normalized.contains("connection reset")
+                        || normalized.contains("broken pipe")
+                        || normalized.contains("established connection was aborted")
+                        || message.contains("你的主机中的软件中止了一个已建立的连接")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private void closeQuietly(WebSocketSession session) {

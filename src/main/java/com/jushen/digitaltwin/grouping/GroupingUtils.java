@@ -32,6 +32,10 @@ final class GroupingUtils {
 
     static String orderKey(RouteInfo route) {
         if (route instanceof OrderAwareRouteInfo orderAware) {
+            String orderFamilyId = orderAware.getOrderFamilyId();
+            if (orderFamilyId != null && !orderFamilyId.isBlank()) {
+                return orderFamilyId;
+            }
             String orderId = orderAware.getOrderId();
             if (orderId != null && !orderId.isBlank()) {
                 return orderId;

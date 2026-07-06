@@ -42,7 +42,7 @@ dashboard:
     token-cache-path: target/local-cache/token-cache.json
 
     test:
-      simulation-speed-kmh: 30000
+      simulation-speed-kmh: 15000
       position-query-interval-ms: 60000
       slow-position-query-interval-ms: 15000
     real:
