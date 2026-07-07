@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>统一配置管理中心</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
+    <style>
+        /* ……保留你原来的所有 CSS（不变）…… */
+        :root {
+            --primary: #4f46e5;
+            --primary-hover: #4338ca;
+            --primary-light: #eef2ff;
+            --success: #22c55e;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-300: #d1d5db;
+            --gray-400: #9ca3af;
+            --gray-500: #6b7280;
+            --gray-600: #4b5563;
+            --gray-700: #374151;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+            --radius: 12px;
+            --shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 4px 12px rgba(0, 0, 0, 0.05);
+            --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.12);
+            --transition: all 0.25s ease;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: var(--gray-50); color: var(--gray-800);
+            padding: 24px; min-height: 100vh;
+            display: flex; justify-content: center; align-items: flex-start;
+        }
+        .app-container {
+            max-width: 1280px; width: 100%; background: #ffffff;
+            border-radius: var(--radius); box-shadow: var(--shadow-lg);
+            overflow: hidden; padding: 32px 40px 48px;
+        }
+        .app-header {
+            display: flex; justify-content: space-between; align-items: center;
+            flex-wrap: wrap; gap: 16px; padding-bottom: 24px;
+            border-bottom: 2px solid var(--gray-100); margin-bottom: 28px;
+        }
+        .header-left { display: flex; align-items: center; gap: 14px; }
+        .header-left .icon {
+            width: 44px; height: 44px; background: var(--primary-light);
+            border-radius: 10px; display: flex; align-items: center;
+            justify-content: center; color: var(--primary); font-size: 22px;
+        }
+        .header-left h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.3px; color: var(--gray-900); }
+        .header-left .sub { font-size: 14px; color: var(--gray-500); font-weight: 400; margin-left: 6px; }
+        .header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .status-badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 6px 16px; border-radius: 20px; font-size: 13px;
+            font-weight: 500; background: var(--gray-100); color: var(--gray-600);
+        }
+        .status-badge .dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--success); display: inline-block;
+            animation: pulse-dot 1.8s infinite;
+        }
+        @keyframes pulse-dot {
+            0%,100% { opacity:1; transform:scale(1); }
+            50% { opacity:0.5; transform:scale(0.85); }
+        }
+        .btn {
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 10px 22px; border: none; border-radius: 8px;
+            font-size: 14px; font-weight: 600; cursor: pointer;
+            transition: var(--transition); text-decoration: none;
+            background: var(--gray-100); color: var(--gray-700);
+        }
+        .btn:hover { background: var(--gray-200); transform: translateY(-1px); }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-primary:hover { background: var(--primary-hover); box-shadow: 0 4px 12px rgba(79,70,229,0.35); }
+        .btn-success { background: var(--success); color: #fff; }
+        .btn-success:hover { background: #16a34a; box-shadow: 0 4px 12px rgba(34,197,94,0.35); }
+        .btn-danger { background: var(--danger); color: #fff; }
+        .btn-danger:hover { background: #dc2626; box-shadow: 0 4px 12px rgba(239,68,68,0.35); }
+        .btn-outline { background: transparent; border: 1.5px solid var(--gray-300); color: var(--gray-600); }
+        .btn-outline:hover { background: var(--gray-50); border-color: var(--gray-400); }
+        .btn-sm { padding: 6px 14px; font-size: 13px; }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none !important; }
+        .toast-container {
+            position: fixed; top: 24px; right: 24px; z-index: 9999;
+            display: flex; flex-direction: column; gap: 10px;
+            max-width: 400px; width: 100%;
+        }
+        .toast {
+            padding: 14px 20px; border-radius: 10px;
+            background: var(--gray-900); color: #fff; font-size: 14px;
+            font-weight: 500; box-shadow: var(--shadow-lg);
+            display: flex; align-items: center; gap: 12px;
+            animation: slideIn 0.3s ease; transform-origin: top right;
+        }
+        .toast-success { background: #065f46; border-left: 4px solid var(--success); }
+        .toast-error { background: #7f1d1d; border-left: 4px solid var(--danger); }
+        .toast-info { background: #1e3a5f; border-left: 4px solid #3b82f6; }
+        @keyframes slideIn {
+            from { opacity:0; transform:translateX(40px) scale(0.95); }
+            to { opacity:1; transform:translateX(0) scale(1); }
+        }
+        .toast .toast-close {
+            margin-left: auto; background: transparent; border: none;
+            color: rgba(255,255,255,0.7); font-size: 18px; cursor: pointer; padding: 0 4px;
+        }
+        .toast .toast-close:hover { color: #fff; }
+        .tabs {
+            display: flex; gap: 4px; background: var(--gray-100);
+            padding: 4px; border-radius: 10px; margin-bottom: 28px;
+        }
+        .tab-btn {
+            flex: 1; padding: 10px 20px; border: none; border-radius: 8px;
+            font-size: 14px; font-weight: 600; cursor: pointer;
+            transition: var(--transition); background: transparent;
+            color: var(--gray-500); display: flex; align-items: center;
+            justify-content: center; gap: 8px;
+        }
+        .tab-btn:hover { color: var(--gray-700); background: rgba(255,255,255,0.5); }
+        .tab-btn.active { background: #ffffff; color: var(--gray-900); box-shadow: var(--shadow); }
+        .tab-btn .badge {
+            background: var(--gray-200); color: var(--gray-600);
+            font-size: 11px; padding: 2px 10px; border-radius: 12px; font-weight: 600;
+        }
+        .tab-btn.active .badge { background: var(--primary-light); color: var(--primary); }
+        .panel { display: none; animation: fadeUp 0.3s ease; }
+        .panel.active { display: block; }
+        @keyframes fadeUp {
+            from { opacity:0; transform:translateY(12px); }
+            to { opacity:1; transform:translateY(0); }
+        }
+        .panel-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 20px; flex-wrap: wrap; gap: 12px;
+        }
+        .panel-header h2 { font-size: 18px; font-weight: 600; color: var(--gray-800); }
+        .panel-header .count { font-size: 13px; color: var(--gray-500); font-weight: 400; }
+        .config-table-wrap { border: 1px solid var(--gray-200); border-radius: var(--radius); overflow: hidden; }
+        .config-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        .config-table th {
+            text-align: left; padding: 14px 18px; background: var(--gray-50);
+            font-weight: 600; color: var(--gray-600); border-bottom: 1px solid var(--gray-200);
+            font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px;
+        }
+        .config-table td { padding: 12px 18px; border-bottom: 1px solid var(--gray-100); vertical-align: middle; }
+        .config-table tr:last-child td { border-bottom: none; }
+        .config-table tr:hover td { background: var(--gray-50); }
+        .config-key { font-weight: 600; color: var(--gray-800); font-family: 'SF Mono','Fira Code',monospace; font-size: 13px; white-space: nowrap; }
+        .config-desc { color: var(--gray-500); font-size: 13px; max-width: 220px; }
+        .config-value { min-width: 200px; }
+        .config-value input, .config-value select {
+            width: 100%; padding: 8px 12px; border: 1.5px solid var(--gray-200);
+            border-radius: 6px; font-size: 14px; font-family: inherit;
+            background: #fff; transition: var(--transition); color: var(--gray-800);
+        }
+        .config-value input:focus, .config-value select:focus {
+            outline: none; border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79,70,229,0.15);
+        }
+        .config-value input[type="checkbox"] { width:20px; height:20px; accent-color:var(--primary); cursor:pointer; margin:0; }
+        .toggle-wrap { display: flex; align-items: center; gap: 10px; }
+        .toggle-switch {
+            position: relative; width: 44px; height: 24px;
+            background: var(--gray-300); border-radius: 12px;
+            cursor: pointer; transition: var(--transition); flex-shrink: 0;
+        }
+        .toggle-switch.active { background: var(--primary); }
+        .toggle-switch .toggle-knob {
+            position: absolute; top:2px; left:2px; width:20px; height:20px;
+            background: #fff; border-radius: 50%; transition: var(--transition);
+            box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+        }
+        .toggle-switch.active .toggle-knob { left: 22px; }
+        .toggle-label { font-size: 13px; font-weight: 500; color: var(--gray-600); }
+        .config-actions { display: flex; gap: 6px; justify-content: flex-end; }
+        .config-actions .btn-icon {
+            width:32px; height:32px; border:none; border-radius:6px;
+            background:transparent; color:var(--gray-400); cursor:pointer;
+            transition:var(--transition); display:inline-flex; align-items:center;
+            justify-content:center; font-size:14px;
+        }
+        .config-actions .btn-icon:hover { background:var(--gray-100); color:var(--gray-700); }
+        .config-actions .btn-icon.reset:hover { color:var(--danger); background:#fef2f2; }
+        .footer-actions {
+            margin-top:28px; padding-top:24px; border-top:2px solid var(--gray-100);
+            display:flex; justify-content:space-between; align-items:center;
+            flex-wrap:wrap; gap:16px;
+        }
+        .footer-actions .left { display:flex; align-items:center; gap:16px; font-size:13px; color:var(--gray-500); }
+        .footer-actions .left .last-save { background:var(--gray-100); padding:4px 14px; border-radius:12px; font-size:12px; }
+        .footer-actions .right { display:flex; gap:10px; flex-wrap:wrap; }
+        @media (max-width:768px) {
+            .app-container { padding:20px 16px; }
+            .app-header { flex-direction:column; align-items:stretch; gap:12px; }
+            .config-table-wrap { overflow-x:auto; }
+            .config-table th, .config-table td { padding:10px 12px; font-size:13px; }
+            .config-desc { max-width:120px; font-size:12px; }
+            .config-value { min-width:140px; }
+            .footer-actions { flex-direction:column; align-items:stretch; }
+            .footer-actions .right { justify-content:stretch; }
+            .footer-actions .right .btn { flex:1; justify-content:center; }
+            .tabs { flex-direction:column; }
+            .tab-btn { justify-content:center; }
+            .toast-container { top:12px; right:12px; left:12px; max-width:100%; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="app-container" id="app">
+    <header class="app-header">
+        <div class="header-left">
+            <div class="icon"><i class="fas fa-sliders-h"></i></div>
+            <div>
+                <h1>配置管理中心 <span class="sub">实时调整前后端运行参数</span></h1>
+            </div>
+        </div>
+        <div class="header-actions">
+            <span class="status-badge">
+                <span class="dot"></span> 服务运行中
+            </span>
+            <button class="btn btn-outline btn-sm" onclick="refreshConfig()">
+                <i class="fas fa-sync-alt"></i> 刷新
+            </button>
+        </div>
+    </header>
+
+    <div class="tabs" role="tablist">
+        <button class="tab-btn active" data-tab="business" role="tab">
+            <i class="fas fa-server"></i> 业务参数
+            <span class="badge" id="business-count">0</span>
+        </button>
+        <button class="tab-btn" data-tab="ui" role="tab">
+            <i class="fas fa-paint-brush"></i> 界面参数
+            <span class="badge" id="ui-count">0</span>
+        </button>
+    </div>
+
+    <div class="panel active" id="panel-business" role="tabpanel"></div>
+    <div class="panel" id="panel-ui" role="tabpanel"></div>
+
+    <div class="footer-actions">
+        <div class="left">
+            <i class="fas fa-info-circle" style="color:var(--gray-400);"></i>
+            修改后点击「保存」即可生效，部分参数需重启服务。
+            <span class="last-save" id="last-save-time">尚未保存</span>
+        </div>
+        <div class="right">
+            <button class="btn btn-outline" onclick="resetAll()"><i class="fas fa-undo-alt"></i> 重置所有</button>
+            <button class="btn btn-success" onclick="saveAll()" id="save-btn"><i class="fas fa-save"></i> 保存配置</button>
+            <button class="btn btn-primary" onclick="restartService()"><i class="fas fa-power-off"></i> 重启服务</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+    // ---------- 配置元数据定义 ----------
+    const META = [
+        // 业务参数
+        { key: 'roadGroupSize',            section: 'business', type: 'number',  label: '道路分组大小',           desc: '每组包含的最大路线数量' },
+        { key: 'defaultGroupStrategy', section: 'business', type: 'select', label: '默认分组策略', desc: '道路分组所使用的策略', options: ['business-priority', 'sequential'] },
+        { key: 'simulationProfile',        section: 'business', type: 'select',  label: '模拟模式',               desc: 'test 或 real', options: ['test','real'] },
+        { key: 'testSimulationSpeedKmh',   section: 'business', type: 'number',  label: '测试模拟速度 (km/h)',    desc: '仅在 test 模式下生效' },
+        { key: 'realSimulationSpeedKmh',   section: 'business', type: 'number',  label: '真实模拟速度 (km/h)',    desc: '仅在 real 模式下生效' },
+        { key: 'passivePositionPushEnabled', section: 'business', type: 'boolean', label: '被动位置推送',        desc: '开启后定时推送所有车辆位置' },
+        { key: 'truckPositionPushRateMs',  section: 'business', type: 'number',  label: '位置推送间隔 (ms)',     desc: '被动推送的时间间隔' },
+        // 界面参数
+        { key: 'roadGroupDisplayBaseMs',   section: 'ui',      type: 'number',  label: '组展示基础时长 (ms)',    desc: '每个道路组最短展示时间' },
+        { key: 'roadGroupDisplayAddMs',    section: 'ui',      type: 'number',  label: '组展示增量时长 (ms)',    desc: '每条路线额外增加的展示时间' },
+        { key: 'cameraFocusDurationMs',    section: 'ui',      type: 'number',  label: '镜头聚焦时长 (ms)',     desc: '中国地图城市聚焦停留时间' },
+        { key: 'cameraOverviewDurationMs', section: 'ui',      type: 'number',  label: '镜头俯瞰时长 (ms)',     desc: '中国地图全局俯瞰停留时间' },
+        { key: 'cameraHeadquartersDurationMs', section: 'ui',  type: 'number',  label: '总部停留时长 (ms)',     desc: '中国地图总部特写停留时间' },
+        { key: 'warehousePanelWidth',      section: 'ui',      type: 'number',  label: '仓库面板宽度 (px)',     desc: '仓库聚焦面板的宽度' },
+        { key: 'warehousePanelMaxHeight',  section: 'ui',      type: 'number',  label: '仓库面板最大高度 (px)', desc: '仓库聚焦面板的最大高度' },
+        { key: 'autoCarouselEnabled',      section: 'ui',      type: 'boolean', label: '自动轮播开关',          desc: '是否自动在 ChinaMap 和 RoadMap 间切换' },
+        { key: 'autoCarouselRoadGroupCycles', section: 'ui',   type: 'number',  label: '道路组循环次数',        desc: '切换到 ChinaMap 前道路组循环几轮' },
+        { key: 'autoCarouselChinaMapDurationMs', section: 'ui', type: 'number', label: '中国地图展示时长 (ms)', desc: '每次 ChinaMap 展示的持续时间' },
+        { key: 'autoCarouselChinaMapLoops', section: 'ui', type: 'number', label: '中国地图巡航轮数', desc: 'ChinaMap 内部完整巡航几轮后切回 RoadMap' },
+    ];
+
+    // 当前配置（从后端加载）
+    let currentConfig = {};
+    // 原始配置（用于重置检测）
+    let originalConfig = {};
+
+    // ---------- 工具函数 ----------
+    function getMetaBySection(section) {
+        return META.filter(m => m.section === section);
+    }
+
+    async function loadConfigFromServer() {
+        try {
+            const res = await fetch('/api/config');
+            if (!res.ok) throw new Error('加载配置失败');
+            currentConfig = await res.json();
+            originalConfig = JSON.parse(JSON.stringify(currentConfig));
+            renderAll();
+            showToast('✅ 配置已从服务器加载', 'success');
+        } catch (err) {
+            showToast('❌ ' + err.message, 'error');
+        }
+    }
+
+    function renderAll() {
+        renderPanel('business');
+        renderPanel('ui');
+        updateCounts();
+    }
+
+    function renderPanel(section) {
+        const panel = document.getElementById(`panel-${section}`);
+        const metas = getMetaBySection(section);
+        if (metas.length === 0) {
+            panel.innerHTML = `<div class="empty-state"><i class="fas fa-inbox"></i><h3>暂无配置项</h3></div>`;
+            return;
+        }
+
+        let html = `
+            <div class="panel-header">
+                <h2><i class="fas ${section==='business'?'fa-server':'fa-paint-brush'}" style="color:var(--primary);margin-right:8px;"></i>${section==='business'?'业务参数':'界面参数'}</h2>
+                <span class="count">共 ${metas.length} 项</span>
+            </div>
+            <div class="config-table-wrap">
+                <table class="config-table">
+                    <thead>
+                        <tr><th style="width:22%;">配置键</th><th style="width:32%;">配置值</th><th style="width:30%;">描述</th><th style="width:16%;text-align:right;">操作</th></tr>
+                    </thead>
+                    <tbody>`;
+
+        metas.forEach(meta => {
+            const value = currentConfig[meta.key] !== undefined ? currentConfig[meta.key] : meta.default;
+            const origValue = originalConfig[meta.key];
+            const isChanged = JSON.stringify(value) !== JSON.stringify(origValue);
+            const desc = meta.desc || '';
+
+            let valueHtml = '';
+            if (meta.type === 'boolean') {
+                valueHtml = `
+                    <div class="toggle-wrap">
+                        <div class="toggle-switch ${value ? 'active' : ''}" data-key="${meta.key}" onclick="toggleBoolean('${meta.key}')">
+                            <div class="toggle-knob"></div>
+                        </div>
+                        <span class="toggle-label">${value ? '开启' : '关闭'}</span>
+                    </div>`;
+            } else if (meta.type === 'select') {
+                const opts = (meta.options || []).map(opt => `<option value="${opt}" ${opt===value?'selected':''}>${opt}</option>`).join('');
+                valueHtml = `<select data-key="${meta.key}" onchange="updateValue('${meta.key}', this.value)">${opts}</select>`;
+            } else if (meta.type === 'number') {
+                valueHtml = `<input type="number" value="${value}" data-key="${meta.key}" onchange="updateValue('${meta.key}', this.value)" />`;
+            } else {
+                valueHtml = `<input type="text" value="${value}" data-key="${meta.key}" onchange="updateValue('${meta.key}', this.value)"  />`;
+            }
+
+            const resetBtn = isChanged ? `<button class="btn-icon reset" onclick="resetSingle('${meta.key}')" title="恢复默认"><i class="fas fa-undo-alt"></i></button>` : '';
+
+            html += `
+                <tr>
+                    <td><span class="config-key">${meta.key}</span></td>
+                    <td class="config-value">${valueHtml}</td>
+                    <td class="config-desc">${desc}</td>
+                    <td style="text-align:right;"><div class="config-actions">${resetBtn}</div></td>
+                </tr>`;
+        });
+
+        html += `</tbody></table></div>`;
+        panel.innerHTML = html;
+    }
+
+    function updateValue(key, val) {
+        const meta = META.find(m => m.key === key);
+        if (!meta) return;
+        if (meta.type === 'number') {
+            val = parseFloat(val);
+            if (isNaN(val)) val = 0;
+        } else if (meta.type === 'boolean') {
+            val = val === 'true' || val === true;
+        }
+        currentConfig[key] = val;
+        renderPanel(meta.section);
+        updateCounts();
+    }
+
+    function toggleBoolean(key) {
+        currentConfig[key] = !currentConfig[key];
+        const section = META.find(m => m.key === key).section;
+        renderPanel(section);
+        updateCounts();
+    }
+
+    function resetSingle(key) {
+        currentConfig[key] = JSON.parse(JSON.stringify(originalConfig[key]));
+        const section = META.find(m => m.key === key).section;
+        renderPanel(section);
+        updateCounts();
+        showToast(`已重置 ${key}`, 'info');
+    }
+
+    function resetAll() {
+        if (!confirm('确定要重置所有配置到服务器当前值吗？')) return;
+        currentConfig = JSON.parse(JSON.stringify(originalConfig));
+        renderAll();
+        showToast('所有配置已重置', 'info');
+    }
+
+    async function saveAll() {
+        const btn = document.getElementById('save-btn');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 保存中...';
+        try {
+            const res = await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(currentConfig)
+            });
+            if (!res.ok) throw new Error('保存失败');
+            originalConfig = JSON.parse(JSON.stringify(currentConfig));
+            localStorage.setItem('config_last_save', new Date().toLocaleString());
+            updateLastSaveTime();
+            renderAll();
+            showToast('✅ 配置保存成功！', 'success');
+        } catch (err) {
+            showToast('❌ 保存失败: ' + err.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-save"></i> 保存配置';
+        }
+    }
+
+    async function refreshConfig() {
+        await loadConfigFromServer();
+    }
+
+    async function restartService() {
+        if (!confirm('重启服务会导致短暂不可用，确定继续吗？')) return;
+        try {
+            showToast('🔄 正在重启服务...', 'info');
+            const res = await fetch('/api/restart', { method: 'POST' });
+            if (!res.ok) throw new Error('重启请求失败');
+            showToast('✅ 服务正在重启，请稍候刷新页面', 'success');
+        } catch (err) {
+            showToast('❌ 重启失败: ' + err.message, 'error');
+        }
+    }
+
+    function updateCounts() {
+        document.getElementById('business-count').textContent = getMetaBySection('business').length;
+        document.getElementById('ui-count').textContent = getMetaBySection('ui').length;
+    }
+
+    function updateLastSaveTime() {
+        const saved = localStorage.getItem('config_last_save');
+        document.getElementById('last-save-time').textContent = saved ? '上次保存: ' + saved : '尚未保存';
+    }
+
+    function showToast(message, type = 'info') {
+        const container = document.getElementById('toast-container');
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        const icons = { success:'fa-check-circle', error:'fa-exclamation-circle', info:'fa-info-circle' };
+        toast.innerHTML = `
+            <i class="fas ${icons[type] || icons.info}"></i>
+            <span>${message}</span>
+            <button class="toast-close" onclick="this.parentElement.remove()">&times;</button>`;
+        container.appendChild(toast);
+        setTimeout(() => { if (toast.parentElement) toast.remove(); }, 5000);
+    }
+
+    // Tab 切换
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const tab = this.dataset.tab;
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            document.getElementById(`panel-${tab}`).classList.add('active');
+        });
+    });
+
+    // 快捷键保存
+    document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+            e.preventDefault();
+            saveAll();
+        }
+    });
+
+    // 初始化
+    updateLastSaveTime();
+    loadConfigFromServer();
+</script>
+
+</body>
+</html>

@@ -3,6 +3,7 @@ package com.jushen.digitaltwin.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jushen.digitaltwin.config.ConfigData;
 import com.jushen.digitaltwin.grouping.GroupSummary;
 import com.jushen.digitaltwin.grouping.GroupingContext;
 import com.jushen.digitaltwin.grouping.OrderAwareRouteInfo;
@@ -53,6 +54,7 @@ public class RoutePushService {
     private final RealtimeWebSocketHandler webSocketHandler;
     private final SimulationDataFactory dataFactory;
     private final ObjectMapper objectMapper;
+    private final ConfigService configService;
     private final HttpClient httpClient = HttpClient.newHttpClient();
     private final ScheduledExecutorService bulkDispatchExecutor = Executors.newSingleThreadScheduledExecutor((runnable) -> {
         Thread thread = new Thread(runnable, "bulk-dispatch-simulator");
@@ -62,13 +64,7 @@ public class RoutePushService {
     private final Map<String, ScheduledRoute> activeRoutes = new ConcurrentHashMap<>();
     private final Map<String, DisplayGroupLock> displayGroupLocks = new ConcurrentHashMap<>();
     private final Map<String, PositionSample> lastPositionSamples = new ConcurrentHashMap<>();
-    private final boolean passivePositionPushEnabled;
-    private final String simulationProfile;
     private final String externalPositionUrl;
-    private final double testSimulationSpeedKmh;
-    private final double realSimulationSpeedKmh;
-    private final int groupSize;
-    private final String defaultGroupStrategy;
     private final RouteGroupingEngine routeGroupingEngine;
     private final String externalPositionToken;
     private final int externalPositionBatchSize;
@@ -86,19 +82,15 @@ public class RoutePushService {
     private final ReentrantLock tokenLock = new ReentrantLock();
     private final boolean tokenCacheEnabled;
     private final String tokenCachePathStr;
+    private volatile long lastPassivePositionPushAt = 0;
 
     public RoutePushService(
             RealtimeWebSocketHandler webSocketHandler,
             SimulationDataFactory dataFactory,
             ObjectMapper objectMapper,
+            ConfigService configService,
             RouteGroupingEngine routeGroupingEngine,
-            @Value("${dashboard.route.passive-position-push-enabled:false}") boolean passivePositionPushEnabled,
-            @Value("${dashboard.route.simulation-profile:test}") String simulationProfile,
             @Value("${dashboard.route.external-position-url:}") String externalPositionUrl,
-            @Value("${dashboard.route.test.simulation-speed-kmh:36000}") double testSimulationSpeedKmh,
-            @Value("${dashboard.route.real.simulation-speed-kmh:80}") double realSimulationSpeedKmh,
-            @Value("${dashboard.route.group-size:5}") int groupSize,
-            @Value("${dashboard.route.default-group-strategy:sequential}") String defaultGroupStrategy,
             @Value("${dashboard.route.external-position-token:}") String externalPositionToken,
             @Value("${dashboard.route.external-position-batch-size:50}") int externalPositionBatchSize,
             @Value("${dashboard.route.test-plate:}") String testPlate,
@@ -114,14 +106,9 @@ public class RoutePushService {
         this.webSocketHandler = webSocketHandler;
         this.dataFactory = dataFactory;
         this.objectMapper = objectMapper;
+        this.configService = configService;
         this.routeGroupingEngine = routeGroupingEngine;
-        this.passivePositionPushEnabled = passivePositionPushEnabled;
-        this.simulationProfile = simulationProfile;
         this.externalPositionUrl = externalPositionUrl;
-        this.testSimulationSpeedKmh = testSimulationSpeedKmh;
-        this.realSimulationSpeedKmh = realSimulationSpeedKmh;
-        this.groupSize = Math.max(1, groupSize);
-        this.defaultGroupStrategy = defaultGroupStrategy;
         this.externalPositionToken = externalPositionToken;
         this.externalPositionBatchSize = externalPositionBatchSize;
         this.testPlate = testPlate;
@@ -138,6 +125,32 @@ public class RoutePushService {
 
     private Path resolveTokenCachePath() {
         return Path.of(tokenCachePathStr);
+    }
+
+    private ConfigData routeConfig() {
+        return configService.getConfig();
+    }
+
+    private int getGroupSize() {
+        return Math.max(1, routeConfig().getRoadGroupSize());
+    }
+
+    private String getDefaultGroupStrategy() {
+        String strategy = routeConfig().getDefaultGroupStrategy();
+        return strategy == null || strategy.isBlank() ? "business-priority" : strategy;
+    }
+
+    private String getSimulationProfile() {
+        String profile = routeConfig().getSimulationProfile();
+        return profile == null || profile.isBlank() ? "test" : profile;
+    }
+
+    private boolean isPassivePositionPushEnabled() {
+        return routeConfig().isPassivePositionPushEnabled();
+    }
+
+    private int getTruckPositionPushRateMs() {
+        return Math.max(1_000, routeConfig().getTruckPositionPushRateMs());
     }
 
 //    public ProviderPosition queryPositionByCarId(String carId) {
@@ -421,7 +434,7 @@ public class RoutePushService {
         if (routeIndex < firstBatchSize) {
             return rootOrderId;
         }
-        int appendIndex = ((routeIndex - firstBatchSize) / Math.max(1, groupSize)) + 1;
+        int appendIndex = ((routeIndex - firstBatchSize) / getGroupSize()) + 1;
         return rootOrderId + "-ADD-" + appendIndex;
     }
 
@@ -463,7 +476,7 @@ public class RoutePushService {
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("groupSize", groupSize);
+        response.put("groupSize", getGroupSize());
         response.put("strategy", strategy);
         response.put("totalRoutes", routes.size());
         response.put("groups", groups);
@@ -488,7 +501,7 @@ public class RoutePushService {
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("groupId", groupId);
-        response.put("groupSize", groupSize);
+        response.put("groupSize", getGroupSize());
         response.put("strategy", strategy);
         response.put("routes", routeMessages);
         return response;
@@ -619,11 +632,16 @@ public class RoutePushService {
         return positionMessage(route, now);
     }
 
-    @Scheduled(fixedRateString = "${dashboard.route.truck-position-push-rate-ms:60000}")
+    @Scheduled(fixedRate = 1000)
     public void pushPassiveTruckPositions() {
-        if (!passivePositionPushEnabled) return;
+        if (!isPassivePositionPushEnabled()) return;
 
         long now = System.currentTimeMillis();
+        int pushRateMs = getTruckPositionPushRateMs();
+        if (now - lastPassivePositionPushAt < pushRateMs) {
+            return;
+        }
+        lastPassivePositionPushAt = now;
         cleanupExpiredRoutes(now);
         activeRoutes.values().forEach((route) -> webSocketHandler.broadcast(positionMessage(route, now)));
     }
@@ -681,11 +699,11 @@ public class RoutePushService {
 
     private String groupIdFor(String lineId) {
         RouteInfo route = activeRoutes.get(lineId);
-        String lockedGroupId = lockedGroupIdFor(route, defaultGroupStrategy);
+        String lockedGroupId = lockedGroupIdFor(route, getDefaultGroupStrategy());
         if (lockedGroupId != null) {
             return lockedGroupId;
         }
-        for (GroupSummary group : groupSummaries(defaultGroupStrategy)) {
+        for (GroupSummary group : groupSummaries(getDefaultGroupStrategy())) {
             for (Object groupedRoute : group.getRoutes()) {
                 if (groupedRoute instanceof RouteInfo routeInfo && routeInfo.getLineId().equals(lineId)) {
                     return group.getGroupId();
@@ -981,14 +999,15 @@ public class RoutePushService {
     }
 
     private double simulationSpeedKmh() {
-        if ("real".equalsIgnoreCase(simulationProfile)) {
-            return Math.max(1, realSimulationSpeedKmh);
+        ConfigData config = routeConfig();
+        if ("real".equalsIgnoreCase(getSimulationProfile())) {
+            return Math.max(1, config.getRealSimulationSpeedKmh());
         }
-        return Math.max(1, testSimulationSpeedKmh);
+        return Math.max(1, config.getTestSimulationSpeedKmh());
     }
 
     private boolean isRealPositionProfile() {
-        return "real".equalsIgnoreCase(simulationProfile);
+        return "real".equalsIgnoreCase(getSimulationProfile());
     }
 
     @PreDestroy
@@ -1100,7 +1119,7 @@ public class RoutePushService {
     private List<GroupSummary> groupSummaries(String strategyName) {
         RouteGroupingResult result = routeGroupingEngine.group(
                 activeRouteInfos(),
-                GroupingContext.defaults(strategyName, groupSize)
+                GroupingContext.defaults(strategyName, getGroupSize())
         );
         return result.getGroups();
     }
@@ -1108,7 +1127,7 @@ public class RoutePushService {
     private List<RouteInfo> routesByGroup(String groupId, String strategyName) {
         return routeGroupingEngine.routesByGroup(
                 activeRouteInfos(),
-                GroupingContext.defaults(strategyName, groupSize),
+                GroupingContext.defaults(strategyName, getGroupSize()),
                 groupId
         );
     }
@@ -1261,7 +1280,8 @@ public class RoutePushService {
         group.put("groupKey", "播放中稳定分组");
         group.put("index", 0);
         group.put("subIndex", 1);
-        group.put("count", routes.size());
+        group.put("count", uniqueRouteCount(routes));
+        group.put("vehicleCount", routes.size());
         group.put("groupType", "mixed");
         group.put("groupScenario", "mixed");
         group.put("scenarioReason", "前端正在播放，后端保持该组稳定并只追加兼容路线");
@@ -1285,6 +1305,7 @@ public class RoutePushService {
         group.put("index", summary.getIndex());
         group.put("subIndex", summary.getSubIndex());
         group.put("count", summary.getCount());
+        group.put("vehicleCount", summary.getRoutes().size());
         group.put("groupType", summary.getGroupType());
         group.put("groupScenario", summary.getGroupScenario());
         group.put("scenarioReason", summary.getScenarioReason());
@@ -1296,8 +1317,23 @@ public class RoutePushService {
         return group;
     }
 
+    private int uniqueRouteCount(List<RouteInfo> routes) {
+        Set<String> routeKeys = new LinkedHashSet<>();
+        for (RouteInfo route : routes) {
+            String pathKey = null;
+            if (route instanceof PathAwareRouteInfo pathAwareRoute) {
+                pathKey = pathAwareRoute.getPathKey();
+            }
+            if (pathKey == null || pathKey.isBlank()) {
+                pathKey = routeDirectionKey(route);
+            }
+            routeKeys.add(pathKey);
+        }
+        return routeKeys.size();
+    }
+
     private String resolveGroupStrategy(String strategyName) {
-        return strategyName == null || strategyName.isBlank() ? defaultGroupStrategy : strategyName;
+        return strategyName == null || strategyName.isBlank() ? getDefaultGroupStrategy() : strategyName;
     }
 
     private String pathKey(String from, String to, List<double[]> coordinates) {

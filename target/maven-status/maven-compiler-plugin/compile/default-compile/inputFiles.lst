@@ -1,4 +1,5 @@
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\config\CameraProperties.java
+E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\config\ConfigData.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\config\DashboardWebSocketProperties.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\config\SchedulerConfig.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\config\SimulationProperties.java
@@ -38,12 +39,14 @@ E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\model\PushMessage.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\model\VehicleSnapshot.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\model\WarehouseData.java
+E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\ConfigService.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\MockWarehouseDataProvider.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\RealtimePushService.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\RoutePushService.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\SimulationDataFactory.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\WarehouseDataProvider.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\WarehousePushService.java
+E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\web\ConfigController.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\web\HealthController.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\web\RoadController.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\web\WarehouseController.java

@@ -9,6 +9,8 @@ com\jushen\digitaltwin\grouping\BusinessPriorityGroupingStrategy.class
 com\jushen\digitaltwin\grouping\PathAwareRouteInfo.class
 com\jushen\digitaltwin\grouping\GroupingUtils.class
 com\jushen\digitaltwin\grouping\OrderGroupingStrategy.class
+com\jushen\digitaltwin\web\ConfigController.class
+com\jushen\digitaltwin\service\ConfigService.class
 com\jushen\digitaltwin\grouping\AdvancedGroupingStrategy.class
 com\jushen\digitaltwin\grouping\RouteGroupStyleHint$1.class
 com\jushen\digitaltwin\grouping\RouteGroupingRegistry.class
@@ -16,6 +18,7 @@ com\jushen\digitaltwin\grouping\TimeWindowGroupingStrategy.class
 com\jushen\digitaltwin\grouping\RouteInfo.class
 com\jushen\digitaltwin\service\RoutePushService$DisplayGroupLock.class
 com\jushen\digitaltwin\grouping\GroupSummary.class
+com\jushen\digitaltwin\config\ConfigData.class
 com\jushen\digitaltwin\grouping\ByRouteKeyStrategy.class
 com\jushen\digitaltwin\grouping\DisplayTemplate.class
 com\jushen\digitaltwin\grouping\RouteGroupingEngine.class

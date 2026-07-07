@@ -25,17 +25,20 @@ public class WarehousePushService {
     private final RealtimeWebSocketHandler webSocketHandler;
     private final WarehouseDataProvider dataProvider;
     private final WarehouseProperties warehouseProperties;
+    private final ConfigService configService;
     private final List<WarehouseProperties.WarehouseConfig> warehouseConfigs;
     private final Random random = new Random();
 
     public WarehousePushService(
             RealtimeWebSocketHandler webSocketHandler,
             WarehouseDataProvider dataProvider,
-            WarehouseProperties warehouseProperties
+            WarehouseProperties warehouseProperties,
+            ConfigService configService
     ) {
         this.webSocketHandler = webSocketHandler;
         this.dataProvider = dataProvider;
         this.warehouseProperties = warehouseProperties;
+        this.configService = configService;
         this.warehouseConfigs = warehouseProperties.getWarehouses();
     }
 
@@ -105,9 +108,23 @@ public class WarehousePushService {
         Map<String, Object> message = new LinkedHashMap<>();
         message.put("type", "warehouse_focus");
         message.put("cityName", cityName);
-        message.put("style", warehouseProperties.getFocusPanels().getStyle());
+        message.put("style", focusPanelStyle());
         message.put("panels", panels);
         return message;
+    }
+
+    private Map<String, Object> focusPanelStyle() {
+        WarehouseProperties.PanelStyle style = warehouseProperties.getFocusPanels().getStyle();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("width", Math.max(1, configService.getConfig().getWarehousePanelWidth()));
+        result.put("maxHeight", Math.max(1, configService.getConfig().getWarehousePanelMaxHeight()));
+        result.put("padding", style.getPadding());
+        result.put("titleFontSize", style.getTitleFontSize());
+        result.put("bodyFontSize", style.getBodyFontSize());
+        result.put("chartTextFontSize", style.getChartTextFontSize());
+        result.put("placement", style.getPlacement());
+        result.put("theme", style.getTheme());
+        return result;
     }
 
     private List<Map<String, Object>> createFocusPanels(String cityName) {
