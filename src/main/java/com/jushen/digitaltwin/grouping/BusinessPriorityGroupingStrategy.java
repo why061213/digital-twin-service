@@ -33,6 +33,7 @@ public class BusinessPriorityGroupingStrategy implements AdvancedGroupingStrateg
     public List<GroupSummary> group(List<? extends RouteInfo> routes, GroupingContext context) {
         int groupSize = context.getGroupSize();
         int compactThreshold = Math.max(2, (int) Math.ceil(groupSize * 0.45));
+        int orderStandaloneThreshold = Math.max(2, groupSize);
         List<GroupSummary> result = new ArrayList<>();
         List<RouteInfo> compactBuffer = new ArrayList<>();
         int groupIndex = 0;
@@ -52,14 +53,24 @@ public class BusinessPriorityGroupingStrategy implements AdvancedGroupingStrateg
                 continue;
             }
             orderGroupedRoutes.addAll(bucketRoutes);
+            if (bucketRoutes.size() < orderStandaloneThreshold) {
+                compactBuffer.addAll(bucketRoutes);
+                while (compactBuffer.size() >= groupSize) {
+                    List<RouteInfo> slice = new ArrayList<>(compactBuffer.subList(0, groupSize));
+                    compactBuffer.subList(0, groupSize).clear();
+                    result.add(buildBusinessGroup("biz", "综合运输批次", groupIndex++, 1, slice, RouteGroupType.MIXED));
+                }
+                continue;
+            }
             result.add(buildBusinessGroup(
                     "biz-order",
                     "订单 " + entry.getKey(),
-                    groupIndex++,
+                    groupIndex,
                     1,
                     new ArrayList<>(bucketRoutes),
                     RouteGroupType.SAME_ORDER
             ));
+            groupIndex++;
         }
 
         List<RouteInfo> routeCandidates = GroupingUtils.sortedCopy(routes).stream()

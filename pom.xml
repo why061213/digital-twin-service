@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.jushen</groupId>
-    <artifactId>digital-twin-backend</artifactId>
+    <artifactId>digital-twin-service</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>jushen-digital-twin-backend</name>
     <description>Spring Boot backend for the Jushen digital twin dashboard.</description>

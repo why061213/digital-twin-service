@@ -21,9 +21,11 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -58,6 +60,7 @@ public class RoutePushService {
         return thread;
     });
     private final Map<String, ScheduledRoute> activeRoutes = new ConcurrentHashMap<>();
+    private final Map<String, DisplayGroupLock> displayGroupLocks = new ConcurrentHashMap<>();
     private final Map<String, PositionSample> lastPositionSamples = new ConcurrentHashMap<>();
     private final boolean passivePositionPushEnabled;
     private final String simulationProfile;
@@ -436,9 +439,28 @@ public class RoutePushService {
         cleanupExpiredRoutes(System.currentTimeMillis());
         String strategy = resolveGroupStrategy(strategyName);
         List<RouteInfo> routes = activeRouteInfos();
-        List<Map<String, Object>> groups = groupSummaries(strategy).stream()
-                .map(this::groupSummaryMessage)
-                .toList();
+        List<GroupSummary> summaries = groupSummaries(strategy);
+        DisplayGroupLock lock = displayGroupLocks.get(strategy);
+        List<RouteInfo> lockedRoutes = lock == null ? List.of() : routesByLockedDisplayGroup(lock.groupId(), strategy);
+        Set<String> lockedRouteIds = lockedRoutes.stream()
+                .map(RouteInfo::getLineId)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        boolean lockedGroupIncluded = false;
+        List<Map<String, Object>> groups = new ArrayList<>();
+        for (GroupSummary summary : summaries) {
+            if (lock != null && summary.getGroupId().equals(lock.groupId()) && !lockedRoutes.isEmpty()) {
+                groups.add(lockedDisplayGroupMessage(lock.groupId(), lockedRoutes));
+                lockedGroupIncluded = true;
+                continue;
+            }
+            if (!lockedRoutes.isEmpty() && isCoveredByLockedDisplayGroup(summary, lockedRoutes, lockedRouteIds)) {
+                continue;
+            }
+            groups.add(groupSummaryMessage(summary));
+        }
+        if (lock != null && !lockedGroupIncluded && !lockedRoutes.isEmpty()) {
+            groups.add(0, lockedDisplayGroupMessage(lock.groupId(), lockedRoutes));
+        }
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("groupSize", groupSize);
@@ -455,7 +477,11 @@ public class RoutePushService {
     public Map<String, Object> listRoutesByGroup(String groupId, String strategyName) {
         cleanupExpiredRoutes(System.currentTimeMillis());
         String strategy = resolveGroupStrategy(strategyName);
-        List<RouteInfo> routes = routesByGroup(groupId, strategy);
+        List<RouteInfo> routes = routesByLockedDisplayGroup(groupId, strategy);
+        if (routes.isEmpty()) {
+            routes = routesByGroup(groupId, strategy);
+        }
+        rememberDisplayGroup(strategy, groupId, routes);
         List<Map<String, Object>> routeMessages = routes.stream()
                 .map((route) -> routeMessage(route, false))
                 .toList();
@@ -654,14 +680,39 @@ public class RoutePushService {
     }
 
     private String groupIdFor(String lineId) {
+        RouteInfo route = activeRoutes.get(lineId);
+        String lockedGroupId = lockedGroupIdFor(route, defaultGroupStrategy);
+        if (lockedGroupId != null) {
+            return lockedGroupId;
+        }
         for (GroupSummary group : groupSummaries(defaultGroupStrategy)) {
-            for (Object route : group.getRoutes()) {
-                if (route instanceof RouteInfo routeInfo && routeInfo.getLineId().equals(lineId)) {
+            for (Object groupedRoute : group.getRoutes()) {
+                if (groupedRoute instanceof RouteInfo routeInfo && routeInfo.getLineId().equals(lineId)) {
                     return group.getGroupId();
                 }
             }
         }
         return groupId(0);
+    }
+
+    private String lockedGroupIdFor(RouteInfo route, String strategy) {
+        if (route == null) {
+            return null;
+        }
+        DisplayGroupLock lock = displayGroupLocks.get(strategy);
+        if (lock == null) {
+            return null;
+        }
+        if (lock.routeIds().contains(route.getLineId())) {
+            return lock.groupId();
+        }
+        Map<String, RouteInfo> activeById = new LinkedHashMap<>();
+        activeRouteInfos().forEach((activeRoute) -> activeById.put(activeRoute.getLineId(), activeRoute));
+        List<RouteInfo> lockedRoutes = lock.routeIds().stream()
+                .map(activeById::get)
+                .filter((activeRoute) -> activeRoute != null)
+                .toList();
+        return belongsToLockedDisplayGroup(route, lockedRoutes) ? lock.groupId() : null;
     }
 
     private int parseGroupIndex(String groupId) {
@@ -1032,6 +1083,14 @@ public class RoutePushService {
             long time
     ) {
     }
+
+    private record DisplayGroupLock(
+            String groupId,
+            LinkedHashSet<String> routeIds,
+            long updatedAt
+    ) {
+    }
+
     private List<RouteInfo> activeRouteInfos() {
         return sortedActiveRoutes().stream()
                 .map(RouteInfo.class::cast)
@@ -1052,6 +1111,171 @@ public class RoutePushService {
                 GroupingContext.defaults(strategyName, groupSize),
                 groupId
         );
+    }
+
+    private void rememberDisplayGroup(String strategy, String groupId, List<RouteInfo> routes) {
+        if (groupId == null || groupId.isBlank() || routes == null || routes.isEmpty()) {
+            return;
+        }
+        LinkedHashSet<String> routeIds = new LinkedHashSet<>();
+        routes.forEach((route) -> routeIds.add(route.getLineId()));
+        displayGroupLocks.put(strategy, new DisplayGroupLock(groupId, routeIds, System.currentTimeMillis()));
+    }
+
+    private List<RouteInfo> routesByLockedDisplayGroup(String groupId, String strategy) {
+        DisplayGroupLock lock = displayGroupLocks.get(strategy);
+        if (lock == null || !lock.groupId().equals(groupId)) {
+            return List.of();
+        }
+
+        List<RouteInfo> active = activeRouteInfos();
+        Map<String, RouteInfo> activeById = new LinkedHashMap<>();
+        active.forEach((route) -> activeById.put(route.getLineId(), route));
+
+        List<RouteInfo> lockedRoutes = lock.routeIds().stream()
+                .map(activeById::get)
+                .filter((route) -> route != null)
+                .toList();
+        List<RouteInfo> groupedRoutes = routesByGroup(groupId, strategy);
+        LinkedHashSet<String> seedRouteIds = new LinkedHashSet<>();
+        lockedRoutes.forEach((route) -> seedRouteIds.add(route.getLineId()));
+        groupedRoutes.forEach((route) -> seedRouteIds.add(route.getLineId()));
+        List<RouteInfo> seedRoutes = active.stream()
+                .filter((route) -> seedRouteIds.contains(route.getLineId()))
+                .toList();
+        if (seedRoutes.isEmpty()) {
+            displayGroupLocks.remove(strategy);
+            return List.of();
+        }
+
+        LinkedHashSet<String> nextRouteIds = new LinkedHashSet<>();
+        seedRoutes.forEach((route) -> nextRouteIds.add(route.getLineId()));
+        for (RouteInfo route : active) {
+            if (nextRouteIds.contains(route.getLineId())) {
+                continue;
+            }
+            if (belongsToLockedDisplayGroup(route, seedRoutes)) {
+                nextRouteIds.add(route.getLineId());
+            }
+        }
+
+        DisplayGroupLock nextLock = new DisplayGroupLock(groupId, nextRouteIds, System.currentTimeMillis());
+        displayGroupLocks.put(strategy, nextLock);
+        return active.stream()
+                .filter((route) -> nextRouteIds.contains(route.getLineId()))
+                .toList();
+    }
+
+    private boolean belongsToLockedDisplayGroup(RouteInfo candidate, List<RouteInfo> lockedRoutes) {
+        for (RouteInfo lockedRoute : lockedRoutes) {
+            if (sameOrderFamily(candidate, lockedRoute) || sameOrder(candidate, lockedRoute)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean sameOrderFamily(RouteInfo left, RouteInfo right) {
+        if (!(left instanceof OrderAwareRouteInfo leftOrder) || !(right instanceof OrderAwareRouteInfo rightOrder)) {
+            return false;
+        }
+        String leftFamily = leftOrder.getOrderFamilyId();
+        String rightFamily = rightOrder.getOrderFamilyId();
+        return leftFamily != null && !leftFamily.isBlank() && leftFamily.equals(rightFamily);
+    }
+
+    private boolean sameOrder(RouteInfo left, RouteInfo right) {
+        if (!(left instanceof OrderAwareRouteInfo leftOrder) || !(right instanceof OrderAwareRouteInfo rightOrder)) {
+            return false;
+        }
+        String leftOrderId = leftOrder.getOrderId();
+        String rightOrderId = rightOrder.getOrderId();
+        return leftOrderId != null && !leftOrderId.isBlank() && leftOrderId.equals(rightOrderId);
+    }
+
+    private boolean samePath(RouteInfo left, RouteInfo right) {
+        if (!(left instanceof PathAwareRouteInfo leftPath) || !(right instanceof PathAwareRouteInfo rightPath)) {
+            return false;
+        }
+        String leftPathKey = leftPath.getPathKey();
+        String rightPathKey = rightPath.getPathKey();
+        return leftPathKey != null && !leftPathKey.isBlank() && leftPathKey.equals(rightPathKey);
+    }
+
+    private boolean sameDirection(RouteInfo left, RouteInfo right) {
+        return safeRouteText(left.getFrom()).equals(safeRouteText(right.getFrom()))
+                && safeRouteText(left.getTo()).equals(safeRouteText(right.getTo()));
+    }
+
+    private String routeDirectionKey(RouteInfo route) {
+        return safeRouteText(route.getFrom()) + "→" + safeRouteText(route.getTo());
+    }
+
+    private String safeRouteText(String value) {
+        return value == null || value.isBlank() ? "未知" : value;
+    }
+
+    private void appendLockedDisplayGroupIfNeeded(
+            String strategy,
+            List<GroupSummary> summaries,
+            List<Map<String, Object>> groups
+    ) {
+        DisplayGroupLock lock = displayGroupLocks.get(strategy);
+        if (lock == null) {
+            return;
+        }
+        boolean alreadyIncluded = summaries.stream()
+                .anyMatch((summary) -> lock.groupId().equals(summary.getGroupId()));
+        if (alreadyIncluded) {
+            return;
+        }
+
+        List<RouteInfo> routes = routesByLockedDisplayGroup(lock.groupId(), strategy);
+        if (routes.isEmpty()) {
+            return;
+        }
+        groups.add(0, lockedDisplayGroupMessage(lock.groupId(), routes));
+    }
+
+    private boolean isCoveredByLockedDisplayGroup(
+            GroupSummary summary,
+            List<RouteInfo> lockedRoutes,
+            Set<String> lockedRouteIds
+    ) {
+        List<RouteInfo> summaryRoutes = summary.getRoutes();
+        if (summaryRoutes == null || summaryRoutes.isEmpty()) {
+            return false;
+        }
+        boolean allAlreadyLocked = summaryRoutes.stream()
+                .allMatch((route) -> lockedRouteIds.contains(route.getLineId()));
+        if (allAlreadyLocked) {
+            return true;
+        }
+        return summaryRoutes.stream()
+                .allMatch((route) -> belongsToLockedDisplayGroup(route, lockedRoutes));
+    }
+
+    private Map<String, Object> lockedDisplayGroupMessage(String groupId, List<RouteInfo> routes) {
+        Map<String, Object> group = new LinkedHashMap<>();
+        group.put("groupId", groupId);
+        group.put("groupKey", "播放中稳定分组");
+        group.put("index", 0);
+        group.put("subIndex", 1);
+        group.put("count", routes.size());
+        group.put("groupType", "mixed");
+        group.put("groupScenario", "mixed");
+        group.put("scenarioReason", "前端正在播放，后端保持该组稳定并只追加兼容路线");
+        group.put("displayTemplate", "basic");
+        group.put("styleHint", null);
+        group.put("orderIds", routes.stream()
+                .filter((route) -> route instanceof OrderAwareRouteInfo)
+                .map((route) -> ((OrderAwareRouteInfo) route).getOrderId())
+                .filter((orderId) -> orderId != null && !orderId.isBlank())
+                .distinct()
+                .toList());
+        group.put("routeKey", routes.isEmpty() ? null : routeDirectionKey(routes.get(0)));
+        group.put("pathKey", routes.get(0) instanceof PathAwareRouteInfo pathAwareRoute ? pathAwareRoute.getPathKey() : null);
+        return group;
     }
 
     private Map<String, Object> groupSummaryMessage(GroupSummary summary) {

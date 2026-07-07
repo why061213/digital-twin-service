@@ -12,3 +12,4 @@ public class DigitalTwinBackendApplication {
         SpringApplication.run(DigitalTwinBackendApplication.class, args);
     }
 }
+    
