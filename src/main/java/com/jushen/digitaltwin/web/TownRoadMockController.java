@@ -1,5 +1,6 @@
 package com.jushen.digitaltwin.web;
 
+import com.jushen.digitaltwin.townroad.ExternalOrderRecord;
 import com.jushen.digitaltwin.websocket.RealtimeWebSocketHandler;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -7,10 +8,9 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+
+import org.springframework.web.bind.annotation.*;
+import com.jushen.digitaltwin.townroad.TownRoadRenderService;
 
 /**
  * 开发阶段 TownRoadMap 模拟命令控制器。
@@ -25,9 +25,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class TownRoadMockController {
 
     private final RealtimeWebSocketHandler realtimeWebSocketHandler;
+    private final TownRoadRenderService townRoadRenderService;
 
-    public TownRoadMockController(RealtimeWebSocketHandler realtimeWebSocketHandler) {
+    public TownRoadMockController(RealtimeWebSocketHandler realtimeWebSocketHandler, TownRoadRenderService townRoadRenderService) {
         this.realtimeWebSocketHandler = realtimeWebSocketHandler;
+        this.townRoadRenderService = townRoadRenderService;
     }
 
     /**
@@ -47,16 +49,194 @@ public class TownRoadMockController {
      * 开发阶段模拟后端下发 TownRoadMap 渲染命令。
      * 调用：POST http://localhost:8080/api/town-road/mock/provinces
      */
+
+    //正式接口
+    @PostMapping("/provinces")
+    public Map<String, Object> pushProvinceRenderCommand(
+            @RequestBody(required = false) Map<String, Object> payload
+    ) {
+        return townRoadRenderService.fetchProcessAndBroadcast(
+                payload == null ? Map.of() : payload
+        );
+    }
+//      模拟接口
     @PostMapping("/provinces")
     public Map<String, Object> pushProvinceRenderCommand() {
-        Map<String, Object> command = buildProvinceDistrictCommand();
-        realtimeWebSocketHandler.broadcast(command);
+        List<ExternalOrderRecord> rawOrders = buildMockExternalOrders();
+        return townRoadRenderService.processAndBroadcast(rawOrders);
+    }
 
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("ok", true);
-        response.put("message", "town_road_render command broadcasted");
-        response.put("command", command);
-        return response;
+    private List<ExternalOrderRecord> buildMockExternalOrders() {
+        String now = java.time.Instant.now().toString();
+
+        return List.of(
+                new ExternalOrderRecord(
+                        "TOWN-MOCK-001",
+                        "town-backend-gd-001",
+                        new ExternalOrderRecord.Location(
+                                "广东省广州市番禺区",
+                                "广东省",
+                                "广州市",
+                                "番禺区",
+                                "440113",
+                                new double[]{113.383917, 22.93756}
+                        ),
+                        new ExternalOrderRecord.Location(
+                                "广东省佛山市南海区",
+                                "广东省",
+                                "佛山市",
+                                "南海区",
+                                "440605",
+                                new double[]{113.145577, 23.031562}
+                        ),
+                        new ExternalOrderRecord.Vehicle(
+                                "粤A-B001",
+                                "TOWN-BACKEND-GD-001",
+                                12.0,
+                                "吨",
+                                null,
+                                null
+                        ),
+                        "运输中",
+                        now,
+                        false,
+                        true
+                ),
+
+                new ExternalOrderRecord(
+                        "TOWN-MOCK-002",
+                        "town-backend-fj-001",
+                        new ExternalOrderRecord.Location(
+                                "福建省厦门市集美区",
+                                "福建省",
+                                "厦门市",
+                                "集美区",
+                                "350211",
+                                new double[]{118.100869, 24.572874}
+                        ),
+                        new ExternalOrderRecord.Location(
+                                "福建省泉州市晋江市",
+                                "福建省",
+                                "泉州市",
+                                "晋江市",
+                                "350582",
+                                new double[]{118.552365, 24.781681}
+                        ),
+                        new ExternalOrderRecord.Vehicle(
+                                "闽D-B002",
+                                "TOWN-BACKEND-FJ-001",
+                                8.0,
+                                "吨",
+                                null,
+                                null
+                        ),
+                        "装载中",
+                        now,
+                        false,
+                        true
+                ),
+
+                new ExternalOrderRecord(
+                        "TOWN-MOCK-003",
+                        "town-backend-hn-001",
+                        new ExternalOrderRecord.Location(
+                                "湖南省长沙市岳麓区",
+                                "湖南省",
+                                "长沙市",
+                                "岳麓区",
+                                "430104",
+                                new double[]{112.931375, 28.235193}
+                        ),
+                        new ExternalOrderRecord.Location(
+                                "湖南省株洲市天元区",
+                                "湖南省",
+                                "株洲市",
+                                "天元区",
+                                "430211",
+                                new double[]{113.136252, 27.826909}
+                        ),
+                        new ExternalOrderRecord.Vehicle(
+                                "湘A-B003",
+                                "TOWN-BACKEND-HN-001",
+                                10.0,
+                                "吨",
+                                null,
+                                null
+                        ),
+                        "运输中",
+                        now,
+                        false,
+                        true
+                ),
+
+                new ExternalOrderRecord(
+                        "TOWN-MOCK-004",
+                        "town-backend-jx-001",
+                        new ExternalOrderRecord.Location(
+                                "江西省南昌市青山湖区",
+                                "江西省",
+                                "南昌市",
+                                "青山湖区",
+                                "360111",
+                                new double[]{115.962144, 28.682985}
+                        ),
+                        new ExternalOrderRecord.Location(
+                                "江西省九江市浔阳区",
+                                "江西省",
+                                "九江市",
+                                "浔阳区",
+                                "360403",
+                                new double[]{116.00193, 29.705077}
+                        ),
+                        new ExternalOrderRecord.Vehicle(
+                                "赣A-B004",
+                                "TOWN-BACKEND-JX-001",
+                                6.0,
+                                "吨",
+                                null,
+                                null
+                        ),
+                        "运输中",
+                        now,
+                        false,
+                        true
+                ),
+
+                // 广东 -> 福建，测试省份大网最短路径。
+                // ProvinceRoadGraph 里已经写了 440000 <-> 350000，所以这里应该是广东 / 福建 两省短途。
+                new ExternalOrderRecord(
+                        "TOWN-MOCK-005",
+                        "town-backend-gd-fj-001",
+                        new ExternalOrderRecord.Location(
+                                "广东省梅州市梅江区",
+                                "广东省",
+                                "梅州市",
+                                "梅江区",
+                                "441402",
+                                new double[]{116.116686, 24.31065}
+                        ),
+                        new ExternalOrderRecord.Location(
+                                "福建省龙岩市新罗区",
+                                "福建省",
+                                "龙岩市",
+                                "新罗区",
+                                "350802",
+                                new double[]{117.036816, 25.098942}
+                        ),
+                        new ExternalOrderRecord.Vehicle(
+                                "粤M-B005",
+                                "TOWN-BACKEND-GD-FJ-001",
+                                9.0,
+                                "吨",
+                                null,
+                                null
+                        ),
+                        "运输中",
+                        now,
+                        false,
+                        true
+                )
+        );
     }
 
     private Map<String, Object> buildProvinceDistrictCommand() {
