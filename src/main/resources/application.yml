@@ -19,6 +19,24 @@ dashboard:
     token: jushen-screen-token
     allowed-origin-patterns:
       - "*"
+    external-order:
+      enabled: true
+        # 这里之后填对方真实 POST 地址
+      post-url: ""
+
+      # true 表示对方每次返回全量快照
+      # 本次没出现但本地存在的 lineId，会被认为已删除
+      full-snapshot: true
+
+      # 是否同步后主动通过 WebSocket 推给前端
+      broadcast-diff: true
+
+      # 定时同步开关。先建议 false，手动调接口测试稳定后再开
+      scheduled-sync-enabled: false
+      sync-rate-ms: 10000
+
+      connect-timeout-ms: 5000
+      request-timeout-ms: 12000
   route:
     simulation-profile: test
     passive-position-push-enabled: false
