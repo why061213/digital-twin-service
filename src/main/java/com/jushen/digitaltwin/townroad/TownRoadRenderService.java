@@ -10,22 +10,22 @@ import java.util.Map;
 @Service
 public class TownRoadRenderService {
 
-    private final ExternalOrderClient externalOrderClient;
+    private final TownRoadExternalOrderClient townRoadExternalOrderClient;
     private final TownRoadMiddleLayer middleLayer;
     private final RealtimeWebSocketHandler realtimeWebSocketHandler;
 
     public TownRoadRenderService(
-            ExternalOrderClient externalOrderClient,
+            TownRoadExternalOrderClient townRoadExternalOrderClient,
             TownRoadMiddleLayer middleLayer,
             RealtimeWebSocketHandler realtimeWebSocketHandler
     ) {
-        this.externalOrderClient = externalOrderClient;
+        this.townRoadExternalOrderClient = townRoadExternalOrderClient;
         this.middleLayer = middleLayer;
         this.realtimeWebSocketHandler = realtimeWebSocketHandler;
     }
 
     public Map<String, Object> fetchProcessAndBroadcast(Map<String, Object> payload) {
-        List<ExternalOrderRecord> rawOrders = externalOrderClient.postOrders(payload);
+        List<ExternalOrderRecord> rawOrders = townRoadExternalOrderClient.postOrders(payload);
         return processAndBroadcast(rawOrders);
     }
 

@@ -51,14 +51,14 @@ public class TownRoadMockController {
      */
 
     //正式接口
-    @PostMapping("/provinces")
-    public Map<String, Object> pushProvinceRenderCommand(
-            @RequestBody(required = false) Map<String, Object> payload
-    ) {
-        return townRoadRenderService.fetchProcessAndBroadcast(
-                payload == null ? Map.of() : payload
-        );
-    }
+//    @PostMapping("/provinces")
+//    public Map<String, Object> pushProvinceRenderCommand(
+//            @RequestBody(required = false) Map<String, Object> payload
+//    ) {
+//        return townRoadRenderService.fetchProcessAndBroadcast(
+//                payload == null ? Map.of() : payload
+//        );
+//    }
 //      模拟接口
     @PostMapping("/provinces")
     public Map<String, Object> pushProvinceRenderCommand() {

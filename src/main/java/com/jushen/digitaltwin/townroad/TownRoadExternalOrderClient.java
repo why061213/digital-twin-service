@@ -13,15 +13,15 @@ import java.util.List;
 import java.util.Map;
 
 @Service
-public class ExternalOrderClient {
+public class TownRoadExternalOrderClient {
 
     private final ObjectMapper objectMapper;
-    private final ExternalOrderProperties properties;
+    private final TownRoadExternalOrderProperties properties;
     private final HttpClient httpClient;
 
-    public ExternalOrderClient(
+    public TownRoadExternalOrderClient(
             ObjectMapper objectMapper,
-            ExternalOrderProperties properties
+            TownRoadExternalOrderProperties properties
     ) {
         this.objectMapper = objectMapper;
         this.properties = properties;

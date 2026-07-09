@@ -5,7 +5,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 @ConfigurationProperties(prefix = "dashboard.external-order")
-public class ExternalOrderProperties {
+public class TownRoadExternalOrderProperties {
 
     /**
      * 外部订单 POST 地址。

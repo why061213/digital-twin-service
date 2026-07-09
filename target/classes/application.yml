@@ -24,6 +24,12 @@ dashboard:
         # 这里之后填对方真实 POST 地址
       post-url: ""
 
+      # true：如果目的地没有 coords，不进入 town_road_render
+      require-renderable-coords: true
+
+      connect-timeout-ms: 5000
+      request-timeout-ms: 12000
+
       # true 表示对方每次返回全量快照
       # 本次没出现但本地存在的 lineId，会被认为已删除
       full-snapshot: true
@@ -34,9 +40,6 @@ dashboard:
       # 定时同步开关。先建议 false，手动调接口测试稳定后再开
       scheduled-sync-enabled: false
       sync-rate-ms: 10000
-
-      connect-timeout-ms: 5000
-      request-timeout-ms: 12000
   route:
     simulation-profile: test
     passive-position-push-enabled: false

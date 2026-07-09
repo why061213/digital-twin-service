@@ -8,7 +8,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -20,7 +19,7 @@ public class TownRoadMiddleLayer {
     private final ObjectMapper objectMapper;
     private final ProvinceRoadGraph provinceRoadGraph;
     private final ProvinceCodeResolver provinceCodeResolver;
-    private final ExternalOrderProperties properties;
+    private final TownRoadExternalOrderProperties properties;
 
     private final Map<String, NormalizedTownRoadOrder> ordersByLineId = new ConcurrentHashMap<>();
 
@@ -40,7 +39,7 @@ public class TownRoadMiddleLayer {
             ObjectMapper objectMapper,
             ProvinceRoadGraph provinceRoadGraph,
             ProvinceCodeResolver provinceCodeResolver,
-            ExternalOrderProperties properties
+            TownRoadExternalOrderProperties properties
     ) {
         this.objectMapper = objectMapper;
         this.provinceRoadGraph = provinceRoadGraph;
