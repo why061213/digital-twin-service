@@ -41,6 +41,8 @@ public record TownRoadRenderCommand(
             List<String> provincePath,
             List<String> provinceNames,
             List<String> edgeKeys,
+            Integer pathCost,
+            Boolean bestPath,
             List<String> primaryOrderLineIds,
             List<String> alongOrderLineIds
     ) {

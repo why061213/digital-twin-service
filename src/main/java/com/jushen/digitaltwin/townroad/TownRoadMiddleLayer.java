@@ -2,6 +2,7 @@ package com.jushen.digitaltwin.townroad;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jushen.digitaltwin.townroad.ProvinceRoadGraph.ProvincePath;
 import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.ProvinceEdgeView;
 import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.ProvincePathCandidate;
 import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.ProvinceRef;
@@ -183,10 +184,9 @@ public class TownRoadMiddleLayer {
         String start = parts.get(0);
         String target = parts.get(parts.size() - 1);
 
-        return provinceRoadGraph
-                .allShortestPaths(start, target, MAX_CANDIDATE_PATHS_PER_PAIR)
+        return candidateProvincePaths(start, target)
                 .stream()
-                .map(provinceRoadGraph::pathKey)
+                .map(ProvincePath::pathKey)
                 .toList();
     }
 
@@ -292,14 +292,18 @@ public class TownRoadMiddleLayer {
         String fromProvinceKey = provinceCodeResolver.provinceKey(raw.from());
         String toProvinceKey = provinceCodeResolver.provinceKey(raw.to());
 
-        List<List<String>> provincePaths = provinceRoadGraph.allShortestPaths(
-                fromProvinceKey,
-                toProvinceKey,
-                MAX_CANDIDATE_PATHS_PER_PAIR
-        );
+        List<ProvincePath> candidatePaths = candidateProvincePaths(fromProvinceKey, toProvinceKey);
 
-        List<String> provincePathKeys = provincePaths.stream()
-                .map(provinceRoadGraph::pathKey)
+        List<List<String>> provincePaths = candidatePaths.stream()
+                .map(ProvincePath::provinces)
+                .toList();
+
+        List<String> provincePathKeys = candidatePaths.stream()
+                .map(ProvincePath::pathKey)
+                .toList();
+
+        List<Integer> provincePathCosts = candidatePaths.stream()
+                .map(ProvincePath::cost)
                 .toList();
 
         String groupId = "town-route-" + fromProvinceKey + "-" + toProvinceKey;
@@ -345,6 +349,7 @@ public class TownRoadMiddleLayer {
 
                 provincePaths,
                 provincePathKeys,
+                provincePathCosts,
 
                 groupId,
                 groupName,
@@ -488,22 +493,19 @@ public class TownRoadMiddleLayer {
 
         primaryOrders.forEach(order -> flatOrderMap.put(order.lineId(), order));
 
-        List<List<String>> candidateProvincePaths = provinceRoadGraph.allShortestPaths(
-                sourceProvinceKey,
-                targetProvinceKey,
-                MAX_CANDIDATE_PATHS_PER_PAIR
-        );
+        List<ProvincePath> candidateProvincePaths = candidateProvincePaths(sourceProvinceKey, targetProvinceKey);
 
         List<ProvincePathCandidate> candidates = new ArrayList<>();
         LinkedHashSet<String> routeGroupAlongLineIds = new LinkedHashSet<>();
+        Integer bestPathCost = candidateProvincePaths.isEmpty() ? null : candidateProvincePaths.get(0).cost();
 
-        for (List<String> provincePath : candidateProvincePaths) {
-            if (provincePath.size() > MAX_SHORT_HAUL_PROVINCE_COUNT) continue;
+        for (ProvincePath candidateProvincePath : candidateProvincePaths) {
+            List<String> provincePath = candidateProvincePath.provinces();
 
             provincePath.forEach(renderProvinceSet::add);
 
-            String pathId = provinceRoadGraph.pathKey(provincePath);
-            List<String> edgeKeys = provinceRoadGraph.edgeKeys(provincePath);
+            String pathId = candidateProvincePath.pathKey();
+            List<String> edgeKeys = candidateProvincePath.edgeKeys();
 
             LinkedHashSet<String> candidateAlongLineIds = new LinkedHashSet<>();
 
@@ -544,6 +546,8 @@ public class TownRoadMiddleLayer {
                     provincePath,
                     provincePath.stream().map(provinceCodeResolver::shortName).toList(),
                     edgeKeys,
+                    candidateProvincePath.cost(),
+                    bestPathCost != null && candidateProvincePath.cost() == bestPathCost,
                     primaryLineIds,
                     sortedCandidateAlongLineIds
             ));
@@ -564,14 +568,19 @@ public class TownRoadMiddleLayer {
         );
     }
 
-    private boolean isShortHaul(NormalizedTownRoadOrder order) {
-        if (order.provincePaths() == null || order.provincePaths().isEmpty()) {
-            return false;
-        }
+    private List<ProvincePath> candidateProvincePaths(String fromProvinceKey, String toProvinceKey) {
+        return provinceRoadGraph.candidatePaths(
+                fromProvinceKey,
+                toProvinceKey,
+                properties.getMaxCandidateProvinceCount(),
+                properties.getCandidateToleranceRatio(),
+                properties.getCandidateAbsoluteSlack(),
+                properties.getMaxCandidatePathCount()
+        );
+    }
 
-        return order.provincePaths()
-                .stream()
-                .anyMatch(path -> path.size() <= MAX_SHORT_HAUL_PROVINCE_COUNT);
+    private boolean isShortHaul(NormalizedTownRoadOrder order) {
+        return order.provincePaths() != null && !order.provincePaths().isEmpty();
     }
 
     private boolean orderHasAnyPathAsContinuousSubPath(

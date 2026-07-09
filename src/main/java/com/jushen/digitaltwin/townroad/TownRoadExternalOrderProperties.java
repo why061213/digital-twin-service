@@ -4,7 +4,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConfigurationProperties(prefix = "dashboard.external-order")
+@ConfigurationProperties(prefix = "dashboard.websocket.external-order")
 public class TownRoadExternalOrderProperties {
 
     /**
@@ -19,6 +19,10 @@ public class TownRoadExternalOrderProperties {
 
     private long connectTimeoutMs = 5000;
     private long requestTimeoutMs = 12000;
+    private int maxCandidateProvinceCount = 4;
+    private int maxCandidatePathCount = 4;
+    private double candidateToleranceRatio = 0.30;
+    private int candidateAbsoluteSlack = 250;
 
     public String getPostUrl() {
         return postUrl;
@@ -50,5 +54,37 @@ public class TownRoadExternalOrderProperties {
 
     public void setRequestTimeoutMs(long requestTimeoutMs) {
         this.requestTimeoutMs = requestTimeoutMs;
+    }
+
+    public int getMaxCandidateProvinceCount() {
+        return maxCandidateProvinceCount;
+    }
+
+    public void setMaxCandidateProvinceCount(int maxCandidateProvinceCount) {
+        this.maxCandidateProvinceCount = maxCandidateProvinceCount;
+    }
+
+    public int getMaxCandidatePathCount() {
+        return maxCandidatePathCount;
+    }
+
+    public void setMaxCandidatePathCount(int maxCandidatePathCount) {
+        this.maxCandidatePathCount = maxCandidatePathCount;
+    }
+
+    public double getCandidateToleranceRatio() {
+        return candidateToleranceRatio;
+    }
+
+    public void setCandidateToleranceRatio(double candidateToleranceRatio) {
+        this.candidateToleranceRatio = candidateToleranceRatio;
+    }
+
+    public int getCandidateAbsoluteSlack() {
+        return candidateAbsoluteSlack;
+    }
+
+    public void setCandidateAbsoluteSlack(int candidateAbsoluteSlack) {
+        this.candidateAbsoluteSlack = candidateAbsoluteSlack;
     }
 }

@@ -17,9 +17,10 @@ public record NormalizedTownRoadOrder(
          * 该订单在省份路网中的所有等长最短路径。
          * 例如广东到浙江可能同时存在：
          * [440000,350000,330000] 和 [440000,360000,330000]。
-         */
+        */
         List<List<String>> provincePaths,
         List<String> provincePathKeys,
+        List<Integer> provincePathCosts,
 
         String groupId,
         String groupName,

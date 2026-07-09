@@ -38,6 +38,7 @@ public class TownRoadRenderService {
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("ok", true);
+        response.put("type","town_road_render");
         response.put("message", "town_road_render commands broadcasted");
         response.put("rawCount", result.rawCount());
         response.put("normalizedCount", result.normalizedCount());
