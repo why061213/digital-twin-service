@@ -63,13 +63,25 @@ public class TownRoadController {
      */
     @GetMapping("/province-path")
     public Map<String, Object> provincePath(
-            @RequestParam String pathKey
+            @RequestParam String pathKey,
+            @RequestParam(defaultValue = "route") String mode
     ) {
-        List<NormalizedTownRoadOrder> orders = renderService.middleLayer().findByProvincePath(pathKey);
+        List<NormalizedTownRoadOrder> orders;
+        Object resolvedPathKeys;
+
+        if ("exact".equalsIgnoreCase(mode)) {
+            resolvedPathKeys = List.of(pathKey);
+            orders = renderService.middleLayer().findByProvincePath(pathKey);
+        } else {
+            resolvedPathKeys = renderService.middleLayer().resolveProvincePathKeys(pathKey);
+            orders = renderService.middleLayer().findByProvinceRoute(pathKey);
+        }
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("ok", true);
+        response.put("mode", mode);
         response.put("pathKey", pathKey);
+        response.put("resolvedPathKeys", resolvedPathKeys);
         response.put("count", orders.size());
         response.put("orders", orders);
         return response;

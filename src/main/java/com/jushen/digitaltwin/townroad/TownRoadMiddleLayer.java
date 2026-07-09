@@ -2,12 +2,18 @@ package com.jushen.digitaltwin.townroad;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.ProvinceEdgeView;
+import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.ProvincePathCandidate;
+import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.ProvinceRef;
+import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.TownRoadOrder;
+import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.TownRoadRouteGroup;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -15,6 +21,17 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class TownRoadMiddleLayer {
+
+    /**
+     * 短途阈值：省份路径中最多允许出现 3 个省。
+     * 例如广东->福建->浙江是 3 个省，算短途。
+     */
+    private static final int MAX_SHORT_HAUL_PROVINCE_COUNT = 3;
+
+    /**
+     * 两点之间最多保留多少条等长最短路径，避免某些节点组合出现过多等价路径。
+     */
+    private static final int MAX_CANDIDATE_PATHS_PER_PAIR = 12;
 
     private final ObjectMapper objectMapper;
     private final ProvinceRoadGraph provinceRoadGraph;
@@ -24,16 +41,25 @@ public class TownRoadMiddleLayer {
     private final Map<String, NormalizedTownRoadOrder> ordersByLineId = new ConcurrentHashMap<>();
 
     /**
-     * 你说的 MapMap：
-     * fromKey -> toKey -> lineIds
+     * 区县/地点 OD MapMap：fromKey -> toKey -> lineIds。
      */
     private final Map<String, Map<String, Set<String>>> odIndex = new ConcurrentHashMap<>();
 
     /**
-     * provincePathKey -> lineIds
-     * 例如：440000>350000 -> [line-1, line-2]
+     * 省份 OD MapMap：fromProvince -> toProvince -> lineIds。
+     */
+    private final Map<String, Map<String, Set<String>>> provincePairIndex = new ConcurrentHashMap<>();
+
+    /**
+     * 精确省份路径索引：provincePathKey -> lineIds。
+     * 如果一个订单有多条等长最短路径，会被放到多个 pathKey 下。
      */
     private final Map<String, Set<String>> provincePathIndex = new ConcurrentHashMap<>();
+
+    /**
+     * 起点省份索引：sourceProvinceKey -> lineIds。
+     */
+    private final Map<String, Set<String>> sourceProvinceIndex = new ConcurrentHashMap<>();
 
     public TownRoadMiddleLayer(
             ObjectMapper objectMapper,
@@ -49,7 +75,6 @@ public class TownRoadMiddleLayer {
 
     public synchronized ExternalOrderSnapshotResult processSnapshot(List<ExternalOrderRecord> rawOrders) {
         List<ExternalOrderRecord> safeRawOrders = rawOrders == null ? List.of() : rawOrders;
-
         Map<String, NormalizedTownRoadOrder> previous = new LinkedHashMap<>(ordersByLineId);
 
         List<NormalizedTownRoadOrder> normalized = new ArrayList<>();
@@ -75,7 +100,6 @@ public class TownRoadMiddleLayer {
         rebuildIndexes(normalized);
 
         List<NormalizedTownRoadOrder> shortHaulOrders = new ArrayList<>();
-
         for (NormalizedTownRoadOrder order : normalized) {
             if (properties.isRequireRenderableCoords() && !isRenderable(order)) {
                 skippedNotRenderable++;
@@ -90,7 +114,13 @@ public class TownRoadMiddleLayer {
             shortHaulOrders.add(order);
         }
 
-        OrderSnapshotDiff diff = buildDiff(previous, ordersByLineId, skippedInvalid, skippedNotRenderable, skippedLongHaul);
+        OrderSnapshotDiff diff = buildDiff(
+                previous,
+                ordersByLineId,
+                skippedInvalid,
+                skippedNotRenderable,
+                skippedLongHaul
+        );
 
         List<TownRoadRenderCommand> commands = buildTownRoadCommands(shortHaulOrders);
 
@@ -111,6 +141,7 @@ public class TownRoadMiddleLayer {
         return lineIds.stream()
                 .map(ordersByLineId::get)
                 .filter(item -> item != null)
+                .sorted(Comparator.comparing(NormalizedTownRoadOrder::lineId))
                 .toList();
     }
 
@@ -120,6 +151,42 @@ public class TownRoadMiddleLayer {
         return lineIds.stream()
                 .map(ordersByLineId::get)
                 .filter(item -> item != null)
+                .sorted(Comparator.comparing(NormalizedTownRoadOrder::lineId))
+                .toList();
+    }
+
+    /**
+     * 将 440000>330000 这种起终点 routeKey 解析成所有等长最短路径，
+     * 再合并查找这些路径下的订单。
+     */
+    public List<NormalizedTownRoadOrder> findByProvinceRoute(String routeKey) {
+        List<String> resolvedPathKeys = resolveProvincePathKeys(routeKey);
+        LinkedHashMap<String, NormalizedTownRoadOrder> result = new LinkedHashMap<>();
+
+        for (String pathKey : resolvedPathKeys) {
+            for (NormalizedTownRoadOrder order : findByProvincePath(pathKey)) {
+                result.put(order.lineId(), order);
+            }
+        }
+
+        return result.values()
+                .stream()
+                .sorted(Comparator.comparing(NormalizedTownRoadOrder::lineId))
+                .toList();
+    }
+
+    public List<String> resolveProvincePathKeys(String routeKey) {
+        List<String> parts = parseProvincePathKey(routeKey);
+        if (parts.isEmpty()) return List.of();
+        if (parts.size() == 1) return List.of(parts.get(0));
+
+        String start = parts.get(0);
+        String target = parts.get(parts.size() - 1);
+
+        return provinceRoadGraph
+                .allShortestPaths(start, target, MAX_CANDIDATE_PATHS_PER_PAIR)
+                .stream()
+                .map(provinceRoadGraph::pathKey)
                 .toList();
     }
 
@@ -133,7 +200,9 @@ public class TownRoadMiddleLayer {
     private void rebuildIndexes(List<NormalizedTownRoadOrder> normalizedOrders) {
         ordersByLineId.clear();
         odIndex.clear();
+        provincePairIndex.clear();
         provincePathIndex.clear();
+        sourceProvinceIndex.clear();
 
         for (NormalizedTownRoadOrder order : normalizedOrders) {
             ordersByLineId.put(order.lineId(), order);
@@ -143,9 +212,19 @@ public class TownRoadMiddleLayer {
                     .computeIfAbsent(order.toKey(), ignored -> ConcurrentHashMap.newKeySet())
                     .add(order.lineId());
 
-            if (!order.provincePathKey().isBlank()) {
+            provincePairIndex
+                    .computeIfAbsent(order.fromProvinceKey(), ignored -> new ConcurrentHashMap<>())
+                    .computeIfAbsent(order.toProvinceKey(), ignored -> ConcurrentHashMap.newKeySet())
+                    .add(order.lineId());
+
+            sourceProvinceIndex
+                    .computeIfAbsent(order.fromProvinceKey(), ignored -> ConcurrentHashMap.newKeySet())
+                    .add(order.lineId());
+
+            for (String provincePathKey : order.provincePathKeys()) {
+                if (provincePathKey.isBlank()) continue;
                 provincePathIndex
-                        .computeIfAbsent(order.provincePathKey(), ignored -> ConcurrentHashMap.newKeySet())
+                        .computeIfAbsent(provincePathKey, ignored -> ConcurrentHashMap.newKeySet())
                         .add(order.lineId());
             }
         }
@@ -213,14 +292,21 @@ public class TownRoadMiddleLayer {
         String fromProvinceKey = provinceCodeResolver.provinceKey(raw.from());
         String toProvinceKey = provinceCodeResolver.provinceKey(raw.to());
 
-        List<String> provincePath = provinceRoadGraph.shortestPath(fromProvinceKey, toProvinceKey);
-        String provincePathKey = String.join(">", provincePath);
+        List<List<String>> provincePaths = provinceRoadGraph.allShortestPaths(
+                fromProvinceKey,
+                toProvinceKey,
+                MAX_CANDIDATE_PATHS_PER_PAIR
+        );
 
-        String groupId = provincePathKey.isBlank()
-                ? "town-short-haul-unknown"
-                : "town-short-haul-" + provincePathKey.replace(">", "-");
+        List<String> provincePathKeys = provincePaths.stream()
+                .map(provinceRoadGraph::pathKey)
+                .toList();
 
-        String groupName = buildGroupName(provincePath);
+        String groupId = "town-route-" + fromProvinceKey + "-" + toProvinceKey;
+        String groupName = provinceCodeResolver.shortName(fromProvinceKey)
+                + " -> "
+                + provinceCodeResolver.shortName(toProvinceKey)
+                + " 短途运输";
 
         String orderId = raw.orderId() == null || raw.orderId().isBlank()
                 ? raw.lineId()
@@ -242,7 +328,7 @@ public class TownRoadMiddleLayer {
                 "toKey", safe(toKey),
                 "fromCoords", coordsForSignature(raw.from() == null ? null : raw.from().coords()),
                 "toCoords", coordsForSignature(raw.to() == null ? null : raw.to().coords()),
-                "provincePathKey", provincePathKey,
+                "provincePathKeys", provincePathKeys,
                 "upToDate", Boolean.TRUE.equals(raw.upToDate())
         ));
 
@@ -257,8 +343,8 @@ public class TownRoadMiddleLayer {
                 fromProvinceKey,
                 toProvinceKey,
 
-                provincePath,
-                provincePathKey,
+                provincePaths,
+                provincePathKeys,
 
                 groupId,
                 groupName,
@@ -278,59 +364,267 @@ public class TownRoadMiddleLayer {
     }
 
     private List<TownRoadRenderCommand> buildTownRoadCommands(List<NormalizedTownRoadOrder> shortHaulOrders) {
-        Map<String, List<NormalizedTownRoadOrder>> grouped = new LinkedHashMap<>();
+        Map<String, List<NormalizedTownRoadOrder>> bySourceProvince = new LinkedHashMap<>();
 
-        for (NormalizedTownRoadOrder order : shortHaulOrders) {
-            grouped
-                    .computeIfAbsent(order.provincePathKey(), ignored -> new ArrayList<>())
-                    .add(order);
-        }
+        shortHaulOrders.stream()
+                .sorted(Comparator.comparing(NormalizedTownRoadOrder::fromProvinceKey)
+                        .thenComparing(NormalizedTownRoadOrder::toProvinceKey)
+                        .thenComparing(NormalizedTownRoadOrder::lineId))
+                .forEach(order -> bySourceProvince
+                        .computeIfAbsent(order.fromProvinceKey(), ignored -> new ArrayList<>())
+                        .add(order));
 
         List<TownRoadRenderCommand> commands = new ArrayList<>();
         String issuedAt = Instant.now().toString();
 
-        for (Map.Entry<String, List<NormalizedTownRoadOrder>> entry : grouped.entrySet()) {
-            List<NormalizedTownRoadOrder> orders = entry.getValue();
-            if (orders.isEmpty()) continue;
+        for (Map.Entry<String, List<NormalizedTownRoadOrder>> sourceEntry : bySourceProvince.entrySet()) {
+            String sourceProvinceKey = sourceEntry.getKey();
+            List<NormalizedTownRoadOrder> sourceOrders = sourceEntry.getValue();
 
-            List<String> renderProvinces = orders.get(0).provincePath();
-            String pathKey = orders.get(0).provincePathKey();
-
-            commands.add(new TownRoadRenderCommand(
-                    "town_road_render",
-                    "town-short-haul-" + pathKey.replace(">", "-") + "-" + System.currentTimeMillis(),
-                    buildTitle(renderProvinces),
-                    "后端根据外部订单、OD MapMap 和省份路网筛选出的短途区县运输展示",
-                    renderProvinces,
-                    orders.stream().map(this::toTownRoadOrder).toList(),
+            SourceCommandBuildResult buildResult = buildCommandForSourceProvince(
+                    sourceProvinceKey,
+                    sourceOrders,
+                    shortHaulOrders,
                     issuedAt
-            ));
+            );
+
+            commands.add(buildResult.command());
         }
 
         return commands;
     }
 
-    private TownRoadRenderCommand.TownRoadOrder toTownRoadOrder(NormalizedTownRoadOrder order) {
-        return new TownRoadRenderCommand.TownRoadOrder(
-                order.orderId(),
-                order.lineId(),
-                order.groupId(),
-                order.groupName(),
-                order.from(),
-                order.to(),
-                order.vehicle(),
-                order.status(),
-                order.updatedAt(),
-                order.deleted()
+    private SourceCommandBuildResult buildCommandForSourceProvince(
+            String sourceProvinceKey,
+            List<NormalizedTownRoadOrder> sourceOrders,
+            List<NormalizedTownRoadOrder> allShortHaulOrders,
+            String issuedAt
+    ) {
+        Map<String, List<NormalizedTownRoadOrder>> byTargetProvince = new LinkedHashMap<>();
+
+        for (NormalizedTownRoadOrder order : sourceOrders) {
+            byTargetProvince
+                    .computeIfAbsent(order.toProvinceKey(), ignored -> new ArrayList<>())
+                    .add(order);
+        }
+
+        LinkedHashSet<String> renderProvinceSet = new LinkedHashSet<>();
+        renderProvinceSet.add(sourceProvinceKey);
+
+        LinkedHashMap<String, NormalizedTownRoadOrder> flatOrderMap = new LinkedHashMap<>();
+        LinkedHashMap<String, ProvinceEdgeAccumulator> edgeAccumulators = new LinkedHashMap<>();
+
+        List<TownRoadRouteGroup> routeGroups = new ArrayList<>();
+
+        for (Map.Entry<String, List<NormalizedTownRoadOrder>> targetEntry : byTargetProvince.entrySet()) {
+            String targetProvinceKey = targetEntry.getKey();
+            List<NormalizedTownRoadOrder> primaryOrders = targetEntry.getValue();
+
+            TownRoadRouteGroup routeGroup = buildRouteGroup(
+                    sourceProvinceKey,
+                    targetProvinceKey,
+                    primaryOrders,
+                    allShortHaulOrders,
+                    renderProvinceSet,
+                    flatOrderMap,
+                    edgeAccumulators
+            );
+
+            routeGroups.add(routeGroup);
+        }
+
+        routeGroups.sort(Comparator.comparing(TownRoadRouteGroup::toProvinceKey));
+
+        List<ProvinceEdgeView> provinceEdges = edgeAccumulators.values()
+                .stream()
+                .map(ProvinceEdgeAccumulator::toView)
+                .sorted(Comparator.comparing(ProvinceEdgeView::edgeKey))
+                .toList();
+
+        List<TownRoadOrder> orders = flatOrderMap.values()
+                .stream()
+                .sorted(Comparator.comparing(NormalizedTownRoadOrder::lineId))
+                .map(this::toTownRoadOrder)
+                .toList();
+
+        String sourceProvinceName = provinceCodeResolver.shortName(sourceProvinceKey);
+
+        TownRoadRenderCommand command = new TownRoadRenderCommand(
+                "town_road_render",
+                "town-short-haul-source-" + sourceProvinceKey + "-" + System.currentTimeMillis(),
+                sourceProvinceName + "短途区县展示",
+                "后端根据外部订单、OD MapMap、省份路网、二级分组和省份边去重生成的短途运输展示",
+                new ProvinceRef(sourceProvinceKey, sourceProvinceName),
+                new ArrayList<>(renderProvinceSet),
+                routeGroups,
+                provinceEdges,
+                orders,
+                issuedAt
+        );
+
+        return new SourceCommandBuildResult(command);
+    }
+
+    private TownRoadRouteGroup buildRouteGroup(
+            String sourceProvinceKey,
+            String targetProvinceKey,
+            List<NormalizedTownRoadOrder> primaryOrders,
+            List<NormalizedTownRoadOrder> allShortHaulOrders,
+            LinkedHashSet<String> renderProvinceSet,
+            LinkedHashMap<String, NormalizedTownRoadOrder> flatOrderMap,
+            LinkedHashMap<String, ProvinceEdgeAccumulator> edgeAccumulators
+    ) {
+        String routeGroupId = "town-route-" + sourceProvinceKey + "-" + targetProvinceKey;
+        String routeGroupName = provinceCodeResolver.shortName(sourceProvinceKey)
+                + " -> "
+                + provinceCodeResolver.shortName(targetProvinceKey)
+                + " 短途运输";
+
+        List<String> primaryLineIds = primaryOrders.stream()
+                .map(NormalizedTownRoadOrder::lineId)
+                .distinct()
+                .sorted()
+                .toList();
+
+        primaryOrders.forEach(order -> flatOrderMap.put(order.lineId(), order));
+
+        List<List<String>> candidateProvincePaths = provinceRoadGraph.allShortestPaths(
+                sourceProvinceKey,
+                targetProvinceKey,
+                MAX_CANDIDATE_PATHS_PER_PAIR
+        );
+
+        List<ProvincePathCandidate> candidates = new ArrayList<>();
+        LinkedHashSet<String> routeGroupAlongLineIds = new LinkedHashSet<>();
+
+        for (List<String> provincePath : candidateProvincePaths) {
+            if (provincePath.size() > MAX_SHORT_HAUL_PROVINCE_COUNT) continue;
+
+            provincePath.forEach(renderProvinceSet::add);
+
+            String pathId = provinceRoadGraph.pathKey(provincePath);
+            List<String> edgeKeys = provinceRoadGraph.edgeKeys(provincePath);
+
+            LinkedHashSet<String> candidateAlongLineIds = new LinkedHashSet<>();
+
+            for (NormalizedTownRoadOrder candidateOrder : allShortHaulOrders) {
+                if (primaryLineIds.contains(candidateOrder.lineId())) {
+                    continue;
+                }
+
+                if (orderHasAnyPathAsContinuousSubPath(candidateOrder, provincePath)) {
+                    candidateAlongLineIds.add(candidateOrder.lineId());
+                    routeGroupAlongLineIds.add(candidateOrder.lineId());
+                    flatOrderMap.put(candidateOrder.lineId(), candidateOrder);
+                }
+            }
+
+            List<String> sortedCandidateAlongLineIds = sorted(candidateAlongLineIds);
+
+            for (String edgeKey : edgeKeys) {
+                ProvinceEdgeAccumulator accumulator = edgeAccumulators.computeIfAbsent(
+                        edgeKey,
+                        ignored -> ProvinceEdgeAccumulator.fromEdgeKey(edgeKey, provinceCodeResolver)
+                );
+
+                accumulator.routeGroupIds.add(routeGroupId);
+                accumulator.pathIds.add(pathId);
+                accumulator.primaryOrderLineIds.addAll(primaryLineIds);
+
+                for (String alongLineId : sortedCandidateAlongLineIds) {
+                    NormalizedTownRoadOrder alongOrder = ordersByLineId.get(alongLineId);
+                    if (alongOrder != null && orderUsesProvinceEdge(alongOrder, edgeKey)) {
+                        accumulator.alongOrderLineIds.add(alongLineId);
+                    }
+                }
+            }
+
+            candidates.add(new ProvincePathCandidate(
+                    pathId,
+                    provincePath,
+                    provincePath.stream().map(provinceCodeResolver::shortName).toList(),
+                    edgeKeys,
+                    primaryLineIds,
+                    sortedCandidateAlongLineIds
+            ));
+        }
+
+        candidates.sort(Comparator.comparing(ProvincePathCandidate::pathId));
+
+        return new TownRoadRouteGroup(
+                routeGroupId,
+                routeGroupName,
+                sourceProvinceKey,
+                provinceCodeResolver.shortName(sourceProvinceKey),
+                targetProvinceKey,
+                provinceCodeResolver.shortName(targetProvinceKey),
+                primaryLineIds,
+                sorted(routeGroupAlongLineIds),
+                candidates
         );
     }
 
     private boolean isShortHaul(NormalizedTownRoadOrder order) {
-        if (order.provincePath() == null || order.provincePath().isEmpty()) {
+        if (order.provincePaths() == null || order.provincePaths().isEmpty()) {
             return false;
         }
 
-        return order.provincePath().size() <= 3;
+        return order.provincePaths()
+                .stream()
+                .anyMatch(path -> path.size() <= MAX_SHORT_HAUL_PROVINCE_COUNT);
+    }
+
+    private boolean orderHasAnyPathAsContinuousSubPath(
+            NormalizedTownRoadOrder order,
+            List<String> candidateProvincePath
+    ) {
+        if (order.provincePaths() == null || order.provincePaths().isEmpty()) {
+            return false;
+        }
+
+        for (List<String> orderPath : order.provincePaths()) {
+            if (isContinuousSubPath(candidateProvincePath, orderPath)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private boolean orderUsesProvinceEdge(NormalizedTownRoadOrder order, String edgeKey) {
+        if (order.provincePaths() == null || order.provincePaths().isEmpty()) {
+            return false;
+        }
+
+        for (List<String> orderPath : order.provincePaths()) {
+            if (provinceRoadGraph.edgeKeys(orderPath).contains(edgeKey)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * 判断 smallPath 是否是 fullPath 的连续子路径，方向必须一致。
+     */
+    private boolean isContinuousSubPath(List<String> fullPath, List<String> smallPath) {
+        if (fullPath == null || smallPath == null) return false;
+        if (smallPath.isEmpty()) return false;
+        if (smallPath.size() > fullPath.size()) return false;
+
+        for (int start = 0; start <= fullPath.size() - smallPath.size(); start++) {
+            boolean matched = true;
+            for (int i = 0; i < smallPath.size(); i++) {
+                if (!fullPath.get(start + i).equals(smallPath.get(i))) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched) return true;
+        }
+
+        return false;
     }
 
     private boolean isRenderable(NormalizedTownRoadOrder order) {
@@ -345,13 +639,30 @@ public class TownRoadMiddleLayer {
 
         String fromKey = locationKey(raw.from());
         String toKey = locationKey(raw.to());
-
         if (fromKey.isBlank() || toKey.isBlank()) return false;
 
         String fromProvinceKey = provinceCodeResolver.provinceKey(raw.from());
         String toProvinceKey = provinceCodeResolver.provinceKey(raw.to());
 
-        return !fromProvinceKey.isBlank() && !toProvinceKey.isBlank();
+        if (fromProvinceKey.isBlank() || toProvinceKey.isBlank()) return false;
+
+        return provinceRoadGraph.hasProvince(fromProvinceKey)
+                && provinceRoadGraph.hasProvince(toProvinceKey);
+    }
+
+    private TownRoadOrder toTownRoadOrder(NormalizedTownRoadOrder order) {
+        return new TownRoadOrder(
+                order.orderId(),
+                order.lineId(),
+                order.groupId(),
+                order.groupName(),
+                order.from(),
+                order.to(),
+                order.vehicle(),
+                order.status(),
+                order.updatedAt(),
+                order.deleted()
+        );
     }
 
     private String locationKey(ExternalOrderRecord.Location location) {
@@ -364,7 +675,6 @@ public class TownRoadMiddleLayer {
         String city = safe(location.city());
         String district = safe(location.district());
         String name = safe(location.name());
-
         String tail = !district.isBlank() ? district : name;
 
         List<String> parts = new ArrayList<>();
@@ -375,30 +685,16 @@ public class TownRoadMiddleLayer {
         return String.join("|", parts);
     }
 
-    private String buildTitle(List<String> renderProvinces) {
-        if (renderProvinces == null || renderProvinces.isEmpty()) {
-            return "短途区县展示";
+    private List<String> parseProvincePathKey(String provincePathKey) {
+        if (provincePathKey == null || provincePathKey.isBlank()) {
+            return List.of();
         }
 
-        List<String> names = renderProvinces.stream()
-                .map(provinceCodeResolver::shortName)
-                .filter(name -> name != null && !name.isBlank())
+        return List.of(provincePathKey.split(">"))
+                .stream()
+                .map(String::trim)
+                .filter(item -> !item.isBlank())
                 .toList();
-
-        return String.join(" / ", names) + " 短途区县展示";
-    }
-
-    private String buildGroupName(List<String> provincePath) {
-        if (provincePath == null || provincePath.isEmpty()) {
-            return "短途运输";
-        }
-
-        List<String> names = provincePath.stream()
-                .map(provinceCodeResolver::shortName)
-                .filter(name -> name != null && !name.isBlank())
-                .toList();
-
-        return String.join(" / ", names) + " 短途运输";
     }
 
     private List<Double> coordsForSignature(double[] coords) {
@@ -420,5 +716,74 @@ public class TownRoadMiddleLayer {
 
     private String safe(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private List<String> sorted(Set<String> values) {
+        return values.stream().sorted().toList();
+    }
+
+    private record SourceCommandBuildResult(TownRoadRenderCommand command) {
+    }
+
+    private static final class ProvinceEdgeAccumulator {
+        private final String edgeKey;
+        private final String fromProvinceKey;
+        private final String fromProvinceName;
+        private final String toProvinceKey;
+        private final String toProvinceName;
+        private final LinkedHashSet<String> routeGroupIds = new LinkedHashSet<>();
+        private final LinkedHashSet<String> pathIds = new LinkedHashSet<>();
+        private final LinkedHashSet<String> primaryOrderLineIds = new LinkedHashSet<>();
+        private final LinkedHashSet<String> alongOrderLineIds = new LinkedHashSet<>();
+
+        private ProvinceEdgeAccumulator(
+                String edgeKey,
+                String fromProvinceKey,
+                String fromProvinceName,
+                String toProvinceKey,
+                String toProvinceName
+        ) {
+            this.edgeKey = edgeKey;
+            this.fromProvinceKey = fromProvinceKey;
+            this.fromProvinceName = fromProvinceName;
+            this.toProvinceKey = toProvinceKey;
+            this.toProvinceName = toProvinceName;
+        }
+
+        private static ProvinceEdgeAccumulator fromEdgeKey(
+                String edgeKey,
+                ProvinceCodeResolver resolver
+        ) {
+            String[] parts = edgeKey.split("->");
+            String from = parts.length > 0 ? parts[0] : "";
+            String to = parts.length > 1 ? parts[1] : "";
+            return new ProvinceEdgeAccumulator(
+                    edgeKey,
+                    from,
+                    resolver.shortName(from),
+                    to,
+                    resolver.shortName(to)
+            );
+        }
+
+        private ProvinceEdgeView toView() {
+            LinkedHashSet<String> allOrderLineIds = new LinkedHashSet<>();
+            allOrderLineIds.addAll(primaryOrderLineIds);
+            allOrderLineIds.addAll(alongOrderLineIds);
+
+            return new ProvinceEdgeView(
+                    edgeKey,
+                    fromProvinceKey,
+                    fromProvinceName,
+                    toProvinceKey,
+                    toProvinceName,
+                    routeGroupIds.stream().sorted().toList(),
+                    pathIds.stream().sorted().toList(),
+                    primaryOrderLineIds.stream().sorted().toList(),
+                    alongOrderLineIds.stream().sorted().toList(),
+                    allOrderLineIds.stream().sorted().toList(),
+                    allOrderLineIds.size()
+            );
+        }
     }
 }

@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -23,57 +24,116 @@ public class ProvinceRoadGraph {
     }
 
     public List<String> shortestPath(String start, String target) {
+        List<List<String>> paths = allShortestPaths(start, target, 1);
+        return paths.isEmpty() ? List.of() : paths.get(0);
+    }
+
+    /**
+     * 返回所有等长最短路径。
+     *
+     * <p>省份图是无权图，这里用 BFS 算每个节点到起点的最短跳数，
+     * 再只沿 distance + 1 的方向 DFS 收集所有到目标的最短路径。</p>
+     */
+    public List<List<String>> allShortestPaths(String start, String target) {
+        return allShortestPaths(start, target, 20);
+    }
+
+    public List<List<String>> allShortestPaths(String start, String target, int maxPathCount) {
         if (isBlank(start) || isBlank(target)) return List.of();
-        if (start.equals(target)) return List.of(start);
+        if (start.equals(target)) return List.of(List.of(start));
+        if (!graph.containsKey(start) || !graph.containsKey(target)) return List.of();
 
-        Queue<String> queue = new ArrayDeque<>();
-        Map<String, String> previous = new HashMap<>();
-        Set<String> visited = new LinkedHashSet<>();
+        Map<String, Integer> distance = bfsDistance(start);
+        Integer targetDistance = distance.get(target);
+        if (targetDistance == null) return List.of();
 
-        queue.add(start);
-        visited.add(start);
+        List<List<String>> result = new ArrayList<>();
+        ArrayList<String> path = new ArrayList<>();
+        path.add(start);
+        collectShortestPaths(start, target, targetDistance, distance, path, result, Math.max(1, maxPathCount));
 
-        while (!queue.isEmpty()) {
-            String current = queue.poll();
-
-            for (String next : graph.getOrDefault(current, Collections.emptySet())) {
-                if (visited.contains(next)) continue;
-
-                visited.add(next);
-                previous.put(next, current);
-
-                if (next.equals(target)) {
-                    return rebuildPath(start, target, previous);
-                }
-
-                queue.add(next);
-            }
-        }
-
-        return List.of();
+        result.sort(Comparator.comparing(this::pathKey));
+        return result;
     }
 
     public boolean hasProvince(String provinceKey) {
         return graph.containsKey(provinceKey);
     }
 
-    private List<String> rebuildPath(String start, String target, Map<String, String> previous) {
-        List<String> path = new ArrayList<>();
-        String cursor = target;
+    public List<String> edgeKeys(List<String> provincePath) {
+        if (provincePath == null || provincePath.size() < 2) return List.of();
 
-        while (cursor != null) {
-            path.add(cursor);
-            if (cursor.equals(start)) break;
-            cursor = previous.get(cursor);
+        List<String> result = new ArrayList<>();
+        for (int i = 0; i < provincePath.size() - 1; i++) {
+            result.add(edgeKey(provincePath.get(i), provincePath.get(i + 1)));
+        }
+        return result;
+    }
+
+    public String edgeKey(String fromProvinceKey, String toProvinceKey) {
+        return fromProvinceKey + "->" + toProvinceKey;
+    }
+
+    public String pathKey(List<String> provincePath) {
+        if (provincePath == null || provincePath.isEmpty()) return "";
+        return String.join(">", provincePath);
+    }
+
+    private Map<String, Integer> bfsDistance(String start) {
+        Map<String, Integer> distance = new HashMap<>();
+        Queue<String> queue = new ArrayDeque<>();
+
+        distance.put(start, 0);
+        queue.add(start);
+
+        while (!queue.isEmpty()) {
+            String current = queue.poll();
+            int currentDistance = distance.get(current);
+
+            for (String next : graph.getOrDefault(current, Collections.emptySet())) {
+                if (distance.containsKey(next)) continue;
+                distance.put(next, currentDistance + 1);
+                queue.add(next);
+            }
         }
 
-        Collections.reverse(path);
+        return distance;
+    }
 
-        if (path.isEmpty() || !path.get(0).equals(start)) {
-            return List.of();
+    private void collectShortestPaths(
+            String current,
+            String target,
+            int targetDistance,
+            Map<String, Integer> distance,
+            ArrayList<String> path,
+            List<List<String>> result,
+            int maxPathCount
+    ) {
+        if (result.size() >= maxPathCount) return;
+
+        if (current.equals(target)) {
+            result.add(List.copyOf(path));
+            return;
         }
 
-        return path;
+        int currentDistance = distance.getOrDefault(current, Integer.MAX_VALUE);
+        if (currentDistance >= targetDistance) return;
+
+        List<String> neighbors = new ArrayList<>(graph.getOrDefault(current, Collections.emptySet()));
+        neighbors.sort(String::compareTo);
+
+        for (String next : neighbors) {
+            Integer nextDistance = distance.get(next);
+            if (nextDistance == null) continue;
+            if (nextDistance != currentDistance + 1) continue;
+            if (path.contains(next)) continue;
+
+            path.add(next);
+            collectShortestPaths(next, target, targetDistance, distance, path, result, maxPathCount);
+            path.remove(path.size() - 1);
+
+            if (result.size() >= maxPathCount) return;
+        }
     }
 
     private void buildMainlandAdjacency() {
@@ -85,7 +145,6 @@ public class ProvinceRoadGraph {
         link("130000", "210000"); // 河北-辽宁
         link("130000", "370000"); // 河北-山东
         link("130000", "410000"); // 河北-河南
-        link("140000", "150000"); // 山西-内蒙古（补全）
 
         // 东北
         link("150000", "210000");
@@ -108,8 +167,7 @@ public class ProvinceRoadGraph {
         link("340000", "420000"); // 安徽-湖北
         link("340000", "360000"); // 安徽-江西
         link("350000", "360000"); // 福建-江西
-        link("350000", "440000"); // 福建-广东，注意：广东和福建接壤
-        link("350000", "710000"); // 福建-台湾，按物流可渡海处理（补全）
+        link("350000", "440000"); // 福建-广东
         link("360000", "420000"); // 江西-湖北
         link("360000", "430000"); // 江西-湖南
         link("360000", "440000"); // 江西-广东
@@ -128,8 +186,6 @@ public class ProvinceRoadGraph {
         link("430000", "500000"); // 湖南-重庆
         link("440000", "450000"); // 广东-广西
         link("440000", "460000"); // 广东-海南，按物流可渡海处理
-        link("440000", "810000"); // 广东-香港（补全）
-        link("440000", "820000"); // 广东-澳门（补全）
         link("450000", "520000"); // 广西-贵州
         link("450000", "530000"); // 广西-云南
         link("450000", "460000"); // 广西-海南，按物流可渡海处理

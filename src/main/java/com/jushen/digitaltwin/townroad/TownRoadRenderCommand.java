@@ -7,10 +7,60 @@ public record TownRoadRenderCommand(
         String commandId,
         String title,
         String description,
+
+        ProvinceRef sourceProvince,
+
         List<String> renderProvinces,
+        List<TownRoadRouteGroup> routeGroups,
+        List<ProvinceEdgeView> provinceEdges,
         List<TownRoadOrder> orders,
+
         String issuedAt
 ) {
+    public record ProvinceRef(
+            String provinceKey,
+            String provinceName
+    ) {
+    }
+
+    public record TownRoadRouteGroup(
+            String groupId,
+            String groupName,
+            String fromProvinceKey,
+            String fromProvinceName,
+            String toProvinceKey,
+            String toProvinceName,
+            List<String> primaryOrderLineIds,
+            List<String> alongOrderLineIds,
+            List<ProvincePathCandidate> candidatePaths
+    ) {
+    }
+
+    public record ProvincePathCandidate(
+            String pathId,
+            List<String> provincePath,
+            List<String> provinceNames,
+            List<String> edgeKeys,
+            List<String> primaryOrderLineIds,
+            List<String> alongOrderLineIds
+    ) {
+    }
+
+    public record ProvinceEdgeView(
+            String edgeKey,
+            String fromProvinceKey,
+            String fromProvinceName,
+            String toProvinceKey,
+            String toProvinceName,
+            List<String> routeGroupIds,
+            List<String> pathIds,
+            List<String> primaryOrderLineIds,
+            List<String> alongOrderLineIds,
+            List<String> orderLineIds,
+            int orderCount
+    ) {
+    }
+
     public record TownRoadOrder(
             String orderId,
             String lineId,
