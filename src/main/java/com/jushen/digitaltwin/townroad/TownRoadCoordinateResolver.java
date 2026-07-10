@@ -90,6 +90,16 @@ public class TownRoadCoordinateResolver {
         String district = m.group(3);
         String detail = m.group(4);
 
+        // 直辖市修正：北京市/天津市/上海市/重庆市 下没有地级市，
+        // 正则可能把"浦东新区"误匹配为 city（因为"区"在市级后缀中）
+        if (isMunicipality(province)) {
+            if (city != null && district == null) {
+                // city 被错误匹配了，实际是区
+                district = city;
+                city = null;
+            }
+        }
+
         // 1. 省+市+区+详细信息（新库）
         if (district != null && detail != null && !detail.isBlank()) {
             double[] coords = localCoordDb.resolve(province, city, district, detail);
@@ -165,5 +175,15 @@ public class TownRoadCoordinateResolver {
     private boolean hasCoords(double[] coords) {
         return coords != null && coords.length >= 2
                && Double.isFinite(coords[0]) && Double.isFinite(coords[1]);
+    }
+
+    /** 判断是否为直辖市（省级行政区中没有地级市） */
+    private static boolean isMunicipality(String province) {
+        return province != null && (
+                province.equals("北京市") ||
+                province.equals("天津市") ||
+                province.equals("上海市") ||
+                province.equals("重庆市")
+        );
     }
 }
