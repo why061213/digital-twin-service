@@ -25,10 +25,11 @@ public class TownRoadCoordinateResolver {
 
     private static final Logger log = LoggerFactory.getLogger(TownRoadCoordinateResolver.class);
 
+    // {2,15} 支持长地名如"文山壮族苗族自治州""巴音郭楞蒙古自治州"
     private static final Pattern NAME_PATTERN = Pattern.compile(
             "^([\\u4e00-\\u9fa5]{2,4}?(?:省|自治区|特别行政区|市))"
-                    + "([\\u4e00-\\u9fa5]{2,6}?(?:市|自治州|地区|盟|区))?"
-                    + "([\\u4e00-\\u9fa5]{2,6}?(?:县|区|市|旗|自治县))?"
+                    + "([\\u4e00-\\u9fa5]{2,15}?(?:市|自治州|地区|盟|区))?"
+                    + "([\\u4e00-\\u9fa5]{2,15}?(?:县|区|市|旗|自治县|县级市))?"
                     + "(.*)$"
     );
 
