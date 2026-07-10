@@ -18,6 +18,7 @@ public class TownRoadRenderService {
     private final TownRoadMiddleLayer middleLayer;
     private final RealtimeWebSocketHandler realtimeWebSocketHandler;
     private final AmapGeocodeClient amapGeocodeClient;
+    private final TownRoadCoordinateResolver coordinateResolver;
     private Map<String, Object> lastResult = Map.of();
 
     public Map<String, Object> latestResult() {
@@ -28,12 +29,14 @@ public class TownRoadRenderService {
             TownRoadExternalOrderClient townRoadExternalOrderClient,
             TownRoadMiddleLayer middleLayer,
             RealtimeWebSocketHandler realtimeWebSocketHandler,
-            AmapGeocodeClient amapGeocodeClient
+            AmapGeocodeClient amapGeocodeClient,
+            TownRoadCoordinateResolver coordinateResolver
     ) {
         this.townRoadExternalOrderClient = townRoadExternalOrderClient;
         this.middleLayer = middleLayer;
         this.realtimeWebSocketHandler = realtimeWebSocketHandler;
         this.amapGeocodeClient = amapGeocodeClient;
+        this.coordinateResolver = coordinateResolver;
     }
 
     public Map<String, Object> fetchProcessAndBroadcast() {
@@ -85,7 +88,8 @@ public class TownRoadRenderService {
         response.put("commands", result.commands());
         this.lastResult = response;
 
-        // 打印高德 API 调用统计
+        // 打印统计
+        log.info(coordinateResolver.getStatsAndReset());
         log.info(amapGeocodeClient.getStatsAndReset());
 
         return response;

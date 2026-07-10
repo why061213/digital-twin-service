@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import java.io.InputStream;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 从外部订单的 province/city/district/name 字段中补全经纬度。
@@ -27,7 +28,6 @@ public class TownRoadCoordinateResolver {
 
     private static final Logger log = LoggerFactory.getLogger(TownRoadCoordinateResolver.class);
 
-    /** 直辖市列表 */
     private static final java.util.Set<String> MUNICIPALITIES = java.util.Set.of(
             "北京市", "天津市", "上海市", "重庆市"
     );
@@ -36,8 +36,14 @@ public class TownRoadCoordinateResolver {
     private final LocalCoordDb localCoordDb;
     private final AmapGeocodeClient amapClient;
 
-    /** 旧的扁平库：名称 → [lng, lat]（兜底用） */
     private Map<String, double[]> nameToCoords = Map.of();
+
+    /** 统计：local / amap成功 / amap失败 / fallback / 总调用 */
+    private final AtomicInteger statLocal = new AtomicInteger(0);
+    private final AtomicInteger statAmapOk = new AtomicInteger(0);
+    private final AtomicInteger statAmapFail = new AtomicInteger(0);
+    private final AtomicInteger statFallback = new AtomicInteger(0);
+    private final AtomicInteger statTotal = new AtomicInteger(0);
 
     public TownRoadCoordinateResolver(ObjectMapper objectMapper,
                                        LocalCoordDb localCoordDb,
@@ -52,26 +58,25 @@ public class TownRoadCoordinateResolver {
         try {
             ClassPathResource resource = new ClassPathResource("district-coordinates.json");
             try (InputStream in = resource.getInputStream()) {
-                nameToCoords = objectMapper.readValue(
-                        in,
-                        new TypeReference<LinkedHashMap<String, double[]>>() {}
-                );
+                nameToCoords = objectMapper.readValue(in,
+                        new TypeReference<LinkedHashMap<String, double[]>>() {});
             }
-            log.info("[TownRoadCoord] loaded {} entries from district-coordinates.json (fallback)", nameToCoords.size());
+            log.info("[TownRoadCoord] loaded {} entries from district-coordinates.json (兜底)", nameToCoords.size());
         } catch (Exception e) {
-            log.warn("[TownRoadCoord] failed to load district-coordinates.json: {}", e.getMessage());
+            log.warn("[TownRoadCoord] district-coordinates.json 加载失败: {}", e.getMessage());
             nameToCoords = Map.of();
         }
 
-        log.info("[TownRoadCoord] local coord-db has {} entries, fallback has {} entries",
+        log.info("[TownRoadCoord] ✅ 2026-07-10 新版解析器已启动！查找顺序: LocalCoordDb({}) → 高德API → 旧库({})",
                 localCoordDb.size(), nameToCoords.size());
     }
 
     /**
      * 返回解析后的 Location，补全了 coords。
-     * 直接使用外部接口提供的 province/city/district/name 字段，不做正则解析。
      */
     public ExternalOrderRecord.Location resolveLocation(ExternalOrderRecord.Location location) {
+        statTotal.incrementAndGet();
+
         if (location == null) return null;
         if (hasCoords(location.coords())) return location;
 
@@ -80,84 +85,90 @@ public class TownRoadCoordinateResolver {
         String district = trimToNull(location.district());
         String name = trimToNull(location.name());
 
-        // 没有任何可用的地址信息
         if (province == null && name == null) return location;
 
-        // 直辖市优化："重庆市"下"市辖区"不是真正的地级市，合并到 district 维度
+        // 直辖市："市辖区"/"县"是虚层级
         if (province != null && MUNICIPALITIES.contains(province)) {
-            if ("市辖区".equals(city) || "县".equals(city)) {
-                city = null; // 直辖市的"市辖区"/"县"是虚层级
-            }
+            if ("市辖区".equals(city) || "县".equals(city)) city = null;
         }
 
-        double[] resolved = null;
-        String source = "none";
+        double[] resolved;
 
-        // ---- 1. LocalCoordDb 精确库 ----
-        // 1a. 省+市+区+名 全路径
-        if (resolved == null && province != null && name != null) {
-            resolved = localCoordDb.resolve(province, city, district, name);
-            if (resolved != null) source = "local:full";
-        }
-        // 1b. 省+市+区（当 name 就是区名本身时）
-        if (resolved == null && province != null && district != null) {
-            resolved = localCoordDb.resolve(province, city, district, district);
-            if (resolved != null) source = "local:district";
-        }
-        // 1c. 只用 name 查
-        if (resolved == null && name != null) {
-            resolved = localCoordDb.get(name);
-            if (resolved != null) source = "local:name";
+        // ==== 1. LocalCoordDb ====
+        resolved = tryLocalDb(province, city, district, name);
+        if (resolved != null) {
+            statLocal.incrementAndGet();
+            return buildLocation(location, resolved);
         }
 
-        // ---- 2. 高德 API 精确查询 ----
-        if (resolved == null) {
-            String queryName = name != null ? name : (district != null ? district : "");
-            resolved = amapClient.geocode(province, city, district, queryName);
-            if (resolved != null) source = "amap";
+        // ==== 2. 高德 API ====
+        String q = name != null ? name : (district != null ? district : "");
+        resolved = amapClient.geocode(province, city, district, q);
+        if (resolved != null) {
+            statAmapOk.incrementAndGet();
+            return buildLocation(location, resolved);
+        }
+        statAmapFail.incrementAndGet();
+
+        // ==== 3. 旧库兜底 ====
+        resolved = tryFallbackDb(province, city, district, name);
+        if (resolved != null) {
+            statFallback.incrementAndGet();
+            return buildLocation(location, resolved);
         }
 
-        // ---- 3. district-coordinates.json 粗粒度兜底 ----
-        // 3a. 省+市+区
-        if (resolved == null && province != null && district != null) {
-            String key = (city != null) ? province + city + district : province + district;
-            resolved = nameToCoords.get(key);
-            if (resolved != null) source = "fallback:district";
-        }
-        // 3b. 省+市
-        if (resolved == null && province != null && city != null) {
-            resolved = nameToCoords.get(province + city);
-            if (resolved != null) source = "fallback:city";
-        }
-        // 3c. 只用城市名
-        if (resolved == null && city != null) {
-            resolved = nameToCoords.get(city);
-            if (resolved != null) source = "fallback:cityName";
-        }
-        // 3d. 省
-        if (resolved == null && province != null) {
-            resolved = nameToCoords.get(province);
-            if (resolved != null) source = "fallback:province";
-        }
-        // 3e. 原始 name
-        if (resolved == null && name != null) {
-            resolved = nameToCoords.get(name);
-            if (resolved != null) source = "fallback:name";
-        }
+        return location;
+    }
 
-        if (resolved == null || resolved.length < 2) return location;
+    private double[] tryLocalDb(String p, String c, String d, String n) {
+        if (p != null && n != null) {
+            double[] r = localCoordDb.resolve(p, c, d, n);
+            if (r != null) return r;
+        }
+        if (p != null && d != null) {
+            double[] r = localCoordDb.resolve(p, c, d, d);
+            if (r != null) return r;
+        }
+        if (n != null) return localCoordDb.get(n);
+        return null;
+    }
 
-        log.debug("[TownRoadCoord] {} → {}/{}/{} '{}' → [{}, {}]",
-                source, province, city, district, name, resolved[0], resolved[1]);
+    private double[] tryFallbackDb(String p, String c, String d, String n) {
+        if (p != null && d != null) {
+            String key = (c != null) ? p + c + d : p + d;
+            double[] r = nameToCoords.get(key);
+            if (r != null) return r;
+        }
+        if (p != null && c != null) {
+            double[] r = nameToCoords.get(p + c);
+            if (r != null) return r;
+        }
+        if (c != null) {
+            double[] r = nameToCoords.get(c);
+            if (r != null) return r;
+        }
+        if (p != null) {
+            double[] r = nameToCoords.get(p);
+            if (r != null) return r;
+        }
+        if (n != null) return nameToCoords.get(n);
+        return null;
+    }
 
+    private ExternalOrderRecord.Location buildLocation(ExternalOrderRecord.Location loc, double[] coords) {
         return new ExternalOrderRecord.Location(
-                location.name(),
-                location.province(),
-                location.city(),
-                location.district(),
-                location.adcode(),
-                resolved
+                loc.name(), loc.province(), loc.city(), loc.district(), loc.adcode(), coords
         );
+    }
+
+    public String getStatsAndReset() {
+        int local = statLocal.getAndSet(0);
+        int amapOk = statAmapOk.getAndSet(0);
+        int amapFail = statAmapFail.getAndSet(0);
+        int fallback = statFallback.getAndSet(0);
+        int total = statTotal.getAndSet(0);
+        return String.format("[TownRoadCoord] 坐标解析统计: 总调用=%d local=%d amap成功=%d amap失败=%d fallback=%d",
+                total, local, amapOk, amapFail, fallback);
     }
 
     private boolean hasCoords(double[] coords) {
@@ -165,9 +176,9 @@ public class TownRoadCoordinateResolver {
                && Double.isFinite(coords[0]) && Double.isFinite(coords[1]);
     }
 
-    private static String trimToNull(String value) {
-        if (value == null) return null;
-        String trimmed = value.trim();
-        return trimmed.isEmpty() ? null : trimmed;
+    private static String trimToNull(String v) {
+        if (v == null) return null;
+        String t = v.trim();
+        return t.isEmpty() ? null : t;
     }
 }
