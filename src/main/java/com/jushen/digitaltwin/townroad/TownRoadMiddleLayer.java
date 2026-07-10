@@ -122,6 +122,10 @@ public class TownRoadMiddleLayer {
                 continue;
             }
 
+            if ("已完成".equals(order.status())) {
+                continue; // 已完成的不发送前端
+            }
+
             shortHaulOrders.add(order);
         }
 
@@ -594,6 +598,7 @@ public class TownRoadMiddleLayer {
 
         List<TownRoadOrder> orders = flatOrderMap.values()
                 .stream()
+                .filter(order -> !"已完成".equals(order.status()))
                 .sorted(orderComparator())
                 .map(this::toTownRoadOrder)
                 .toList();
