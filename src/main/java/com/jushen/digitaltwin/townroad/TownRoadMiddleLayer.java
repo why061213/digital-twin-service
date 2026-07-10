@@ -82,19 +82,24 @@ public class TownRoadMiddleLayer {
         Map<String, NormalizedTownRoadOrder> previous = new LinkedHashMap<>(ordersByLineId);
 
         List<NormalizedTownRoadOrder> normalized = new ArrayList<>();
-        int skippedInvalid = 0;
+        List<String> skippedInvalidLineIds = new ArrayList<>();
+        List<String> deletedOrCancelledLineIds = new ArrayList<>();
         int skippedNotRenderable = 0;
         int skippedLongHaul = 0;
+        List<String> skippedNotRenderableLineIds = new ArrayList<>();
+        List<String> skippedLongHaulLineIds = new ArrayList<>();
 
         for (ExternalOrderRecord raw : safeRawOrders) {
             if (!isValidBasic(raw)) {
-                skippedInvalid++;
+                String rawLineId = raw != null ? raw.lineId() : null;
+                skippedInvalidLineIds.add(rawLineId != null ? rawLineId : "null-lineId");
                 continue;
             }
 
             NormalizedTownRoadOrder order = normalize(raw);
 
             if (order.deleted() || "已取消".equals(order.status())) {
+                deletedOrCancelledLineIds.add(order.lineId());
                 continue;
             }
 
@@ -107,11 +112,13 @@ public class TownRoadMiddleLayer {
         for (NormalizedTownRoadOrder order : normalized) {
             if (properties.isRequireRenderableCoords() && !isRenderable(order)) {
                 skippedNotRenderable++;
+                skippedNotRenderableLineIds.add(order.lineId());
                 continue;
             }
 
             if (!isShortHaul(order)) {
                 skippedLongHaul++;
+                skippedLongHaulLineIds.add(order.lineId());
                 continue;
             }
 
@@ -121,9 +128,14 @@ public class TownRoadMiddleLayer {
         OrderSnapshotDiff diff = buildDiff(
                 previous,
                 ordersByLineId,
-                skippedInvalid,
+                skippedInvalidLineIds.size(),
                 skippedNotRenderable,
-                skippedLongHaul
+                skippedLongHaul,
+                deletedOrCancelledLineIds.size(),
+                skippedInvalidLineIds,
+                skippedNotRenderableLineIds,
+                skippedLongHaulLineIds,
+                deletedOrCancelledLineIds
         );
 
         List<TownRoadRenderCommand> commands = buildTownRoadCommands(shortHaulOrders);
@@ -238,13 +250,23 @@ public class TownRoadMiddleLayer {
             Map<String, NormalizedTownRoadOrder> current,
             int skippedInvalid,
             int skippedNotRenderable,
-            int skippedLongHaul
+            int skippedLongHaul,
+            int deletedOrCancelled,
+            List<String> skippedInvalidLineIds,
+            List<String> skippedNotRenderableLineIds,
+            List<String> skippedLongHaulLineIds,
+            List<String> deletedOrCancelledLineIds
     ) {
         int added = 0;
         int updated = 0;
         int deleted = 0;
         int unchanged = 0;
         int routeChanged = 0;
+        List<String> addedLineIds = new ArrayList<>();
+        List<String> updatedLineIds = new ArrayList<>();
+        List<String> deletedLineIds = new ArrayList<>();
+        List<String> unchangedLineIds = new ArrayList<>();
+        List<String> routeChangedLineIds = new ArrayList<>();
 
         for (Map.Entry<String, NormalizedTownRoadOrder> entry : current.entrySet()) {
             String lineId = entry.getKey();
@@ -253,6 +275,7 @@ public class TownRoadMiddleLayer {
 
             if (old == null) {
                 added++;
+                addedLineIds.add(lineId);
                 continue;
             }
 
@@ -261,10 +284,13 @@ public class TownRoadMiddleLayer {
 
             if (!dataChanged && !routeHasChanged) {
                 unchanged++;
+                unchangedLineIds.add(lineId);
             } else {
                 updated++;
+                updatedLineIds.add(lineId);
                 if (routeHasChanged) {
                     routeChanged++;
+                    routeChangedLineIds.add(lineId);
                 }
             }
         }
@@ -272,6 +298,7 @@ public class TownRoadMiddleLayer {
         for (String oldLineId : previous.keySet()) {
             if (!current.containsKey(oldLineId)) {
                 deleted++;
+                deletedLineIds.add(oldLineId);
             }
         }
 
@@ -283,7 +310,17 @@ public class TownRoadMiddleLayer {
                 routeChanged,
                 skippedInvalid,
                 skippedNotRenderable,
-                skippedLongHaul
+                skippedLongHaul,
+                deletedOrCancelled,
+                addedLineIds,
+                updatedLineIds,
+                deletedLineIds,
+                unchangedLineIds,
+                routeChangedLineIds,
+                skippedInvalidLineIds,
+                skippedNotRenderableLineIds,
+                skippedLongHaulLineIds,
+                deletedOrCancelledLineIds
         );
     }
 

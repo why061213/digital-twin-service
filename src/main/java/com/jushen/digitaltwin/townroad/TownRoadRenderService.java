@@ -41,16 +41,40 @@ public class TownRoadRenderService {
             realtimeWebSocketHandler.broadcast(command);
         }
 
+        int deletedOrCancelled = result.diff().deletedOrCancelled();
+        int rawCount = result.rawCount();
+        int normalizedCount = result.normalizedCount();
+        int shortHaulCount = result.shortHaulCount();
+        int skippedInvalid = result.diff().skippedInvalid();
+        int skippedNotRenderable = result.diff().skippedNotRenderable();
+        int skippedLongHaul = result.diff().skippedLongHaul();
+
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("ok", true);
         response.put("type","town_road_render");
         response.put("message", "town_road_render commands broadcasted");
-        response.put("rawCount", result.rawCount());
-        response.put("normalizedCount", result.normalizedCount());
-        response.put("shortHaulCount", result.shortHaulCount());
+        response.put("rawCount", rawCount);
+        response.put("normalizedCount", normalizedCount);
+        response.put("shortHaulCount", shortHaulCount);
         response.put("commandCount", result.commands().size());
         response.put("displayMode", result.commands().size() > 1 ? "multi_source_rotation" : "single_source");
         response.put("diff", result.diff().toMap());
+
+        // 完整数据流水账：展示 rawCount 如何一步步变成最终的 shortHaulCount
+        Map<String, Object> accounting = new LinkedHashMap<>();
+        accounting.put("rawCount", rawCount);
+        accounting.put("    ─ skippedInvalid (基础校验失败)", skippedInvalid);
+        accounting.put("    ─ deletedOrCancelled (已删除/已取消)", deletedOrCancelled);
+        accounting.put("    = normalizedCount (有效订单)", normalizedCount);
+        accounting.put("        ─ skippedNotRenderable (缺坐标)", skippedNotRenderable);
+        accounting.put("        ─ skippedLongHaul (非短途)", skippedLongHaul);
+        accounting.put("        = shortHaulCount (最终渲染)", shortHaulCount);
+        accounting.put("校验", rawCount + " = " + skippedInvalid + " + " + deletedOrCancelled + " + " + normalizedCount
+                + (rawCount == skippedInvalid + deletedOrCancelled + normalizedCount ? " ✅" : " ❌ 对不上!"));
+        accounting.put("渲染过滤", normalizedCount + " = " + skippedNotRenderable + " + " + skippedLongHaul + " + " + shortHaulCount
+                + (normalizedCount == skippedNotRenderable + skippedLongHaul + shortHaulCount ? " ✅" : " ❌ 对不上!"));
+        response.put("accounting", accounting);
+
         response.put("commands", result.commands());
         this.lastResult = response;
         return response;
