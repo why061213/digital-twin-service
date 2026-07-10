@@ -56,6 +56,7 @@ public record OrderSnapshotDiff(
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("count", count);
         detail.put("lineIds", lineIds != null ? lineIds : List.of());
+        detail.put("instanceIds", lineIds != null ? lineIds : List.of());
         return detail;
     }
 }

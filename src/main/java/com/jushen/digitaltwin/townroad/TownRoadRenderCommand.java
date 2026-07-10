@@ -71,6 +71,9 @@ public record TownRoadRenderCommand(
     public record TownRoadOrder(
             String orderId,
             String lineId,
+            String sourceLineId,
+            String instanceId,
+            String vehicleKey,
             String groupId,
             String groupName,
             ExternalOrderRecord.Location from,

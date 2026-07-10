@@ -5,6 +5,8 @@ import java.util.List;
 public record NormalizedTownRoadOrder(
         String orderId,
         String lineId,
+        String instanceId,
+        String vehicleKey,
 
         String fromKey,
         String toKey,

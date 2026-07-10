@@ -40,26 +40,26 @@ public class TownRoadMiddleLayer {
     private final TownRoadExternalOrderProperties properties;
     private final TownRoadCoordinateResolver coordinateResolver;
 
-    private final Map<String, NormalizedTownRoadOrder> ordersByLineId = new ConcurrentHashMap<>();
+    private final Map<String, NormalizedTownRoadOrder> ordersByInstanceId = new ConcurrentHashMap<>();
 
     /**
-     * 区县/地点 OD MapMap：fromKey -> toKey -> lineIds。
+     * 区县/地点 OD MapMap：fromKey -> toKey -> transport instance ids。
      */
     private final Map<String, Map<String, Set<String>>> odIndex = new ConcurrentHashMap<>();
 
     /**
-     * 省份 OD MapMap：fromProvince -> toProvince -> lineIds。
+     * 省份 OD MapMap：fromProvince -> toProvince -> transport instance ids。
      */
     private final Map<String, Map<String, Set<String>>> provincePairIndex = new ConcurrentHashMap<>();
 
     /**
-     * 精确省份路径索引：provincePathKey -> lineIds。
-     * 如果一个订单有多条等长最短路径，会被放到多个 pathKey 下。
+     * 精确省份路径索引：provincePathKey -> transport instance ids。
+     * 如果一个运输实例有多条候选路径，会被放到多个 pathKey 下。
      */
     private final Map<String, Set<String>> provincePathIndex = new ConcurrentHashMap<>();
 
     /**
-     * 起点省份索引：sourceProvinceKey -> lineIds。
+     * 起点省份索引：sourceProvinceKey -> transport instance ids。
      */
     private final Map<String, Set<String>> sourceProvinceIndex = new ConcurrentHashMap<>();
 
@@ -79,7 +79,8 @@ public class TownRoadMiddleLayer {
 
     public synchronized ExternalOrderSnapshotResult processSnapshot(List<ExternalOrderRecord> rawOrders) {
         List<ExternalOrderRecord> safeRawOrders = rawOrders == null ? List.of() : rawOrders;
-        Map<String, NormalizedTownRoadOrder> previous = new LinkedHashMap<>(ordersByLineId);
+        List<ExternalOrderRecord> expandedRawOrders = expandRawOrders(safeRawOrders);
+        Map<String, NormalizedTownRoadOrder> previous = new LinkedHashMap<>(ordersByInstanceId);
 
         List<NormalizedTownRoadOrder> normalized = new ArrayList<>();
         List<String> skippedInvalidLineIds = new ArrayList<>();
@@ -89,17 +90,16 @@ public class TownRoadMiddleLayer {
         List<String> skippedNotRenderableLineIds = new ArrayList<>();
         List<String> skippedLongHaulLineIds = new ArrayList<>();
 
-        for (ExternalOrderRecord raw : safeRawOrders) {
+        for (ExternalOrderRecord raw : expandedRawOrders) {
             if (!isValidBasic(raw)) {
-                String rawLineId = raw != null ? raw.lineId() : null;
-                skippedInvalidLineIds.add(rawLineId != null ? rawLineId : "null-lineId");
+                skippedInvalidLineIds.add(rawDebugId(raw));
                 continue;
             }
 
             NormalizedTownRoadOrder order = normalize(raw);
 
             if (order.deleted() || "已取消".equals(order.status())) {
-                deletedOrCancelledLineIds.add(order.lineId());
+                deletedOrCancelledLineIds.add(order.instanceId());
                 continue;
             }
 
@@ -112,13 +112,13 @@ public class TownRoadMiddleLayer {
         for (NormalizedTownRoadOrder order : normalized) {
             if (properties.isRequireRenderableCoords() && !isRenderable(order)) {
                 skippedNotRenderable++;
-                skippedNotRenderableLineIds.add(order.lineId());
+                skippedNotRenderableLineIds.add(order.instanceId());
                 continue;
             }
 
             if (!isShortHaul(order)) {
                 skippedLongHaul++;
-                skippedLongHaulLineIds.add(order.lineId());
+                skippedLongHaulLineIds.add(order.instanceId());
                 continue;
             }
 
@@ -127,7 +127,7 @@ public class TownRoadMiddleLayer {
 
         OrderSnapshotDiff diff = buildDiff(
                 previous,
-                ordersByLineId,
+                ordersByInstanceId,
                 skippedInvalidLineIds.size(),
                 skippedNotRenderable,
                 skippedLongHaul,
@@ -150,24 +150,24 @@ public class TownRoadMiddleLayer {
     }
 
     public List<NormalizedTownRoadOrder> findSameOd(String fromKey, String toKey) {
-        Set<String> lineIds = odIndex
+        Set<String> instanceIds = odIndex
                 .getOrDefault(fromKey, Map.of())
                 .getOrDefault(toKey, Set.of());
 
-        return lineIds.stream()
-                .map(ordersByLineId::get)
+        return instanceIds.stream()
+                .map(ordersByInstanceId::get)
                 .filter(item -> item != null)
-                .sorted(Comparator.comparing(NormalizedTownRoadOrder::lineId))
+                .sorted(orderComparator())
                 .toList();
     }
 
     public List<NormalizedTownRoadOrder> findByProvincePath(String provincePathKey) {
-        Set<String> lineIds = provincePathIndex.getOrDefault(provincePathKey, Set.of());
+        Set<String> instanceIds = provincePathIndex.getOrDefault(provincePathKey, Set.of());
 
-        return lineIds.stream()
-                .map(ordersByLineId::get)
+        return instanceIds.stream()
+                .map(ordersByInstanceId::get)
                 .filter(item -> item != null)
-                .sorted(Comparator.comparing(NormalizedTownRoadOrder::lineId))
+                .sorted(orderComparator())
                 .toList();
     }
 
@@ -181,13 +181,13 @@ public class TownRoadMiddleLayer {
 
         for (String pathKey : resolvedPathKeys) {
             for (NormalizedTownRoadOrder order : findByProvincePath(pathKey)) {
-                result.put(order.lineId(), order);
+                result.put(order.instanceId(), order);
             }
         }
 
         return result.values()
                 .stream()
-                .sorted(Comparator.comparing(NormalizedTownRoadOrder::lineId))
+                .sorted(orderComparator())
                 .toList();
     }
 
@@ -206,41 +206,41 @@ public class TownRoadMiddleLayer {
     }
 
     public List<NormalizedTownRoadOrder> allOrders() {
-        return ordersByLineId.values()
+        return ordersByInstanceId.values()
                 .stream()
-                .sorted(Comparator.comparing(NormalizedTownRoadOrder::lineId))
+                .sorted(orderComparator())
                 .toList();
     }
 
     private void rebuildIndexes(List<NormalizedTownRoadOrder> normalizedOrders) {
-        ordersByLineId.clear();
+        ordersByInstanceId.clear();
         odIndex.clear();
         provincePairIndex.clear();
         provincePathIndex.clear();
         sourceProvinceIndex.clear();
 
         for (NormalizedTownRoadOrder order : normalizedOrders) {
-            ordersByLineId.put(order.lineId(), order);
+            ordersByInstanceId.put(order.instanceId(), order);
 
             odIndex
                     .computeIfAbsent(order.fromKey(), ignored -> new ConcurrentHashMap<>())
                     .computeIfAbsent(order.toKey(), ignored -> ConcurrentHashMap.newKeySet())
-                    .add(order.lineId());
+                    .add(order.instanceId());
 
             provincePairIndex
                     .computeIfAbsent(order.fromProvinceKey(), ignored -> new ConcurrentHashMap<>())
                     .computeIfAbsent(order.toProvinceKey(), ignored -> ConcurrentHashMap.newKeySet())
-                    .add(order.lineId());
+                    .add(order.instanceId());
 
             sourceProvinceIndex
                     .computeIfAbsent(order.fromProvinceKey(), ignored -> ConcurrentHashMap.newKeySet())
-                    .add(order.lineId());
+                    .add(order.instanceId());
 
             for (String provincePathKey : order.provincePathKeys()) {
                 if (provincePathKey.isBlank()) continue;
                 provincePathIndex
                         .computeIfAbsent(provincePathKey, ignored -> ConcurrentHashMap.newKeySet())
-                        .add(order.lineId());
+                        .add(order.instanceId());
             }
         }
     }
@@ -324,6 +324,98 @@ public class TownRoadMiddleLayer {
         );
     }
 
+    private List<ExternalOrderRecord> expandRawOrders(List<ExternalOrderRecord> rawOrders) {
+        List<ExternalOrderRecord> expanded = new ArrayList<>();
+
+        for (ExternalOrderRecord raw : rawOrders) {
+            if (raw == null) {
+                expanded.add(null);
+                continue;
+            }
+
+            List<ExternalOrderRecord.Line> lines = raw.lines() == null ? List.of() : raw.lines();
+            if (lines.isEmpty()) {
+                expanded.add(raw);
+                continue;
+            }
+
+            for (int lineIndex = 0; lineIndex < lines.size(); lineIndex++) {
+                ExternalOrderRecord.Line line = lines.get(lineIndex);
+                if (line == null) {
+                    expanded.add(copyRawOrderLineVehicle(raw, null, null, lineIndex, 0));
+                    continue;
+                }
+
+                List<ExternalOrderRecord.Vehicle> vehicles = lineVehicles(raw, line);
+                for (int vehicleIndex = 0; vehicleIndex < vehicles.size(); vehicleIndex++) {
+                    expanded.add(copyRawOrderLineVehicle(
+                            raw,
+                            line,
+                            vehicles.get(vehicleIndex),
+                            lineIndex,
+                            vehicleIndex
+                    ));
+                }
+            }
+        }
+
+        return expanded;
+    }
+
+    private List<ExternalOrderRecord.Vehicle> lineVehicles(
+            ExternalOrderRecord raw,
+            ExternalOrderRecord.Line line
+    ) {
+        List<ExternalOrderRecord.Vehicle> vehicles = new ArrayList<>();
+        if (line.vehicles() != null) {
+            vehicles.addAll(line.vehicles());
+        }
+        if (vehicles.isEmpty() && line.vehicle() != null) {
+            vehicles.add(line.vehicle());
+        }
+        if (vehicles.isEmpty() && raw.vehicle() != null) {
+            vehicles.add(raw.vehicle());
+        }
+        if (vehicles.isEmpty()) {
+            vehicles.add(null);
+        }
+        return vehicles;
+    }
+
+    private ExternalOrderRecord copyRawOrderLineVehicle(
+            ExternalOrderRecord raw,
+            ExternalOrderRecord.Line line,
+            ExternalOrderRecord.Vehicle vehicle,
+            int lineIndex,
+            int vehicleIndex
+    ) {
+        return new ExternalOrderRecord(
+                raw.orderId(),
+                firstNonBlank(line == null ? null : line.lineId(), raw.lineId()),
+                null,
+                firstNonNull(line == null ? null : line.from(), raw.from()),
+                firstNonNull(line == null ? null : line.to(), raw.to()),
+                vehicle,
+                firstNonBlank(line == null ? null : line.status(), raw.status()),
+                firstNonBlank(line == null ? null : line.updatedAt(), raw.updatedAt()),
+                firstNonNull(line == null ? null : line.deleted(), raw.deleted()),
+                firstNonNull(line == null ? null : line.upToDate(), raw.upToDate()),
+                lineIndex,
+                vehicleIndex
+        );
+    }
+
+    private String rawDebugId(ExternalOrderRecord raw) {
+        if (raw == null) return "null-instance";
+        return instanceId(
+                firstNonBlank(raw.orderId(), raw.lineId(), "unknown-order"),
+                firstNonBlank(raw.lineId(), "unknown-line"),
+                raw.lineIndex(),
+                raw.vehicleIndex(),
+                vehicleKey(raw)
+        );
+    }
+
     private NormalizedTownRoadOrder normalize(ExternalOrderRecord raw) {
         // 补全缺失的经纬度：从地址名称中解析省市区并查本地坐标库
         ExternalOrderRecord.Location resolvedFrom = coordinateResolver.resolveLocation(raw.from());
@@ -359,10 +451,14 @@ public class TownRoadMiddleLayer {
         String orderId = raw.orderId() == null || raw.orderId().isBlank()
                 ? raw.lineId()
                 : raw.orderId();
+        String vehicleKey = vehicleKey(raw);
+        String instanceId = instanceId(orderId, raw.lineId(), raw.lineIndex(), raw.vehicleIndex(), vehicleKey);
 
         String dataSignature = signature(Map.of(
                 "orderId", safe(orderId),
                 "lineId", safe(raw.lineId()),
+                "instanceId", safe(instanceId),
+                "vehicleKey", safe(vehicleKey),
                 "fromKey", safe(fromKey),
                 "toKey", safe(toKey),
                 "vehicle", raw.vehicle() == null ? "" : raw.vehicle(),
@@ -383,6 +479,8 @@ public class TownRoadMiddleLayer {
         return new NormalizedTownRoadOrder(
                 orderId,
                 raw.lineId(),
+                instanceId,
+                vehicleKey,
 
                 fromKey,
                 toKey,
@@ -418,7 +516,7 @@ public class TownRoadMiddleLayer {
         shortHaulOrders.stream()
                 .sorted(Comparator.comparing(NormalizedTownRoadOrder::fromProvinceKey)
                         .thenComparing(NormalizedTownRoadOrder::toProvinceKey)
-                        .thenComparing(NormalizedTownRoadOrder::lineId))
+                        .thenComparing(NormalizedTownRoadOrder::instanceId))
                 .forEach(order -> bySourceProvince
                         .computeIfAbsent(order.fromProvinceKey(), ignored -> new ArrayList<>())
                         .add(order));
@@ -496,7 +594,7 @@ public class TownRoadMiddleLayer {
 
         List<TownRoadOrder> orders = flatOrderMap.values()
                 .stream()
-                .sorted(Comparator.comparing(NormalizedTownRoadOrder::lineId))
+                .sorted(orderComparator())
                 .map(this::toTownRoadOrder)
                 .toList();
 
@@ -535,12 +633,12 @@ public class TownRoadMiddleLayer {
                 + " 短途运输";
 
         List<String> primaryLineIds = primaryOrders.stream()
-                .map(NormalizedTownRoadOrder::lineId)
+                .map(NormalizedTownRoadOrder::instanceId)
                 .distinct()
                 .sorted()
                 .toList();
 
-        primaryOrders.forEach(order -> flatOrderMap.put(order.lineId(), order));
+        primaryOrders.forEach(order -> flatOrderMap.put(order.instanceId(), order));
 
         List<ProvincePath> candidateProvincePaths = candidateProvincePaths(sourceProvinceKey, targetProvinceKey);
 
@@ -559,14 +657,14 @@ public class TownRoadMiddleLayer {
             LinkedHashSet<String> candidateAlongLineIds = new LinkedHashSet<>();
 
             for (NormalizedTownRoadOrder candidateOrder : allShortHaulOrders) {
-                if (primaryLineIds.contains(candidateOrder.lineId())) {
+                if (primaryLineIds.contains(candidateOrder.instanceId())) {
                     continue;
                 }
 
                 if (orderHasAnyPathAsContinuousSubPath(candidateOrder, provincePath)) {
-                    candidateAlongLineIds.add(candidateOrder.lineId());
-                    routeGroupAlongLineIds.add(candidateOrder.lineId());
-                    flatOrderMap.put(candidateOrder.lineId(), candidateOrder);
+                    candidateAlongLineIds.add(candidateOrder.instanceId());
+                    routeGroupAlongLineIds.add(candidateOrder.instanceId());
+                    flatOrderMap.put(candidateOrder.instanceId(), candidateOrder);
                 }
             }
 
@@ -583,7 +681,7 @@ public class TownRoadMiddleLayer {
                 accumulator.primaryOrderLineIds.addAll(primaryLineIds);
 
                 for (String alongLineId : sortedCandidateAlongLineIds) {
-                    NormalizedTownRoadOrder alongOrder = ordersByLineId.get(alongLineId);
+                    NormalizedTownRoadOrder alongOrder = ordersByInstanceId.get(alongLineId);
                     if (alongOrder != null && orderUsesProvinceEdge(alongOrder, edgeKey)) {
                         accumulator.alongOrderLineIds.add(alongLineId);
                     }
@@ -792,7 +890,10 @@ public class TownRoadMiddleLayer {
     private TownRoadOrder toTownRoadOrder(NormalizedTownRoadOrder order) {
         return new TownRoadOrder(
                 order.orderId(),
+                order.instanceId(),
                 order.lineId(),
+                order.instanceId(),
+                order.vehicleKey(),
                 order.groupId(),
                 order.groupName(),
                 order.from(),
@@ -855,6 +956,60 @@ public class TownRoadMiddleLayer {
 
     private String safe(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) return "";
+        for (String value : values) {
+            String safeValue = safe(value);
+            if (!safeValue.isBlank()) return safeValue;
+        }
+        return "";
+    }
+
+    private <T> T firstNonNull(T preferred, T fallback) {
+        return preferred != null ? preferred : fallback;
+    }
+
+    private String vehicleKey(ExternalOrderRecord raw) {
+        ExternalOrderRecord.Vehicle vehicle = raw == null ? null : raw.vehicle();
+        if (vehicle == null) {
+            return "vehicle-" + safeIndex(raw == null ? null : raw.vehicleIndex());
+        }
+
+        String carId = safe(vehicle.carId());
+        if (!carId.isBlank()) return "car-" + carId;
+
+        String plate = safe(vehicle.plate());
+        if (!plate.isBlank()) return "plate-" + plate;
+
+        return "vehicle-" + safeIndex(raw.vehicleIndex());
+    }
+
+    private String instanceId(
+            String orderId,
+            String lineId,
+            Integer lineIndex,
+            Integer vehicleIndex,
+            String vehicleKey
+    ) {
+        return String.join(
+                "::",
+                firstNonBlank(orderId, "unknown-order"),
+                firstNonBlank(lineId, "unknown-line"),
+                "line-" + safeIndex(lineIndex),
+                firstNonBlank(vehicleKey, "vehicle-" + safeIndex(vehicleIndex))
+        );
+    }
+
+    private String safeIndex(Integer index) {
+        return index == null ? "0" : String.valueOf(index);
+    }
+
+    private Comparator<NormalizedTownRoadOrder> orderComparator() {
+        return Comparator.comparing(NormalizedTownRoadOrder::orderId)
+                .thenComparing(NormalizedTownRoadOrder::lineId)
+                .thenComparing(NormalizedTownRoadOrder::instanceId);
     }
 
     private List<String> sorted(Set<String> values) {
