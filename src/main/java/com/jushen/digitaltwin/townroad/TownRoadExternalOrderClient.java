@@ -81,6 +81,19 @@ public class TownRoadExternalOrderClient {
                 }
         );
 
+        // 判断外部 API 是否返回成功
+        Object success = root.get("success");
+        Object code = root.get("code");
+        boolean ok = Boolean.TRUE.equals(success)
+                || "200".equals(String.valueOf(code))
+                || "0".equals(String.valueOf(code));
+        if (!ok) {
+            Object message = root.get("message");
+            System.err.println("[TownRoadExtClient] external API returned failure: success="
+                    + success + ", code=" + code + ", message=" + message);
+            return List.of();
+        }
+
         Object records = root.get("records");
         if (records == null) records = root.get("data");
         if (records == null) records = root.get("list");
