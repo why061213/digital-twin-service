@@ -15,7 +15,12 @@ import java.util.Map;
 /**
  * 从外部订单的 province/city/district/name 字段中补全经纬度。
  *
- * 查找优先级：LocalCoordDb（分层库） → district-coordinates.json（旧扁平库） → AmapGeocodeClient（高德API）
+ * 查找优先级：
+ *   1. 原始 coords（已有）
+ *   2. LocalCoordDb 精确库
+ *   3. 高德 API 精确查询 → 成功自动写入 LocalCoordDb
+ *   4. district-coordinates.json 粗粒度兜底（区县→市→省）
+ *   5. 最终失败 → skippedNotRenderable
  */
 @Component
 public class TownRoadCoordinateResolver {
@@ -86,55 +91,64 @@ public class TownRoadCoordinateResolver {
         }
 
         double[] resolved = null;
+        String source = "none";
 
-        // ---- 1. LocalCoordDb 分层库 ----
+        // ---- 1. LocalCoordDb 精确库 ----
         // 1a. 省+市+区+名 全路径
         if (resolved == null && province != null && name != null) {
             resolved = localCoordDb.resolve(province, city, district, name);
+            if (resolved != null) source = "local:full";
         }
         // 1b. 省+市+区（当 name 就是区名本身时）
         if (resolved == null && province != null && district != null) {
             resolved = localCoordDb.resolve(province, city, district, district);
+            if (resolved != null) source = "local:district";
         }
         // 1c. 只用 name 查
         if (resolved == null && name != null) {
             resolved = localCoordDb.get(name);
+            if (resolved != null) source = "local:name";
         }
 
-        // ---- 2. 旧扁平库 district-coordinates.json ----
-        // 2a. 省+市+区
+        // ---- 2. 高德 API 精确查询 ----
+        if (resolved == null) {
+            String queryName = name != null ? name : (district != null ? district : "");
+            resolved = amapClient.geocode(province, city, district, queryName);
+            if (resolved != null) source = "amap";
+        }
+
+        // ---- 3. district-coordinates.json 粗粒度兜底 ----
+        // 3a. 省+市+区
         if (resolved == null && province != null && district != null) {
             String key = (city != null) ? province + city + district : province + district;
             resolved = nameToCoords.get(key);
+            if (resolved != null) source = "fallback:district";
         }
-        // 2b. 省+市
+        // 3b. 省+市
         if (resolved == null && province != null && city != null) {
             resolved = nameToCoords.get(province + city);
+            if (resolved != null) source = "fallback:city";
         }
-        // 2c. 只用城市名
+        // 3c. 只用城市名
         if (resolved == null && city != null) {
             resolved = nameToCoords.get(city);
+            if (resolved != null) source = "fallback:cityName";
         }
-        // 2d. 省
+        // 3d. 省
         if (resolved == null && province != null) {
             resolved = nameToCoords.get(province);
+            if (resolved != null) source = "fallback:province";
         }
-        // 2e. 原始 name
+        // 3e. 原始 name
         if (resolved == null && name != null) {
             resolved = nameToCoords.get(name);
-        }
-
-        // ---- 3. 高德 API ----
-        if (resolved == null) {
-            // 构建最准确的 API 查询地址
-            String queryName = name != null ? name : (district != null ? district : "");
-            resolved = amapClient.geocode(province, city, district, queryName);
+            if (resolved != null) source = "fallback:name";
         }
 
         if (resolved == null || resolved.length < 2) return location;
 
-        log.debug("[TownRoadCoord] resolved coords for {}/{}/{} '{}' → [{}, {}]",
-                province, city, district, name, resolved[0], resolved[1]);
+        log.debug("[TownRoadCoord] {} → {}/{}/{} '{}' → [{}, {}]",
+                source, province, city, district, name, resolved[0], resolved[1]);
 
         return new ExternalOrderRecord.Location(
                 location.name(),
