@@ -3,6 +3,8 @@ package com.jushen.digitaltwin.townroad;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
 
@@ -15,9 +17,13 @@ import java.util.regex.Pattern;
 /**
  * 从地址名称（如"山东省滨州市无棣县东风港站"）中解析省市区，
  * 并查本地坐标库补全经纬度。
+ *
+ * 查找优先级：LocalCoordDb（分层库） → district-coordinates.json（旧扁平库） → AmapGeocodeClient（高德API）
  */
 @Component
 public class TownRoadCoordinateResolver {
+
+    private static final Logger log = LoggerFactory.getLogger(TownRoadCoordinateResolver.class);
 
     private static final Pattern NAME_PATTERN = Pattern.compile(
             "^([\\u4e00-\\u9fa5]{2,4}?(?:省|自治区|特别行政区|市))"
@@ -27,16 +33,23 @@ public class TownRoadCoordinateResolver {
     );
 
     private final ObjectMapper objectMapper;
+    private final LocalCoordDb localCoordDb;
+    private final AmapGeocodeClient amapClient;
 
-    /** 名称 → [lng, lat] */
+    /** 旧的扁平库：名称 → [lng, lat]（兜底用） */
     private Map<String, double[]> nameToCoords = Map.of();
 
-    public TownRoadCoordinateResolver(ObjectMapper objectMapper) {
+    public TownRoadCoordinateResolver(ObjectMapper objectMapper,
+                                       LocalCoordDb localCoordDb,
+                                       AmapGeocodeClient amapClient) {
         this.objectMapper = objectMapper;
+        this.localCoordDb = localCoordDb;
+        this.amapClient = amapClient;
     }
 
     @PostConstruct
     public void loadCoordinateData() {
+        // 加载旧的扁平库作为兜底
         try {
             ClassPathResource resource = new ClassPathResource("district-coordinates.json");
             try (InputStream in = resource.getInputStream()) {
@@ -45,18 +58,18 @@ public class TownRoadCoordinateResolver {
                         new TypeReference<LinkedHashMap<String, double[]>>() {}
                 );
             }
-            System.out.println("[TownRoadCoord] loaded " + nameToCoords.size() + " location coordinates");
+            log.info("[TownRoadCoord] loaded {} entries from district-coordinates.json (fallback)", nameToCoords.size());
         } catch (Exception e) {
-            System.err.println("[TownRoadCoord] failed to load district-coordinates.json: " + e.getMessage());
+            log.warn("[TownRoadCoord] failed to load district-coordinates.json: {}", e.getMessage());
             nameToCoords = Map.of();
         }
+
+        log.info("[TownRoadCoord] local coord-db has {} entries, fallback has {} entries",
+                localCoordDb.size(), nameToCoords.size());
     }
 
     /**
      * 尝试从名称中解析省市区并查坐标。
-     * @param name 原始地址名称
-     * @param existingProvince 已有的省份（可能来自 adcode 等其他字段）
-     * @return [lng, lat] 或 null
      */
     public double[] resolve(String name, String existingProvince) {
         if (name == null || name.isBlank()) return null;
@@ -64,45 +77,65 @@ public class TownRoadCoordinateResolver {
         Matcher m = NAME_PATTERN.matcher(name.trim());
         if (!m.matches()) {
             // 尝试直接用名称查库
-            return nameToCoords.get(name.trim());
+            double[] coords = localCoordDb.get(name.trim());
+            if (coords != null) return coords;
+            coords = nameToCoords.get(name.trim());
+            if (coords != null) return coords;
+            return amapClient.geocode(name.trim());
         }
 
-        String province = m.group(1);  // 山东省
-        String city = m.group(2);      // 滨州市
-        String district = m.group(3);  // 无棣县
+        String province = m.group(1);
+        String city = m.group(2);
+        String district = m.group(3);
+        String detail = m.group(4);
 
-        // 1. 省+市+区
-        if (district != null) {
-            String fullPath = province + city + district;
-            double[] coords = nameToCoords.get(fullPath);
+        // 1. 省+市+区+详细信息（新库）
+        if (district != null && detail != null && !detail.isBlank()) {
+            double[] coords = localCoordDb.resolve(province, city, district, detail);
             if (coords != null) return coords;
         }
 
-        // 2. 省+市
+        // 2. 省+市+区（新库）
+        if (district != null) {
+            double[] coords = localCoordDb.resolve(province, city, district, district);
+            if (coords != null) return coords;
+
+            // 旧库：省+市+区 全路径
+            String fullPath = province + city + district;
+            coords = nameToCoords.get(fullPath);
+            if (coords != null) return coords;
+        }
+
+        // 3. 省+市（旧库）
         if (city != null) {
             String pc = province + city;
             double[] coords = nameToCoords.get(pc);
             if (coords != null) return coords;
-        }
 
-        // 3. 只用城市名（跨省情况下可能有用）
-        if (city != null) {
-            double[] coords = nameToCoords.get(city);
+            // 只用城市名
+            coords = nameToCoords.get(city);
             if (coords != null) return coords;
         }
 
-        // 4. 省（使用已有的 province 信息）
+        // 4. 省
         if (existingProvince != null && !existingProvince.isBlank()) {
             double[] coords = nameToCoords.get(existingProvince);
             if (coords != null) return coords;
         }
-
-        // 5. 直接用 province 从 name 中查
         double[] coords = nameToCoords.get(province);
         if (coords != null) return coords;
 
-        // 6. 用原始名称逐段尝试
-        return nameToCoords.get(name.trim());
+        // 5. 原始名称
+        coords = nameToCoords.get(name.trim());
+        if (coords != null) return coords;
+
+        // 6. 最后走一遍新库的 flat 查询
+        coords = localCoordDb.get(name.trim());
+        if (coords != null) return coords;
+
+        // 7. 高德 API 兜底
+        return amapClient.geocode(province, city, district,
+                detail != null && !detail.isBlank() ? detail : district);
     }
 
     /**
