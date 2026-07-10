@@ -439,6 +439,10 @@ public class TownRoadMiddleLayer {
         }
 
         routeGroups.sort(Comparator.comparing(TownRoadRouteGroup::toProvinceKey));
+        List<TownRoadRouteGroup> annotatedRouteGroups = annotateRouteGroups(routeGroups);
+        List<TownRoadRouteGroup> displayRouteGroups = annotatedRouteGroups.stream()
+                .filter(group -> !Boolean.FALSE.equals(group.display()))
+                .toList();
 
         List<ProvinceEdgeView> provinceEdges = edgeAccumulators.values()
                 .stream()
@@ -461,7 +465,8 @@ public class TownRoadMiddleLayer {
                 "后端根据外部订单、OD MapMap、省份路网、二级分组和省份边去重生成的短途运输展示",
                 new ProvinceRef(sourceProvinceKey, sourceProvinceName),
                 new ArrayList<>(renderProvinceSet),
-                routeGroups,
+                annotatedRouteGroups,
+                displayRouteGroups,
                 provinceEdges,
                 orders,
                 issuedAt
@@ -564,7 +569,88 @@ public class TownRoadMiddleLayer {
                 provinceCodeResolver.shortName(targetProvinceKey),
                 primaryLineIds,
                 sorted(routeGroupAlongLineIds),
-                candidates
+                candidates,
+                true,
+                false,
+                List.of(),
+                null
+        );
+    }
+
+    private List<TownRoadRouteGroup> annotateRouteGroups(List<TownRoadRouteGroup> routeGroups) {
+        if (routeGroups.isEmpty()) return List.of();
+
+        List<TownRoadRouteGroup> result = new ArrayList<>();
+        for (TownRoadRouteGroup group : routeGroups) {
+            List<String> absorbedByGroupIds = routeGroups.stream()
+                    .filter(candidate -> isLargerAbsorbingGroup(candidate, group))
+                    .map(TownRoadRouteGroup::groupId)
+                    .sorted()
+                    .toList();
+
+            boolean absorbed = !absorbedByGroupIds.isEmpty();
+            result.add(copyRouteGroup(
+                    group,
+                    !absorbed,
+                    absorbed,
+                    absorbedByGroupIds,
+                    absorbed ? "primary order appears as along order of larger route" : null
+            ));
+        }
+
+        return result;
+    }
+
+    private boolean isLargerAbsorbingGroup(TownRoadRouteGroup candidate, TownRoadRouteGroup target) {
+        if (candidate.groupId().equals(target.groupId())) return false;
+
+        int candidateOrderCount = allGroupLineIds(candidate).size();
+        int targetOrderCount = allGroupLineIds(target).size();
+        if (candidateOrderCount <= targetOrderCount) return false;
+
+        List<String> targetPrimaryLineIds = target.primaryOrderLineIds() == null
+                ? List.of()
+                : target.primaryOrderLineIds();
+        if (targetPrimaryLineIds.isEmpty()) return false;
+
+        Set<String> candidateAlongLineIds = new LinkedHashSet<>(
+                candidate.alongOrderLineIds() == null ? List.of() : candidate.alongOrderLineIds()
+        );
+        return candidateAlongLineIds.containsAll(targetPrimaryLineIds);
+    }
+
+    private Set<String> allGroupLineIds(TownRoadRouteGroup group) {
+        LinkedHashSet<String> lineIds = new LinkedHashSet<>();
+        if (group.primaryOrderLineIds() != null) {
+            lineIds.addAll(group.primaryOrderLineIds());
+        }
+        if (group.alongOrderLineIds() != null) {
+            lineIds.addAll(group.alongOrderLineIds());
+        }
+        return lineIds;
+    }
+
+    private TownRoadRouteGroup copyRouteGroup(
+            TownRoadRouteGroup group,
+            boolean display,
+            boolean absorbed,
+            List<String> absorbedByGroupIds,
+            String absorbedReason
+    ) {
+        return new TownRoadRouteGroup(
+                group.groupId(),
+                group.groupName(),
+                group.fromProvinceKey(),
+                group.fromProvinceName(),
+                group.toProvinceKey(),
+                group.toProvinceName(),
+                group.primaryOrderLineIds(),
+                group.alongOrderLineIds(),
+                group.candidatePaths(),
+                display,
+                absorbed,
+                absorbedByGroupIds,
+                absorbedReason
         );
     }
 

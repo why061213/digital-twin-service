@@ -12,6 +12,7 @@ public record TownRoadRenderCommand(
 
         List<String> renderProvinces,
         List<TownRoadRouteGroup> routeGroups,
+        List<TownRoadRouteGroup> displayRouteGroups,
         List<ProvinceEdgeView> provinceEdges,
         List<TownRoadOrder> orders,
 
@@ -32,7 +33,11 @@ public record TownRoadRenderCommand(
             String toProvinceName,
             List<String> primaryOrderLineIds,
             List<String> alongOrderLineIds,
-            List<ProvincePathCandidate> candidatePaths
+            List<ProvincePathCandidate> candidatePaths,
+            Boolean display,
+            Boolean absorbed,
+            List<String> absorbedByGroupIds,
+            String absorbedReason
     ) {
     }
 
