@@ -33,6 +33,11 @@ public class AmapGeocodeClient {
 
     private static final String GEOCODE_URL = "https://restapi.amap.com/v3/geocode/geo";
 
+    /** 统计计数器 */
+    private int successCount = 0;
+    private int failCount = 0;
+    private int skipCount = 0;
+
     private final CoordDbProperties properties;
     private final LocalCoordDb localCoordDb;
     private final ObjectMapper objectMapper;
@@ -62,39 +67,74 @@ public class AmapGeocodeClient {
         double[] local = localCoordDb.resolve(province, city, district, name);
         if (local != null) {
             log.debug("[Amap] local hit: {}/{}/{}/{}", province, city, district, name);
+            skipCount++;
             return local;
         }
 
         // 2. 本地没有，调高德 API
         String key = properties.getAmapKey();
         if (key == null || key.isBlank()) {
-            log.warn("[Amap] no API key configured, skip geocode for: {}", name);
+            log.warn("[Amap] no API key configured");
+            skipCount++;
             return null;
         }
 
-        // 构建地址：省+市+区+名
-        StringBuilder address = new StringBuilder();
-        if (province != null && !province.isBlank()) address.append(province);
-        if (city != null && !city.isBlank()) address.append(city);
-        if (district != null && !district.isBlank()) address.append(district);
-        String detailName = name.equals(district) ? "" : name;
-        if (!detailName.isBlank()) address.append(detailName);
-
-        String addressStr = address.toString();
+        // 构建地址：name 通常已包含完整地址，避免重复拼接省市区
+        String addressStr = buildSmartAddress(province, city, district, name);
         if (addressStr.isBlank()) return null;
 
         try {
             double[] result = callGeocodeApi(key, addressStr, city);
             if (result != null) {
+                successCount++;
                 // 回写本地库
                 String effDistrict = district != null ? district : name;
                 localCoordDb.put(province, city, effDistrict, name, result);
+            } else {
+                failCount++;
             }
             return result;
         } catch (Exception e) {
-            log.warn("[Amap] geocode failed for '{}': {}", addressStr, e.getMessage());
+            failCount++;
+            log.warn("[Amap] geocode exception for '{}': {}", addressStr, e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * 智能构建地址：如果 name 已经以省/市/区开头，避免重复拼接。
+     * 例如 name="云南省红河哈尼族彝族自治州泸西县..." 时直接用 name，
+     * 不再拼成 "云南省红河哈尼族彝族自治州泸西县云南省红河哈尼族彝族自治州泸西县..."
+     */
+    private String buildSmartAddress(String province, String city, String district, String name) {
+        String trimmedName = name.trim();
+
+        // 检测 name 是否已包含省市区前缀
+        boolean alreadyHasPrefix = false;
+        if (province != null && !province.isBlank() && trimmedName.startsWith(province)) {
+            alreadyHasPrefix = true;
+        } else if (city != null && !city.isBlank() && trimmedName.startsWith(city)) {
+            alreadyHasPrefix = true;
+        } else if (district != null && !district.isBlank() && trimmedName.startsWith(district)) {
+            alreadyHasPrefix = true;
+        }
+
+        if (alreadyHasPrefix) {
+            // name 已是完整地址，直接使用
+            return trimmedName;
+        }
+
+        // name 不含省市区前缀，拼接完整地址
+        StringBuilder sb = new StringBuilder();
+        if (province != null && !province.isBlank()) sb.append(province);
+        if (city != null && !city.isBlank()) sb.append(city);
+        if (district != null && !district.isBlank()) sb.append(district);
+        if (name.equals(district)) {
+            // name 就是区名本身，已经拼接过了
+        } else {
+            sb.append(trimmedName);
+        }
+        return sb.toString();
     }
 
     /**
@@ -102,6 +142,16 @@ public class AmapGeocodeClient {
      */
     public double[] geocode(String name) {
         return geocode(null, null, null, name);
+    }
+
+    /** 获取统计信息并重置计数器 */
+    public synchronized String getStatsAndReset() {
+        String stats = String.format("[Amap] session stats: success=%d fail=%d skip(local)=%d",
+                successCount, failCount, skipCount);
+        successCount = 0;
+        failCount = 0;
+        skipCount = 0;
+        return stats;
     }
 
     // ---- 签名 & 请求 ----
@@ -140,15 +190,17 @@ public class AmapGeocodeClient {
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() != 200) {
-            log.warn("[Amap] HTTP {} for address: {}", response.statusCode(), address);
+            log.warn("[Amap] HTTP {} for '{}': {}", response.statusCode(), address, response.body());
             return null;
         }
 
         JsonNode root = objectMapper.readTree(response.body());
         int status = root.path("status").asInt(0);
         if (status != 1) {
-            String info = root.path("info").asText("unknown");
-            log.warn("[Amap] API status={} info={} for address: {}", status, info, address);
+            String info = root.path("info").asText("UNKNOWN");
+            String infocode = root.path("infocode").asText("");
+            log.warn("[Amap] API status={} infocode={} info={} for '{}'",
+                    status, infocode, info, address);
             return null;
         }
 

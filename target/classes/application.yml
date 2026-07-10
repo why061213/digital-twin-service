@@ -74,3 +74,18 @@ dashboard:
       simulation-speed-kmh: 80
       position-query-interval-ms: 1800000
       slow-position-query-interval-ms: 300000
+
+  # ===== 本地坐标库 + 高德地图地理编码 =====
+  coord-db:
+    # 高德地图 Web API Key（用于地理编码）
+    # 申请地址：https://console.amap.com/dev/key/app
+    # 真实值请在 application-private.yml 中配置
+    amap-key: ""
+    # 高德地图安全密钥（用于请求 SHA256 签名）
+    amap-secret: ""
+    # API 调用间隔（毫秒），避免 QPS 超限。3次/秒 ≈ 334ms
+    amap-rate-limit-ms: 334
+    # 本地库 classpath 路径
+    local-path: coord-db
+    # API 请求超时（毫秒）
+    request-timeout-ms: 12000

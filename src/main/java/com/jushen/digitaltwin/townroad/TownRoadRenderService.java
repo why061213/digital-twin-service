@@ -1,6 +1,8 @@
 package com.jushen.digitaltwin.townroad;
 
 import com.jushen.digitaltwin.websocket.RealtimeWebSocketHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
@@ -10,9 +12,12 @@ import java.util.Map;
 @Service
 public class TownRoadRenderService {
 
+    private static final Logger log = LoggerFactory.getLogger(TownRoadRenderService.class);
+
     private final TownRoadExternalOrderClient townRoadExternalOrderClient;
     private final TownRoadMiddleLayer middleLayer;
     private final RealtimeWebSocketHandler realtimeWebSocketHandler;
+    private final AmapGeocodeClient amapGeocodeClient;
     private Map<String, Object> lastResult = Map.of();
 
     public Map<String, Object> latestResult() {
@@ -22,11 +27,13 @@ public class TownRoadRenderService {
     public TownRoadRenderService(
             TownRoadExternalOrderClient townRoadExternalOrderClient,
             TownRoadMiddleLayer middleLayer,
-            RealtimeWebSocketHandler realtimeWebSocketHandler
+            RealtimeWebSocketHandler realtimeWebSocketHandler,
+            AmapGeocodeClient amapGeocodeClient
     ) {
         this.townRoadExternalOrderClient = townRoadExternalOrderClient;
         this.middleLayer = middleLayer;
         this.realtimeWebSocketHandler = realtimeWebSocketHandler;
+        this.amapGeocodeClient = amapGeocodeClient;
     }
 
     public Map<String, Object> fetchProcessAndBroadcast() {
@@ -77,6 +84,10 @@ public class TownRoadRenderService {
 
         response.put("commands", result.commands());
         this.lastResult = response;
+
+        // 打印高德 API 调用统计
+        log.info(amapGeocodeClient.getStatsAndReset());
+
         return response;
     }
 

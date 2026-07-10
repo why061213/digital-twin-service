@@ -52,8 +52,11 @@ E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\SimulationDataFactory.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\WarehouseDataProvider.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\WarehousePushService.java
+E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\townroad\AmapGeocodeClient.java
+E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\townroad\CoordDbProperties.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\townroad\ExternalOrderRecord.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\townroad\ExternalOrderSnapshotResult.java
+E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\townroad\LocalCoordDb.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\townroad\NormalizedTownRoadOrder.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\townroad\OrderSnapshotDiff.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\townroad\ProvinceCodeResolver.java
