@@ -11,12 +11,9 @@ import org.springframework.stereotype.Component;
 import java.io.InputStream;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
- * 从地址名称（如"山东省滨州市无棣县东风港站"）中解析省市区，
- * 并查本地坐标库补全经纬度。
+ * 从外部订单的 province/city/district/name 字段中补全经纬度。
  *
  * 查找优先级：LocalCoordDb（分层库） → district-coordinates.json（旧扁平库） → AmapGeocodeClient（高德API）
  */
@@ -25,12 +22,9 @@ public class TownRoadCoordinateResolver {
 
     private static final Logger log = LoggerFactory.getLogger(TownRoadCoordinateResolver.class);
 
-    // {2,15} 支持长地名如"文山壮族苗族自治州""巴音郭楞蒙古自治州"
-    private static final Pattern NAME_PATTERN = Pattern.compile(
-            "^([\\u4e00-\\u9fa5]{2,4}?(?:省|自治区|特别行政区|市))"
-                    + "([\\u4e00-\\u9fa5]{2,15}?(?:市|自治州|地区|盟|区))?"
-                    + "([\\u4e00-\\u9fa5]{2,15}?(?:县|区|市|旗|自治县|县级市))?"
-                    + "(.*)$"
+    /** 直辖市列表 */
+    private static final java.util.Set<String> MUNICIPALITIES = java.util.Set.of(
+            "北京市", "天津市", "上海市", "重庆市"
     );
 
     private final ObjectMapper objectMapper;
@@ -50,7 +44,6 @@ public class TownRoadCoordinateResolver {
 
     @PostConstruct
     public void loadCoordinateData() {
-        // 加载旧的扁平库作为兜底
         try {
             ClassPathResource resource = new ClassPathResource("district-coordinates.json");
             try (InputStream in = resource.getInputStream()) {
@@ -70,97 +63,78 @@ public class TownRoadCoordinateResolver {
     }
 
     /**
-     * 尝试从名称中解析省市区并查坐标。
-     */
-    public double[] resolve(String name, String existingProvince) {
-        if (name == null || name.isBlank()) return null;
-
-        Matcher m = NAME_PATTERN.matcher(name.trim());
-        if (!m.matches()) {
-            // 尝试直接用名称查库
-            double[] coords = localCoordDb.get(name.trim());
-            if (coords != null) return coords;
-            coords = nameToCoords.get(name.trim());
-            if (coords != null) return coords;
-            return amapClient.geocode(name.trim());
-        }
-
-        String province = m.group(1);
-        String city = m.group(2);
-        String district = m.group(3);
-        String detail = m.group(4);
-
-        // 直辖市修正：北京市/天津市/上海市/重庆市 下没有地级市，
-        // 正则可能把"浦东新区"误匹配为 city（因为"区"在市级后缀中）
-        if (isMunicipality(province)) {
-            if (city != null && district == null) {
-                // city 被错误匹配了，实际是区
-                district = city;
-                city = null;
-            }
-        }
-
-        // 1. 省+市+区+详细信息（新库）
-        if (district != null && detail != null && !detail.isBlank()) {
-            double[] coords = localCoordDb.resolve(province, city, district, detail);
-            if (coords != null) return coords;
-        }
-
-        // 2. 省+市+区（新库）
-        if (district != null) {
-            double[] coords = localCoordDb.resolve(province, city, district, district);
-            if (coords != null) return coords;
-
-            // 旧库：省+市+区 全路径
-            String fullPath = province + city + district;
-            coords = nameToCoords.get(fullPath);
-            if (coords != null) return coords;
-        }
-
-        // 3. 省+市（旧库）
-        if (city != null) {
-            String pc = province + city;
-            double[] coords = nameToCoords.get(pc);
-            if (coords != null) return coords;
-
-            // 只用城市名
-            coords = nameToCoords.get(city);
-            if (coords != null) return coords;
-        }
-
-        // 4. 省
-        if (existingProvince != null && !existingProvince.isBlank()) {
-            double[] coords = nameToCoords.get(existingProvince);
-            if (coords != null) return coords;
-        }
-        double[] coords = nameToCoords.get(province);
-        if (coords != null) return coords;
-
-        // 5. 原始名称
-        coords = nameToCoords.get(name.trim());
-        if (coords != null) return coords;
-
-        // 6. 最后走一遍新库的 flat 查询
-        coords = localCoordDb.get(name.trim());
-        if (coords != null) return coords;
-
-        // 7. 高德 API 兜底
-        return amapClient.geocode(province, city, district,
-                detail != null && !detail.isBlank() ? detail : district);
-    }
-
-    /**
      * 返回解析后的 Location，补全了 coords。
+     * 直接使用外部接口提供的 province/city/district/name 字段，不做正则解析。
      */
     public ExternalOrderRecord.Location resolveLocation(ExternalOrderRecord.Location location) {
         if (location == null) return null;
         if (hasCoords(location.coords())) return location;
 
-        String name = location.name();
-        if (name == null || name.isBlank()) return location;
+        String province = trimToNull(location.province());
+        String city = trimToNull(location.city());
+        String district = trimToNull(location.district());
+        String name = trimToNull(location.name());
 
-        double[] resolved = resolve(name, null);
+        // 没有任何可用的地址信息
+        if (province == null && name == null) return location;
+
+        // 直辖市优化："重庆市"下"市辖区"不是真正的地级市，合并到 district 维度
+        if (province != null && MUNICIPALITIES.contains(province)) {
+            if ("市辖区".equals(city) || "县".equals(city)) {
+                city = null; // 直辖市的"市辖区"/"县"是虚层级
+            }
+        }
+
+        double[] resolved = null;
+
+        // ---- 1. LocalCoordDb 分层库 ----
+        // 1a. 省+市+区+名 全路径
+        if (resolved == null && province != null && name != null) {
+            resolved = localCoordDb.resolve(province, city, district, name);
+        }
+        // 1b. 省+市+区（当 name 就是区名本身时）
+        if (resolved == null && province != null && district != null) {
+            resolved = localCoordDb.resolve(province, city, district, district);
+        }
+        // 1c. 只用 name 查
+        if (resolved == null && name != null) {
+            resolved = localCoordDb.get(name);
+        }
+
+        // ---- 2. 旧扁平库 district-coordinates.json ----
+        // 2a. 省+市+区
+        if (resolved == null && province != null && district != null) {
+            String key = (city != null) ? province + city + district : province + district;
+            resolved = nameToCoords.get(key);
+        }
+        // 2b. 省+市
+        if (resolved == null && province != null && city != null) {
+            resolved = nameToCoords.get(province + city);
+        }
+        // 2c. 只用城市名
+        if (resolved == null && city != null) {
+            resolved = nameToCoords.get(city);
+        }
+        // 2d. 省
+        if (resolved == null && province != null) {
+            resolved = nameToCoords.get(province);
+        }
+        // 2e. 原始 name
+        if (resolved == null && name != null) {
+            resolved = nameToCoords.get(name);
+        }
+
+        // ---- 3. 高德 API ----
+        if (resolved == null) {
+            // 构建最准确的 API 查询地址
+            String queryName = name != null ? name : (district != null ? district : "");
+            resolved = amapClient.geocode(province, city, district, queryName);
+        }
+
         if (resolved == null || resolved.length < 2) return location;
+
+        log.debug("[TownRoadCoord] resolved coords for {}/{}/{} '{}' → [{}, {}]",
+                province, city, district, name, resolved[0], resolved[1]);
 
         return new ExternalOrderRecord.Location(
                 location.name(),
@@ -177,13 +151,9 @@ public class TownRoadCoordinateResolver {
                && Double.isFinite(coords[0]) && Double.isFinite(coords[1]);
     }
 
-    /** 判断是否为直辖市（省级行政区中没有地级市） */
-    private static boolean isMunicipality(String province) {
-        return province != null && (
-                province.equals("北京市") ||
-                province.equals("天津市") ||
-                province.equals("上海市") ||
-                province.equals("重庆市")
-        );
+    private static String trimToNull(String value) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 }
