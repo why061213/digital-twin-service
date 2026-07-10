@@ -15,6 +15,9 @@ import java.util.Map;
 @Service
 public class TownRoadExternalOrderClient {
 
+    private static final String DEFAULT_API_URL =
+            "https://api.jushen.co/Freight/DispatchTransitNew/listTransitBoard";
+
     private final ObjectMapper objectMapper;
     private final TownRoadExternalOrderProperties properties;
     private final HttpClient httpClient;
@@ -30,19 +33,22 @@ public class TownRoadExternalOrderClient {
                 .build();
     }
 
-    public List<ExternalOrderRecord> postOrders(Map<String, Object> payload) {
-        if (properties.getPostUrl() == null || properties.getPostUrl().isBlank()) {
-            return List.of();
+    /**
+     * GET 请求外部 API，不传 body，传固定请求头。
+     */
+    public List<ExternalOrderRecord> fetchOrders() {
+        String url = properties.getPostUrl();
+        if (url == null || url.isBlank()) {
+            url = DEFAULT_API_URL;
         }
 
         try {
-            String requestBody = objectMapper.writeValueAsString(payload == null ? Map.of() : payload);
-
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(properties.getPostUrl()))
+                    .uri(URI.create(url))
                     .timeout(Duration.ofMillis(properties.getRequestTimeoutMs()))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                    .header("internalCall", "jushen-internal")
+                    .header("platformType", "JsSc")
+                    .GET()
                     .build();
 
             HttpResponse<String> response = httpClient.send(

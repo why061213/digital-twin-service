@@ -18,13 +18,11 @@ public class TownRoadController {
 
     /**
      * 正式入口：
-     * 后端 POST 调外部接口 -> 拿 ExternalOrderRecord[] -> 中间层处理 -> broadcast town_road_render[]
+     * GET 调外部接口 -> 拿 ExternalOrderRecord[] -> 中间层处理 -> broadcast town_road_render[]
      */
     @PostMapping("/provinces")
-    public Map<String, Object> pushProvinceRenderCommand(
-            @RequestBody(required = false) Map<String, Object> payload
-    ) {
-        return renderService.fetchProcessAndBroadcast(payload == null ? Map.of() : payload);
+    public Map<String, Object> pushProvinceRenderCommand() {
+        return renderService.fetchProcessAndBroadcast();
     }
 
     /**

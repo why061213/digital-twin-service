@@ -29,8 +29,8 @@ public class TownRoadRenderService {
         this.realtimeWebSocketHandler = realtimeWebSocketHandler;
     }
 
-    public Map<String, Object> fetchProcessAndBroadcast(Map<String, Object> payload) {
-        List<ExternalOrderRecord> rawOrders = townRoadExternalOrderClient.postOrders(payload);
+    public Map<String, Object> fetchProcessAndBroadcast() {
+        List<ExternalOrderRecord> rawOrders = townRoadExternalOrderClient.fetchOrders();
         return processAndBroadcast(rawOrders);
     }
 
