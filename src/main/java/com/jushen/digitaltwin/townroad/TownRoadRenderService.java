@@ -13,6 +13,11 @@ public class TownRoadRenderService {
     private final TownRoadExternalOrderClient townRoadExternalOrderClient;
     private final TownRoadMiddleLayer middleLayer;
     private final RealtimeWebSocketHandler realtimeWebSocketHandler;
+    private Map<String, Object> lastResult = Map.of();
+
+    public Map<String, Object> latestResult() {
+        return lastResult;
+    }
 
     public TownRoadRenderService(
             TownRoadExternalOrderClient townRoadExternalOrderClient,
@@ -44,8 +49,10 @@ public class TownRoadRenderService {
         response.put("normalizedCount", result.normalizedCount());
         response.put("shortHaulCount", result.shortHaulCount());
         response.put("commandCount", result.commands().size());
+        response.put("displayMode", result.commands().size() > 1 ? "multi_source_rotation" : "single_source");
         response.put("diff", result.diff().toMap());
         response.put("commands", result.commands());
+        this.lastResult = response;
         return response;
     }
 
