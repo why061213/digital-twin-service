@@ -14,8 +14,11 @@ public class CoordDbProperties {
     /** 高德地图 Web API Key（用于地理编码） */
     private String amapKey = "";
 
-    /** 高德 API 调用间隔（毫秒），避免 QPS 超限 */
-    private long amapRateLimitMs = 200;
+    /** 高德地图安全密钥（用于请求签名） */
+    private String amapSecret = "";
+
+    /** 高德 API 调用间隔（毫秒），避免 QPS 超限。3次/秒 ≈ 334ms */
+    private long amapRateLimitMs = 334;
 
     /** coord-db 本地库目录（classpath 相对路径） */
     private String localPath = "coord-db";
@@ -29,6 +32,14 @@ public class CoordDbProperties {
 
     public void setAmapKey(String amapKey) {
         this.amapKey = amapKey;
+    }
+
+    public String getAmapSecret() {
+        return amapSecret;
+    }
+
+    public void setAmapSecret(String amapSecret) {
+        this.amapSecret = amapSecret;
     }
 
     public long getAmapRateLimitMs() {

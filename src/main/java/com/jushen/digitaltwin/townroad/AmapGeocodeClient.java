@@ -13,11 +13,16 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * 高德地图 Web API 地理编码客户端。
  * 通过省/市/区/地名查询经纬度，查询成功后自动写入 LocalCoordDb。
+ * 支持 SHA256 安全签名。
  *
  * API 文档：https://lbs.amap.com/api/webservice/guide/api/georegeo
  */
@@ -99,20 +104,28 @@ public class AmapGeocodeClient {
         return geocode(null, null, null, name);
     }
 
-    private double[] callGeocodeApi(String key, String address, String city) throws IOException, InterruptedException {
-        // 限速
-        long now = System.currentTimeMillis();
-        long waitMs = properties.getAmapRateLimitMs() - (now - lastCallAt);
-        if (waitMs > 0) {
-            Thread.sleep(waitMs);
-        }
-        lastCallAt = System.currentTimeMillis();
+    // ---- 签名 & 请求 ----
 
-        String encodedAddress = URLEncoder.encode(address, StandardCharsets.UTF_8);
-        String url = GEOCODE_URL + "?key=" + key + "&address=" + encodedAddress;
+    private double[] callGeocodeApi(String key, String address, String city) throws IOException, InterruptedException {
+        // 限速：3次/秒
+        rateLimit();
+
+        // 构建参数（使用 TreeMap 自动按 key 字典排序）
+        Map<String, String> params = new TreeMap<>();
+        params.put("key", key);
+        params.put("address", address);
         if (city != null && !city.isBlank()) {
-            url += "&city=" + URLEncoder.encode(city, StandardCharsets.UTF_8);
+            params.put("city", city);
         }
+
+        // 如果配置了安全密钥，计算签名
+        String secret = properties.getAmapSecret();
+        if (secret != null && !secret.isBlank()) {
+            String sig = sign(params, secret);
+            params.put("sig", sig);
+        }
+
+        String url = buildUrl(params);
 
         log.debug("[Amap] calling geocode: {}", address);
 
@@ -157,5 +170,71 @@ public class AmapGeocodeClient {
 
         log.info("[Amap] geocode success: {} -> [{}, {}]", address, lng, lat);
         return new double[]{lng, lat};
+    }
+
+    /**
+     * 限速：确保两次调用间隔 >= amapRateLimitMs
+     */
+    private void rateLimit() {
+        long now = System.currentTimeMillis();
+        long waitMs = properties.getAmapRateLimitMs() - (now - lastCallAt);
+        if (waitMs > 0) {
+            try {
+                Thread.sleep(waitMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        lastCallAt = System.currentTimeMillis();
+    }
+
+    /**
+     * 构建请求 URL
+     */
+    private String buildUrl(Map<String, String> params) {
+        StringBuilder sb = new StringBuilder(GEOCODE_URL);
+        sb.append('?');
+        boolean first = true;
+        for (Map.Entry<String, String> entry : params.entrySet()) {
+            if (!first) sb.append('&');
+            sb.append(entry.getKey());
+            sb.append('=');
+            sb.append(URLEncoder.encode(entry.getValue(), StandardCharsets.UTF_8));
+            first = false;
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 高德 V3 签名算法：SHA256(排序后的参数串 + secret)
+     * 参数串格式：key1=value1&key2=value2（value 不编码，直接用原始值）
+     */
+    private String sign(Map<String, String> params, String secret) {
+        StringBuilder raw = new StringBuilder();
+        boolean first = true;
+        for (Map.Entry<String, String> entry : params.entrySet()) {
+            if (!first) raw.append('&');
+            raw.append(entry.getKey());
+            raw.append('=');
+            raw.append(entry.getValue());
+            first = false;
+        }
+        raw.append(secret);
+
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest(raw.toString().getBytes(StandardCharsets.UTF_8));
+            return bytesToHex(hash);
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 not available", e);
+        }
+    }
+
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder hex = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            hex.append(String.format("%02x", b & 0xFF));
+        }
+        return hex.toString();
     }
 }
