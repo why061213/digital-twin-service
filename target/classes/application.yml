@@ -29,6 +29,10 @@ dashboard:
 
       connect-timeout-ms: 5000
       request-timeout-ms: 12000
+      max-candidate-province-count: 4
+      max-candidate-path-count: 4
+      candidate-tolerance-ratio: 0.30
+      candidate-absolute-slack: 250
 
       # true 表示对方每次返回全量快照
       # 本次没出现但本地存在的 lineId，会被认为已删除

@@ -100,4 +100,18 @@ public class TownRoadController {
         response.put("orders", orders);
         return response;
     }
+
+    @GetMapping("/latest")
+    public Map<String, Object> latest() {
+        Map<String, Object> result = renderService.latestResult();
+
+        if (result == null || result.isEmpty()) {
+            Map<String, Object> empty = new LinkedHashMap<>();
+            empty.put("ok", false);
+            empty.put("message", "No town road snapshot has been processed yet");
+            return empty;
+        }
+
+        return result;
+    }
 }

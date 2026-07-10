@@ -38,6 +38,7 @@ public class TownRoadMiddleLayer {
     private final ProvinceRoadGraph provinceRoadGraph;
     private final ProvinceCodeResolver provinceCodeResolver;
     private final TownRoadExternalOrderProperties properties;
+    private final TownRoadCoordinateResolver coordinateResolver;
 
     private final Map<String, NormalizedTownRoadOrder> ordersByLineId = new ConcurrentHashMap<>();
 
@@ -66,12 +67,14 @@ public class TownRoadMiddleLayer {
             ObjectMapper objectMapper,
             ProvinceRoadGraph provinceRoadGraph,
             ProvinceCodeResolver provinceCodeResolver,
-            TownRoadExternalOrderProperties properties
+            TownRoadExternalOrderProperties properties,
+            TownRoadCoordinateResolver coordinateResolver
     ) {
         this.objectMapper = objectMapper;
         this.provinceRoadGraph = provinceRoadGraph;
         this.provinceCodeResolver = provinceCodeResolver;
         this.properties = properties;
+        this.coordinateResolver = coordinateResolver;
     }
 
     public synchronized ExternalOrderSnapshotResult processSnapshot(List<ExternalOrderRecord> rawOrders) {
@@ -285,12 +288,16 @@ public class TownRoadMiddleLayer {
     }
 
     private NormalizedTownRoadOrder normalize(ExternalOrderRecord raw) {
-        String fromKey = locationKey(raw.from());
-        String toKey = locationKey(raw.to());
+        // 补全缺失的经纬度：从地址名称中解析省市区并查本地坐标库
+        ExternalOrderRecord.Location resolvedFrom = coordinateResolver.resolveLocation(raw.from());
+        ExternalOrderRecord.Location resolvedTo = coordinateResolver.resolveLocation(raw.to());
+
+        String fromKey = locationKey(resolvedFrom);
+        String toKey = locationKey(resolvedTo);
         String odKey = fromKey + "->" + toKey;
 
-        String fromProvinceKey = provinceCodeResolver.provinceKey(raw.from());
-        String toProvinceKey = provinceCodeResolver.provinceKey(raw.to());
+        String fromProvinceKey = provinceCodeResolver.provinceKey(resolvedFrom);
+        String toProvinceKey = provinceCodeResolver.provinceKey(resolvedTo);
 
         List<ProvincePath> candidatePaths = candidateProvincePaths(fromProvinceKey, toProvinceKey);
 
@@ -330,8 +337,8 @@ public class TownRoadMiddleLayer {
         String routeSignature = signature(Map.of(
                 "fromKey", safe(fromKey),
                 "toKey", safe(toKey),
-                "fromCoords", coordsForSignature(raw.from() == null ? null : raw.from().coords()),
-                "toCoords", coordsForSignature(raw.to() == null ? null : raw.to().coords()),
+                "fromCoords", coordsForSignature(resolvedFrom.coords()),
+                "toCoords", coordsForSignature(resolvedTo.coords()),
                 "provincePathKeys", provincePathKeys,
                 "upToDate", Boolean.TRUE.equals(raw.upToDate())
         ));
@@ -354,8 +361,8 @@ public class TownRoadMiddleLayer {
                 groupId,
                 groupName,
 
-                raw.from(),
-                raw.to(),
+                resolvedFrom,
+                resolvedTo,
                 raw.vehicle(),
 
                 raw.status(),
