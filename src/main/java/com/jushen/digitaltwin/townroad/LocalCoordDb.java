@@ -208,7 +208,6 @@ public class LocalCoordDb {
 
         File file = fileMap.get(relativeKey);
         if (file == null) {
-            // 目录/文件不存在，尝试创建
             file = findOrCreateCoordFile(effProvince, effCity, effDistrict);
             if (file != null) {
                 fileMap.put(relativeKey, file);
@@ -216,6 +215,8 @@ public class LocalCoordDb {
         }
 
         if (file != null) {
+            // 重定向 target/classes/ → src/main/resources/（防止 mvn clean 丢失）
+            file = redirectToSource(file);
             try {
                 Path tempPath = Paths.get(file.getParent(), effDistrict + ".tmp.json");
                 objectMapper.writerWithDefaultPrettyPrinter().writeValue(tempPath.toFile(), data);
@@ -262,36 +263,69 @@ public class LocalCoordDb {
 
     /**
      * 从已有的 fileMap 或 classpath 推导出 coord-db 的文件系统基础路径。
+     * 优先使用 src/main/resources/coord-db/（源码目录），
+     * 避免写到 target/classes/ 下被 mvn clean 清除。
      */
     private File resolveBaseDir() {
-        // 优先用已有文件的父目录推导
+        // 1. 优先：src/main/resources/coord-db（开发环境源码目录）
+        File srcDir = new File("src/main/resources/coord-db");
+        if (srcDir.exists() && srcDir.isDirectory()) return srcDir;
+
+        // 2. 从 fileMap 推导（可能是 target/classes/...）
         for (File file : fileMap.values()) {
-            // file 是 .../coord-db/省/市/区.json
-            // 往上走三层到 coord-db/
-            File parent = file.getParentFile(); // 市/
+            File parent = file.getParentFile();
             if (parent != null) {
-                File grandParent = parent.getParentFile(); // 省/
+                File grandParent = parent.getParentFile();
                 if (grandParent != null) {
-                    File base = grandParent.getParentFile(); // coord-db/
-                    if (base != null && base.exists()) return base;
+                    File base = grandParent.getParentFile();
+                    if (base != null && base.exists()) {
+                        // 如果推导到 target/classes/，尝试换成源码目录
+                        String basePath = base.getAbsolutePath().replace('\\', '/');
+                        String srcPath = basePath.replace("target/classes/", "src/main/resources/");
+                        if (!srcPath.equals(basePath)) {
+                            File srcCandidate = new File(srcPath);
+                            if (srcCandidate.exists()) return srcCandidate;
+                        }
+                        return base;
+                    }
                 }
             }
         }
 
-        // 回退：尝试从 classpath 推导
+        // 3. 回退：classpath
         try {
             Resource resource = resourceResolver.getResource("classpath:coord-db/");
             File file = resource.getFile();
-            if (file.exists()) return file;
-        } catch (Exception ignored) {
-            // 在 JAR 中运行无法获取 File
-        }
-
-        // 最后尝试：从当前工作目录查找
-        File cwd = new File("src/main/resources/coord-db");
-        if (cwd.exists()) return cwd;
+            if (file.exists()) {
+                String path = file.getAbsolutePath().replace('\\', '/');
+                String srcPath = path.replace("target/classes/", "src/main/resources/");
+                if (!srcPath.equals(path)) {
+                    File srcCandidate = new File(srcPath);
+                    if (srcCandidate.exists()) return srcCandidate;
+                }
+                return file;
+            }
+        } catch (Exception ignored) {}
 
         return null;
+    }
+
+    /** 如果文件在 target/classes/ 下，重定向到 src/main/resources/ */
+    private File redirectToSource(File targetFile) {
+        String path = targetFile.getAbsolutePath().replace('\\', '/');
+        if (!path.contains("target/classes/")) return targetFile;
+        String srcPath = path.replace("target/classes/", "src/main/resources/");
+        File srcFile = new File(srcPath);
+        // 确保源码目录存在
+        if (!srcFile.getParentFile().exists()) {
+            try {
+                Files.createDirectories(srcFile.getParentFile().toPath());
+            } catch (IOException e) {
+                log.warn("[CoordDb] cannot create source dir: {}", srcFile.getParent());
+                return targetFile; // 回退
+            }
+        }
+        return srcFile;
     }
 
     public int size() {
