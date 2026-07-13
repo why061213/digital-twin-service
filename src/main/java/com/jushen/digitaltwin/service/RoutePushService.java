@@ -43,6 +43,9 @@ import jakarta.annotation.PreDestroy;
 import jakarta.annotation.PostConstruct;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 @Service
 public class RoutePushService {
@@ -989,6 +992,150 @@ public class RoutePushService {
 
     private boolean isRealPositionProfile() {
         return "real".equalsIgnoreCase(simulationProfile);
+    }
+
+    public synchronized Map<String, Object> dispatchExternalOrderRoute(
+            String lineId,
+            String orderId,
+            String orderName,
+            Integer orderTotalTons,
+            String from,
+            String to,
+            double[] fromCoords,
+            double[] toCoords,
+            double[] currentCoords,
+            String plate,
+            String carId,
+            Double speedKmh,
+            String updatedAt,
+            String status
+    ) {
+        if (lineId == null || lineId.isBlank() || fromCoords == null || toCoords == null
+                || fromCoords.length < 2 || toCoords.length < 2) {
+            return Map.of("ok", false, "reason", "invalid-road-order", "lineId", lineId == null ? "" : lineId);
+        }
+
+        long now = System.currentTimeMillis();
+        cleanupExpiredRoutes(now);
+
+        List<double[]> coordinates = List.of(
+                new double[]{fromCoords[0], fromCoords[1]},
+                new double[]{toCoords[0], toCoords[1]}
+        );
+        double routeLengthKm = pathLengthKm(coordinates);
+        double effectiveSpeedKmh = speedKmh != null && speedKmh > 0
+                ? speedKmh
+                : Math.max(1, realSimulationSpeedKmh);
+        long travelDurationMs = Math.max(60_000L, Math.round(routeLengthKm / effectiveSpeedKmh * 3_600_000));
+        double progress = initialProgressForExternalOrder(coordinates, currentCoords, routeLengthKm, effectiveSpeedKmh, updatedAt, status);
+        long startTime = "已完成".equals(status)
+                ? now - travelDurationMs
+                : now - Math.round(progress * travelDurationMs);
+
+        ScheduledRoute route = new ScheduledRoute(
+                lineId,
+                orderId == null || orderId.isBlank() ? lineId : orderId,
+                orderId == null || orderId.isBlank() ? lineId : orderId,
+                orderName == null || orderName.isBlank() ? "外部订单运输" : orderName,
+                orderTotalTons == null ? 0 : orderTotalTons,
+                1,
+                from,
+                to,
+                coordinates,
+                pathKey(from, to, coordinates),
+                startTime,
+                routeLengthKm,
+                effectiveSpeedKmh,
+                travelDurationMs
+        );
+
+        if (plate != null && !plate.isBlank()) {
+            lineIdPlateMap.put(lineId, plate);
+        }
+        if (carId != null && !carId.isBlank()) {
+            lineIdCarIdMap.put(lineId, carId);
+        }
+
+        activeRoutes.put(lineId, route);
+        Map<String, Object> message = routeMessage(route, true);
+        webSocketHandler.broadcast(message);
+        log.info("[RoadMap] dispatched external long-haul route: {} -> {}, lineId={}, orderId={}, progress={}%",
+                from, to, lineId, route.orderId(), Math.round(progress * 100));
+        return message;
+    }
+
+    private double initialProgressForExternalOrder(
+            List<double[]> coordinates,
+            double[] currentCoords,
+            double routeLengthKm,
+            double speedKmh,
+            String updatedAt,
+            String status
+    ) {
+        if ("已完成".equals(status)) return 1.0;
+
+        if (currentCoords == null || currentCoords.length < 2) {
+            return ThreadLocalRandom.current().nextDouble(0.1, 0.9);
+        }
+
+        double baseProgress = progressOnCoordinates(coordinates, currentCoords);
+        Long updatedAtMs = parseUpdatedAtMillis(updatedAt);
+        if (updatedAtMs == null || speedKmh <= 0 || routeLengthKm <= 0) {
+            return Math.max(0, Math.min(1, baseProgress));
+        }
+
+        double elapsedHours = Math.max(0, (System.currentTimeMillis() - updatedAtMs) / 3_600_000.0);
+        return Math.max(0, Math.min(1, baseProgress + speedKmh * elapsedHours / routeLengthKm));
+    }
+
+    private double progressOnCoordinates(List<double[]> coordinates, double[] position) {
+        if (coordinates == null || coordinates.size() < 2 || position == null || position.length < 2) {
+            return 0;
+        }
+
+        double nearestDistanceSq = Double.POSITIVE_INFINITY;
+        double distanceAlong = 0;
+        double walked = 0;
+        for (int i = 1; i < coordinates.size(); i++) {
+            double[] start = coordinates.get(i - 1);
+            double[] end = coordinates.get(i);
+            double dx = end[0] - start[0];
+            double dy = end[1] - start[1];
+            double segmentLengthSq = dx * dx + dy * dy;
+            if (segmentLengthSq <= 0) continue;
+
+            double t = ((position[0] - start[0]) * dx + (position[1] - start[1]) * dy) / segmentLengthSq;
+            t = Math.max(0, Math.min(1, t));
+            double projectedLng = start[0] + dx * t;
+            double projectedLat = start[1] + dy * t;
+            double distSq = Math.pow(position[0] - projectedLng, 2) + Math.pow(position[1] - projectedLat, 2);
+            double segmentKm = distanceKm(start, end);
+            if (distSq < nearestDistanceSq) {
+                nearestDistanceSq = distSq;
+                distanceAlong = walked + segmentKm * t;
+            }
+            walked += segmentKm;
+        }
+
+        return walked <= 0 ? 0 : Math.max(0, Math.min(1, distanceAlong / walked));
+    }
+
+    private Long parseUpdatedAtMillis(String updatedAt) {
+        if (updatedAt == null || updatedAt.isBlank()) return null;
+        String value = updatedAt.trim();
+        try {
+            return Instant.parse(value).toEpochMilli();
+        } catch (Exception ignored) {
+            // fall through
+        }
+        try {
+            return LocalDateTime.parse(value.replace(" ", "T"))
+                    .atZone(ZoneId.systemDefault())
+                    .toInstant()
+                    .toEpochMilli();
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     /**

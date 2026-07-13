@@ -59,9 +59,11 @@ public class TownRoadRenderService {
         int rawCount = result.rawCount();
         int normalizedCount = result.normalizedCount();
         int shortHaulCount = result.shortHaulCount();
+        int longHaulCount = result.longHaulCount();
         int skippedInvalid = result.diff().skippedInvalid();
         int skippedNotRenderable = result.diff().skippedNotRenderable();
         int skippedLongHaul = result.diff().skippedLongHaul();
+        int roadMapRouteCount = dispatchLongHaulRoutesToRoadMap(result.longHaulOrders());
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("ok", true);
@@ -70,6 +72,8 @@ public class TownRoadRenderService {
         response.put("rawCount", rawCount);
         response.put("normalizedCount", normalizedCount);
         response.put("shortHaulCount", shortHaulCount);
+        response.put("longHaulCount", longHaulCount);
+        response.put("roadMapRouteCount", roadMapRouteCount);
         response.put("commandCount", result.commands().size());
         response.put("displayMode", result.commands().size() > 1 ? "multi_source_rotation" : "single_source");
         response.put("diff", result.diff().toMap());
@@ -83,6 +87,7 @@ public class TownRoadRenderService {
         accounting.put("    = normalizedCount (有效订单)", normalizedCount);
         accounting.put("        ─ skippedNotRenderable (缺坐标)", skippedNotRenderable);
         accounting.put("        ─ skippedLongHaul (非短途)", skippedLongHaul);
+        accounting.put("            └ roadMapRouteCount (发送 RoadMap)", roadMapRouteCount);
         accounting.put("        ─ skippedByStatus (已完成/待装载)", skippedByStatus);
         accounting.put("        = shortHaulCount (最终渲染)", shortHaulCount);
         accounting.put("校验", rawCount + " = " + skippedInvalid + " + " + deletedOrCancelled + " + " + normalizedCount
@@ -116,6 +121,41 @@ public class TownRoadRenderService {
         }
 
         return response;
+    }
+
+    private int dispatchLongHaulRoutesToRoadMap(List<NormalizedTownRoadOrder> longHaulOrders) {
+        if (longHaulOrders == null || longHaulOrders.isEmpty()) return 0;
+
+        int dispatched = 0;
+        for (NormalizedTownRoadOrder order : longHaulOrders) {
+            if (order == null || order.from() == null || order.to() == null) continue;
+            double[] fc = order.from().coords();
+            double[] tc = order.to().coords();
+            if (fc == null || tc == null || fc.length < 2 || tc.length < 2) continue;
+
+            ExternalOrderRecord.Vehicle vehicle = order.vehicle();
+            Double cargoWeight = vehicle == null ? null : vehicle.cargoWeight();
+            Integer orderTotalTons = cargoWeight == null ? null : Math.max(0, (int) Math.round(cargoWeight));
+            routePushService.dispatchExternalOrderRoute(
+                    order.instanceId(),
+                    order.orderId() != null ? order.orderId() : order.instanceId(),
+                    order.groupName(),
+                    orderTotalTons,
+                    order.from().name(),
+                    order.to().name(),
+                    fc,
+                    tc,
+                    vehicle == null ? null : vehicle.currentCoords(),
+                    vehicle == null ? null : vehicle.plate(),
+                    vehicle == null ? null : vehicle.carId(),
+                    vehicle == null ? null : vehicle.speedKmh(),
+                    order.updatedAt(),
+                    order.status()
+            );
+            dispatched++;
+        }
+
+        return dispatched;
     }
 
     public TownRoadMiddleLayer middleLayer() {

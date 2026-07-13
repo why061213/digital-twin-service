@@ -109,6 +109,7 @@ public class TownRoadMiddleLayer {
         rebuildIndexes(normalized);
 
         List<NormalizedTownRoadOrder> shortHaulOrders = new ArrayList<>();
+        List<NormalizedTownRoadOrder> longHaulOrders = new ArrayList<>();
         for (NormalizedTownRoadOrder order : normalized) {
             if (properties.isRequireRenderableCoords() && !isRenderable(order)) {
                 skippedNotRenderable++;
@@ -119,6 +120,9 @@ public class TownRoadMiddleLayer {
             if (!isShortHaul(order)) {
                 skippedLongHaul++;
                 skippedLongHaulLineIds.add(order.instanceId());
+                if (isRoadMapRenderable(order) && isDispatchableStatus(order)) {
+                    longHaulOrders.add(order);
+                }
                 continue;
             }
 
@@ -155,6 +159,8 @@ public class TownRoadMiddleLayer {
                 safeRawOrders.size(),
                 normalized.size(),
                 shortHaulOrders.size(),
+                longHaulOrders.size(),
+                longHaulOrders,
                 commands,
                 diff
         );
@@ -896,6 +902,20 @@ public class TownRoadMiddleLayer {
     private boolean isRenderable(NormalizedTownRoadOrder order) {
         return hasCoords(order.from() == null ? null : order.from().coords())
                 && hasCoords(order.to() == null ? null : order.to().coords());
+    }
+
+    private boolean isRoadMapRenderable(NormalizedTownRoadOrder order) {
+        return isRenderable(order);
+    }
+
+    private boolean isDispatchableStatus(NormalizedTownRoadOrder order) {
+        if ("待装载".equals(order.status())) {
+            return false;
+        }
+        if ("已完成".equals(order.status())) {
+            return !isCompletedExpired(order.updatedAt());
+        }
+        return true;
     }
 
     private boolean isValidBasic(ExternalOrderRecord raw) {
