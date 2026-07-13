@@ -507,7 +507,7 @@ public class RoutePushService {
 
         try {
             String token = getAccessToken();
-            String url = externalPositionUrl + "/video/webapi/location/get-location";
+            String url = externalPositionUrl + "/video/webapi/location/get-location-use-plates";
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("vehicle_name", plate);
             body.put("time", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
