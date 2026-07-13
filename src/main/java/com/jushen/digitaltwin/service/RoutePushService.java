@@ -828,6 +828,8 @@ public class RoutePushService {
 
     @PostConstruct
     public void testExternalPositionAPI() {
+        log.info("[RoutePush] externalPositionUrl={}, passivePositionPushEnabled={}",
+                externalPositionUrl, passivePositionPushEnabled);
         if (!testOnStartup || !externalPositionConfigured()) return;
 
         log.info("===== 外部位置接口启动测试开始 =====");
