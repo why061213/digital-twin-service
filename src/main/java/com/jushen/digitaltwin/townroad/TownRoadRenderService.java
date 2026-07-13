@@ -70,7 +70,8 @@ public class TownRoadRenderService {
         response.put("displayMode", result.commands().size() > 1 ? "multi_source_rotation" : "single_source");
         response.put("diff", result.diff().toMap());
 
-        // 完整数据流水账：展示 rawCount 如何一步步变成最终的 shortHaulCount
+        // 完整数据流水账
+        int skippedByStatus = normalizedCount - shortHaulCount - skippedNotRenderable - skippedLongHaul;
         Map<String, Object> accounting = new LinkedHashMap<>();
         accounting.put("rawCount", rawCount);
         accounting.put("    ─ skippedInvalid (基础校验失败)", skippedInvalid);
@@ -78,11 +79,12 @@ public class TownRoadRenderService {
         accounting.put("    = normalizedCount (有效订单)", normalizedCount);
         accounting.put("        ─ skippedNotRenderable (缺坐标)", skippedNotRenderable);
         accounting.put("        ─ skippedLongHaul (非短途)", skippedLongHaul);
+        accounting.put("        ─ skippedByStatus (已完成/待装载)", skippedByStatus);
         accounting.put("        = shortHaulCount (最终渲染)", shortHaulCount);
         accounting.put("校验", rawCount + " = " + skippedInvalid + " + " + deletedOrCancelled + " + " + normalizedCount
                 + (rawCount == skippedInvalid + deletedOrCancelled + normalizedCount ? " ✅" : " ❌ 对不上!"));
-        accounting.put("渲染过滤", normalizedCount + " = " + skippedNotRenderable + " + " + skippedLongHaul + " + " + shortHaulCount
-                + (normalizedCount == skippedNotRenderable + skippedLongHaul + shortHaulCount ? " ✅" : " ❌ 对不上!"));
+        accounting.put("渲染过滤", normalizedCount + " = " + skippedNotRenderable + " + " + skippedLongHaul + " + " + skippedByStatus + " + " + shortHaulCount
+                + (normalizedCount == skippedNotRenderable + skippedLongHaul + skippedByStatus + shortHaulCount ? " ✅" : " ❌ 对不上!"));
         response.put("accounting", accounting);
 
         response.put("commands", result.commands());
