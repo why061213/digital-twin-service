@@ -956,6 +956,39 @@ public class RoutePushService {
         return coordinates.get(coordinates.size() - 1);
     }
 
+    /** 反算真实GPS位置在路径上的进度（0~1），用于用外部位置校准初始进度 */
+    private double progressAtCoordinate(List<double[]> coordinates, double[] realPos) {
+        if (coordinates == null || coordinates.isEmpty() || realPos == null) return 0;
+        double totalLength = pathLength(coordinates);
+        if (totalLength <= 0) return 0;
+
+        // 找离 realPos 最近的线段点
+        double bestDist = Double.MAX_VALUE;
+        double bestWalked = 0;
+        double walked = 0;
+        for (int i = 1; i < coordinates.size(); i++) {
+            double[] start = coordinates.get(i - 1);
+            double[] end = coordinates.get(i);
+            double segLen = distance(start, end);
+            if (segLen <= 0) continue;
+            // 点到线段的最近点
+            double t = clamp01(dot(realPos[0] - start[0], realPos[1] - start[1],
+                    end[0] - start[0], end[1] - start[1]) / (segLen * segLen));
+            double px = start[0] + (end[0] - start[0]) * t;
+            double py = start[1] + (end[1] - start[1]) * t;
+            double dist = distance(realPos, new double[]{px, py});
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestWalked = walked + segLen * t;
+            }
+            walked += segLen;
+        }
+        return clamp01(bestWalked / totalLength);
+    }
+
+    private double dot(double x1, double y1, double x2, double y2) { return x1 * x2 + y1 * y2; }
+    private double clamp01(double v) { return Math.max(0, Math.min(1, v)); }
+
     private double pathLength(List<double[]> coordinates) {
         double total = 0;
         for (int i = 1; i < coordinates.size(); i++) {
@@ -1213,10 +1246,15 @@ public class RoutePushService {
      */
     public synchronized void dispatchTownRoute(
             String lineId, String orderId, String from, String to,
-            double fromLng, double fromLat, double toLng, double toLat
+            double fromLng, double fromLat, double toLng, double toLat,
+            String plate, String carId
     ) {
         if (!passivePositionPushEnabled) return;
         cleanupExpiredRoutes(System.currentTimeMillis());
+
+        // 登记车牌/车辆ID（供真实GPS接口查询）
+        if (plate != null && !plate.isBlank()) lineIdPlateMap.put(lineId, plate);
+        if (carId != null && !carId.isBlank()) lineIdCarIdMap.put(lineId, carId);
 
         // 直线：只有起终点两个坐标
         List<double[]> coordinates = List.of(
@@ -1228,9 +1266,24 @@ public class RoutePushService {
         double speedKmh = realSimulationSpeedKmh;
         long travelDurationMs = Math.max(60_000L, Math.round(routeLengthKm / speedKmh * 3_600_000));
 
-        // 中途随机起点：模拟车辆已经走了一段
-        double initialProgress = ThreadLocalRandom.current().nextDouble(0.1, 0.9);
-        long startTime = System.currentTimeMillis() - Math.round(initialProgress * travelDurationMs);
+        // 先尝试从外部接口拿真实位置（校准初始进度）
+        double initialProgress;
+        long startTime;
+        ProviderPosition realPos = (plate != null && !plate.isBlank()) ? fetchPositionByPlate(plate) : null;
+        if (realPos == null && carId != null && !carId.isBlank()) {
+            realPos = fetchPositionByCarId(carId);
+        }
+        if (realPos != null) {
+            // 用真实位置反算进度
+            initialProgress = progressAtCoordinate(coordinates, realPos.position());
+            startTime = System.currentTimeMillis() - Math.round(initialProgress * travelDurationMs);
+            log.info("[TownRoad] real position for lineId={}: lng={}, lat={}, progress={}%",
+                    lineId, realPos.position()[0], realPos.position()[1], Math.round(initialProgress * 100));
+        } else {
+            // 中途随机起点
+            initialProgress = ThreadLocalRandom.current().nextDouble(0.1, 0.9);
+            startTime = System.currentTimeMillis() - Math.round(initialProgress * travelDurationMs);
+        }
 
         ScheduledRoute route = new ScheduledRoute(
                 lineId, orderId, orderId, "短途运输",
