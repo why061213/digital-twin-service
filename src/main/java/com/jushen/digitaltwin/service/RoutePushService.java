@@ -24,6 +24,7 @@ import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -78,6 +79,7 @@ public class RoutePushService {
     private final int externalPositionBatchSize;
     private final ConcurrentHashMap<String, String> lineIdPlateMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> lineIdCarIdMap = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, VehicleRef> vehicleByNormalizedPlate = new ConcurrentHashMap<>();
     private final String testPlate;
     private final String testCarId;
     private final boolean testOnStartup;
@@ -506,6 +508,18 @@ public class RoutePushService {
             return null;
         }
 
+        VehicleRef vehicleRef = resolveVehicleByPlate(plate);
+        if (vehicleRef != null) {
+            ProviderPosition position = fetchPositionByCarId(vehicleRef.vehicleId());
+            if (position != null) {
+                log.info("Plate mapped to vehicleId: queryPlate={}, providerVehicleId={}, providerVehicleName={}",
+                        plate, vehicleRef.vehicleId(), vehicleRef.vehicleName());
+                return position;
+            }
+            log.warn("Plate mapped to vehicleId but carId position failed: queryPlate={}, providerVehicleId={}, providerVehicleName={}",
+                    plate, vehicleRef.vehicleId(), vehicleRef.vehicleName());
+        }
+
         try {
             String token = getAccessToken();
             String url = externalPositionUrl + "/video/webapi/location/get-location-use-plates";
@@ -562,6 +576,83 @@ public class RoutePushService {
             log.warn("Failed to fetch position by plate", e);
             return null;
         }
+    }
+
+    private VehicleRef resolveVehicleByPlate(String plate) {
+        if (plate == null || plate.isBlank()) return null;
+        if (vehicleByNormalizedPlate.isEmpty()) {
+            refreshVehicleDictionary();
+        }
+        return vehicleByNormalizedPlate.get(normalizePlateKey(plate));
+    }
+
+    private synchronized void refreshVehicleDictionary() {
+        if (!externalPositionConfigured()) return;
+
+        try {
+            String token = getAccessToken();
+            String url = externalPositionUrl + "/video/webapi/vehicle/list";
+            int size = Math.max(10_000, externalPositionBatchSize);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("page", 1);
+            body.put("size", size);
+            String json = objectMapper.writeValueAsString(body);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", token)
+                    .POST(HttpRequest.BodyPublishers.ofString(json))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                log.warn("Vehicle list API returned status {}", response.statusCode());
+                return;
+            }
+
+            Map<String, Object> result = objectMapper.readValue(response.body(), new TypeReference<>() {});
+            if (!(result.get("code") instanceof Number code) || code.intValue() != 200) {
+                log.warn("Vehicle list API code not 200: {}", result);
+                return;
+            }
+
+            Map<String, Object> dataBlock = (Map<String, Object>) result.get("data");
+            List<Map<String, Object>> pageList = dataBlock == null
+                    ? List.of()
+                    : (List<Map<String, Object>>) dataBlock.get("pageList");
+            ConcurrentHashMap<String, VehicleRef> next = new ConcurrentHashMap<>();
+            for (Map<String, Object> vehicle : pageList) {
+                String vehicleId = stringValue(vehicle.get("vehicle_id"));
+                String vehicleName = stringValue(vehicle.get("vehicle_name"));
+                if (vehicleId == null || vehicleName == null) continue;
+                VehicleRef ref = new VehicleRef(vehicleId, vehicleName);
+                registerVehicleRef(next, normalizePlateKey(vehicleName), ref);
+                registerVehicleRef(next, normalizePlateBaseKey(vehicleName), ref);
+            }
+
+            vehicleByNormalizedPlate.clear();
+            vehicleByNormalizedPlate.putAll(next);
+            log.info("Vehicle dictionary loaded: total={}, pageList={}, indexKeys={}, requestSize={}",
+                    dataBlock == null ? null : dataBlock.get("total"), pageList.size(), vehicleByNormalizedPlate.size(), size);
+        } catch (Exception e) {
+            log.warn("Failed to refresh vehicle dictionary", e);
+        }
+    }
+
+    private void registerVehicleRef(Map<String, VehicleRef> index, String key, VehicleRef vehicleRef) {
+        if (key == null || key.isBlank()) return;
+        index.putIfAbsent(key, vehicleRef);
+    }
+
+    private String normalizePlateKey(String plate) {
+        return plate == null ? "" : plate.trim().replace(" ", "").toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizePlateBaseKey(String plate) {
+        String normalized = normalizePlateKey(plate);
+        int separatorIndex = normalized.indexOf('-');
+        return separatorIndex > 0 ? normalized.substring(0, separatorIndex) : normalized;
     }
 
     private List<Map<String, Object>> plateQueryBodies(String plate) {
@@ -872,6 +963,7 @@ public class RoutePushService {
         if (!testOnStartup || !externalPositionConfigured()) return;
 
         log.info("===== 外部位置接口启动测试开始 =====");
+        refreshVehicleDictionary();
 
         LinkedHashSet<String> startupTestPlates = new LinkedHashSet<>();
         if (!testPlate.isBlank()) {
@@ -1400,6 +1492,12 @@ public class RoutePushService {
     private record ProviderPosition(
             double[] position,
             double speedKmh,
+            String vehicleId,
+            String vehicleName
+    ) {
+    }
+
+    private record VehicleRef(
             String vehicleId,
             String vehicleName
     ) {
