@@ -1041,6 +1041,7 @@ public class RoutePushService {
         }
 
         ProviderPosition initialExternalPosition = fetchExternalVehiclePosition(lineId);
+        String progressSource = initialProgressSource(initialExternalPosition, currentCoords, status);
         double[] resolvedCurrentCoords = initialExternalPosition != null
                 ? initialExternalPosition.position()
                 : currentCoords;
@@ -1086,9 +1087,16 @@ public class RoutePushService {
         activeRoutes.put(lineId, route);
         Map<String, Object> message = routeMessage(route, true);
         webSocketHandler.broadcast(message);
-        log.info("[RoadMap] dispatched external long-haul route: {} -> {}, lineId={}, orderId={}, progress={}%",
-                from, to, lineId, route.orderId(), Math.round(progress * 100));
+        log.info("[RoadMap] dispatched external long-haul route: {} -> {}, lineId={}, orderId={}, progress={}%, progressSource={}",
+                from, to, lineId, route.orderId(), Math.round(progress * 100), progressSource);
         return message;
+    }
+
+    private String initialProgressSource(ProviderPosition initialExternalPosition, double[] currentCoords, String status) {
+        if ("已完成".equals(status)) return "completed-status";
+        if (initialExternalPosition != null) return "real-provider";
+        if (currentCoords != null && currentCoords.length >= 2) return "order-current-coords";
+        return "simulated-random";
     }
 
     private List<double[]> sanitizeRouteCoordinates(double[] fromCoords, double[] toCoords, List<double[]> routeCoordinates) {
@@ -1230,7 +1238,7 @@ public class RoutePushService {
                 startTime, routeLengthKm, speedKmh, travelDurationMs
         );
         activeRoutes.put(lineId, route);
-        log.info("[TownRoad] dispatched town route: {} -> {}, lineId={}, progress={}%",
+        log.info("[TownRoad] dispatched town route: {} -> {}, lineId={}, progress={}%, progressSource=simulated-random",
                 from, to, lineId, Math.round(initialProgress * 100));
     }
 
