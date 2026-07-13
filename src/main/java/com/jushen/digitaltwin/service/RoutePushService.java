@@ -662,9 +662,20 @@ public class RoutePushService {
             message.put("orderName", scheduledRoute.orderName());
             message.put("orderTotalTons", scheduledRoute.orderTotalTons());
             message.put("orderVehicleCount", scheduledRoute.orderVehicleCount());
+            if (scheduledRoute.orderTotalTons() > 0) {
+                message.put("cargo", scheduledRoute.orderTotalTons() + "吨");
+            }
         }
         if (route instanceof PathAwareRouteInfo pathAwareRoute) {
             message.put("pathKey", pathAwareRoute.getPathKey());
+        }
+        String plate = lineIdPlateMap.get(route.getLineId());
+        if (plate != null && !plate.isBlank()) {
+            message.put("plate", plate);
+        }
+        String carId = lineIdCarIdMap.get(route.getLineId());
+        if (carId != null && !carId.isBlank()) {
+            message.put("carId", carId);
         }
         message.put("from", route.getFrom());
         message.put("to", route.getTo());
@@ -774,11 +785,9 @@ public class RoutePushService {
     }
 
     private ProviderPosition fetchVehiclePosition(ScheduledRoute route, long now) {
-        if (isRealPositionProfile()) {
-            ProviderPosition externalPosition = fetchExternalVehiclePosition(route.lineId());
-            if (externalPosition != null) {
-                return externalPosition;
-            }
+        ProviderPosition externalPosition = fetchExternalVehiclePosition(route.lineId());
+        if (externalPosition != null) {
+            return externalPosition;
         }
 
         return simulatedPosition(route, now);
@@ -795,21 +804,20 @@ public class RoutePushService {
     }
 
     private ProviderPosition fetchExternalVehiclePosition(String lineId) {
-        if (!isRealPositionProfile()) {
+        if (!externalPositionConfigured()) {
             return null;
         }
 
-        // 优先使用车辆ID
-        String carId = lineIdCarIdMap.get(lineId);
-        if (carId != null) {
-            ProviderPosition pos = fetchPositionByCarId(carId);
+        // 外部订单当前只有车牌号，先按车牌查；保留 carId 作为以后兼容兜底。
+        String plate = lineIdPlateMap.get(lineId);
+        if (plate != null && !plate.isBlank()) {
+            ProviderPosition pos = fetchPositionByPlate(plate);
             if (pos != null) return pos;
         }
 
-        // 其次使用车牌
-        String plate = lineIdPlateMap.get(lineId);
-        if (plate != null) {
-            ProviderPosition pos = fetchPositionByPlate(plate);
+        String carId = lineIdCarIdMap.get(lineId);
+        if (carId != null && !carId.isBlank()) {
+            ProviderPosition pos = fetchPositionByCarId(carId);
             if (pos != null) return pos;
         }
 
@@ -819,7 +827,7 @@ public class RoutePushService {
 
     @PostConstruct
     public void testExternalPositionAPI() {
-        if (!testOnStartup || !isRealPositionProfile()) return;
+        if (!testOnStartup || !externalPositionConfigured()) return;
 
         log.info("===== 外部位置接口启动测试开始 =====");
 
@@ -994,6 +1002,10 @@ public class RoutePushService {
         return "real".equalsIgnoreCase(simulationProfile);
     }
 
+    private boolean externalPositionConfigured() {
+        return externalPositionUrl != null && !externalPositionUrl.isBlank();
+    }
+
     public synchronized Map<String, Object> dispatchExternalOrderRoute(
             String lineId,
             String orderId,
@@ -1023,11 +1035,35 @@ public class RoutePushService {
                 new double[]{toCoords[0], toCoords[1]}
         );
         double routeLengthKm = pathLengthKm(coordinates);
-        double effectiveSpeedKmh = speedKmh != null && speedKmh > 0
-                ? speedKmh
+        if (plate != null && !plate.isBlank()) {
+            lineIdPlateMap.put(lineId, plate);
+        }
+        if (carId != null && !carId.isBlank()) {
+            lineIdCarIdMap.put(lineId, carId);
+        }
+
+        ProviderPosition initialExternalPosition = fetchExternalVehiclePosition(lineId);
+        double[] resolvedCurrentCoords = initialExternalPosition != null
+                ? initialExternalPosition.position()
+                : currentCoords;
+        Double resolvedSpeedKmh = initialExternalPosition != null && initialExternalPosition.speedKmh() > 0
+                ? initialExternalPosition.speedKmh()
+                : speedKmh;
+        double effectiveSpeedKmh = resolvedSpeedKmh != null && resolvedSpeedKmh > 0
+                ? resolvedSpeedKmh
                 : Math.max(1, realSimulationSpeedKmh);
+        String resolvedUpdatedAt = initialExternalPosition != null
+                ? Instant.ofEpochMilli(now).toString()
+                : updatedAt;
+        double progress = initialProgressForExternalOrder(
+                coordinates,
+                resolvedCurrentCoords,
+                routeLengthKm,
+                effectiveSpeedKmh,
+                resolvedUpdatedAt,
+                status
+        );
         long travelDurationMs = Math.max(60_000L, Math.round(routeLengthKm / effectiveSpeedKmh * 3_600_000));
-        double progress = initialProgressForExternalOrder(coordinates, currentCoords, routeLengthKm, effectiveSpeedKmh, updatedAt, status);
         long startTime = "已完成".equals(status)
                 ? now - travelDurationMs
                 : now - Math.round(progress * travelDurationMs);
@@ -1048,13 +1084,6 @@ public class RoutePushService {
                 effectiveSpeedKmh,
                 travelDurationMs
         );
-
-        if (plate != null && !plate.isBlank()) {
-            lineIdPlateMap.put(lineId, plate);
-        }
-        if (carId != null && !carId.isBlank()) {
-            lineIdCarIdMap.put(lineId, carId);
-        }
 
         activeRoutes.put(lineId, route);
         Map<String, Object> message = routeMessage(route, true);
@@ -1228,10 +1257,17 @@ public class RoutePushService {
     ) {
     }
 
-    public Map<String, Object> queryPositionByCarId(String carId) {
-        ProviderPosition pos = isRealPositionProfile()
-                ? fetchPositionByCarId(carId)
-                : querySimulatedPosition(carId);
+    public Map<String, Object> queryPositionByVehicleKey(String vehicleKey) {
+        ProviderPosition pos = null;
+        if (externalPositionConfigured() && vehicleKey != null && !vehicleKey.isBlank()) {
+            pos = fetchPositionByPlate(vehicleKey);
+            if (pos == null) {
+                pos = fetchPositionByCarId(vehicleKey);
+            }
+        }
+        if (pos == null) {
+            pos = querySimulatedPosition(vehicleKey);
+        }
         if (pos == null) {
             return null;
         }
@@ -1240,6 +1276,10 @@ public class RoutePushService {
         result.put("lat", pos.position()[1]);
         result.put("speedKmh", pos.speedKmh());
         return result;
+    }
+
+    public Map<String, Object> queryPositionByCarId(String carId) {
+        return queryPositionByVehicleKey(carId);
     }
 
     private ProviderPosition querySimulatedPosition(String query) {

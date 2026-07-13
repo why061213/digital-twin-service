@@ -99,12 +99,12 @@ public class RoadController {
 
     @PostMapping("/routes/query-position")
     public Map<String, Object> queryPositionManually(@RequestBody Map<String, String> body) {
-        String carId = body.get("carId");
-        if (carId == null || carId.isBlank()) {
-            return Map.of("error", "carId is required");
+        String vehicleKey = firstPresent(body.get("plate"), body.get("carId"), body.get("query"));
+        if (vehicleKey == null || vehicleKey.isBlank()) {
+            return Map.of("error", "plate or carId is required");
         }
 
-        Map<String, Object> posMap = routePushService.queryPositionByCarId(carId);
+        Map<String, Object> posMap = routePushService.queryPositionByVehicleKey(vehicleKey);
         if (posMap == null) {
             return Map.of("found", false);
         }
@@ -116,7 +116,7 @@ public class RoadController {
         // 广播临时位置消息
         Map<String, Object> message = new LinkedHashMap<>();
         message.put("type", "truck_position");
-        message.put("lineId", "manual-" + carId);
+        message.put("lineId", "manual-" + vehicleKey);
         message.put("position", new double[]{lng, lat});
         message.put("speedKmh", speed);
         message.put("status", "running");
@@ -128,5 +128,14 @@ public class RoadController {
         response.put("lat", lat);
         response.put("speedKmh", speed);
         return response;
+    }
+
+    private String firstPresent(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 }
