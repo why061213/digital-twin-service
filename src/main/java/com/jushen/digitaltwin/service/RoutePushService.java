@@ -509,51 +509,70 @@ public class RoutePushService {
         try {
             String token = getAccessToken();
             String url = externalPositionUrl + "/video/webapi/location/get-location-use-plates";
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("plates", plate);
-            String json = objectMapper.writeValueAsString(body);
+            for (Map<String, Object> body : plateQueryBodies(plate)) {
+                String requestMode = body.containsKey("time") ? "with-time-zero" : "without-time";
+                String json = objectMapper.writeValueAsString(body);
 
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Content-Type", "application/json")
-                    .header("Authorization", token)
-                    .POST(HttpRequest.BodyPublishers.ofString(json))
-                    .build();
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("Content-Type", "application/json")
+                        .header("Authorization", token)
+                        .POST(HttpRequest.BodyPublishers.ofString(json))
+                        .build();
 
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) {
-                log.warn("Plate API returned status {}", response.statusCode());
-                return null;
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() != 200) {
+                    log.warn("Plate API returned status {}, plate={}, requestMode={}",
+                            response.statusCode(), plate, requestMode);
+                    return null;
+                }
+
+                Map<String, Object> result = objectMapper.readValue(response.body(), new TypeReference<>() {});
+                if (!(result.get("code") instanceof Number code) || code.intValue() != 200) {
+                    log.warn("Plate API code not 200: plate={}, requestMode={}, result={}", plate, requestMode, result);
+                    return null;
+                }
+
+                Map<String, Object> dataBlock = (Map<String, Object>) result.get("data");
+                List<Map<String, Object>> vehicleList = dataBlock == null
+                        ? List.of()
+                        : (List<Map<String, Object>>) dataBlock.get("data");
+                if (vehicleList == null || vehicleList.isEmpty()) {
+                    log.info("Plate API returned empty data for plate={}, requestMode={}, requestBody={}, message={}, dataTime={}",
+                            plate, requestMode, body, result.get("message"), dataBlock == null ? null : dataBlock.get("time"));
+                    continue;
+                }
+
+                Map<String, Object> vehicle = vehicleList.get(0);
+                double lng = Double.parseDouble(String.valueOf(vehicle.get("lng")));
+                double lat = Double.parseDouble(String.valueOf(vehicle.get("lat")));
+                double speed = 0;
+                try {
+                    speed = Double.parseDouble(String.valueOf(vehicle.get("speed")));
+                } catch (NumberFormatException ignored) {}
+
+                ProviderPosition position = providerPosition(vehicle, lng, lat, speed);
+                log.info("Plate API matched plate={}, requestMode={}, providerVehicleId={}, providerVehicleName={}",
+                        plate, requestMode, position.vehicleId(), position.vehicleName());
+                return position;
             }
-
-            Map<String, Object> result = objectMapper.readValue(response.body(), new TypeReference<>() {});
-            if (!(result.get("code") instanceof Number code) || code.intValue() != 200) {
-                log.warn("Plate API code not 200: {}", result);
-                return null;
-            }
-
-            Map<String, Object> dataBlock = (Map<String, Object>) result.get("data");
-            List<Map<String, Object>> vehicleList = (List<Map<String, Object>>) dataBlock.get("data");
-            if (vehicleList == null || vehicleList.isEmpty()) {
-                log.info("Plate API returned empty data for plate={}, message={}, dataTime={}",
-                        plate, result.get("message"), dataBlock == null ? null : dataBlock.get("time"));
-                return null;
-            }
-
-            Map<String, Object> vehicle = vehicleList.get(0);
-            double lng = Double.parseDouble(String.valueOf(vehicle.get("lng")));
-            double lat = Double.parseDouble(String.valueOf(vehicle.get("lat")));
-            double speed = 0;
-            try {
-                speed = Double.parseDouble(String.valueOf(vehicle.get("speed")));
-            } catch (NumberFormatException ignored) {}
-
-            return providerPosition(vehicle, lng, lat, speed);
+            return null;
 
         } catch (Exception e) {
             log.warn("Failed to fetch position by plate", e);
             return null;
         }
+    }
+
+    private List<Map<String, Object>> plateQueryBodies(String plate) {
+        Map<String, Object> withoutTime = new LinkedHashMap<>();
+        withoutTime.put("plates", plate);
+
+        Map<String, Object> withTimeZero = new LinkedHashMap<>();
+        withTimeZero.put("plates", plate);
+        withTimeZero.put("time", 0L);
+
+        return List.of(withoutTime, withTimeZero);
     }
 
     /**
