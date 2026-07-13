@@ -110,12 +110,12 @@ public class TownRoadCoordinateResolver {
         }
         statAmapFail.incrementAndGet();
 
-        // ==== 3. 旧库兜底 ====
-        resolved = tryFallbackDb(province, city, district, name);
-        if (resolved != null) {
-            statFallback.incrementAndGet();
-            return buildLocation(location, resolved);
-        }
+        // ==== 3. 旧库兜底（已禁用，让高德失败走 skippedNotRenderable） ====
+        // resolved = tryFallbackDb(province, city, district, name);
+        // if (resolved != null) {
+        //     statFallback.incrementAndGet();
+        //     return buildLocation(location, resolved);
+        // }
 
         return location;
     }

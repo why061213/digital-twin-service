@@ -17,8 +17,8 @@ public class CoordDbProperties {
     /** 高德地图安全密钥（用于请求签名） */
     private String amapSecret = "";
 
-    /** 高德 API 调用间隔（毫秒），避免 QPS 超限。3次/秒 ≈ 334ms */
-    private long amapRateLimitMs = 334;
+    /** 高德 API 调用间隔（毫秒），避免 QPS 超限。0.4s/次 ≈ 2.5次/秒 */
+    private long amapRateLimitMs = 400;
 
     /** coord-db 本地库目录（classpath 相对路径） */
     private String localPath = "coord-db";
