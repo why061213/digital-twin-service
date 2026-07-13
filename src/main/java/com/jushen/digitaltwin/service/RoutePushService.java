@@ -51,6 +51,7 @@ import java.time.ZoneId;
 public class RoutePushService {
 
     private static final Logger log = LoggerFactory.getLogger(RoutePushService.class);
+    private static final String STARTUP_TEST_PLATE = "粤E54410";
     private final Path tokenCachePath = Path.of(System.getProperty("java.io.tmpdir"), "jushen_token_cache.json");
 
     private final RealtimeWebSocketHandler webSocketHandler;
@@ -509,9 +510,7 @@ public class RoutePushService {
             String token = getAccessToken();
             String url = externalPositionUrl + "/video/webapi/location/get-location-use-plates";
             Map<String, Object> body = new LinkedHashMap<>();
-            body.put("vehicle_name", plate);
-            body.put("time", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
-            body.put("app_key", token);
+            body.put("plates", plate);
             String json = objectMapper.writeValueAsString(body);
 
             HttpRequest request = HttpRequest.newBuilder()
@@ -837,17 +836,23 @@ public class RoutePushService {
 
         log.info("===== 外部位置接口启动测试开始 =====");
 
+        LinkedHashSet<String> startupTestPlates = new LinkedHashSet<>();
         if (!testPlate.isBlank()) {
-            log.info("测试车牌: {}", testPlate);
+            startupTestPlates.add(testPlate);
+        }
+        startupTestPlates.add(STARTUP_TEST_PLATE);
+        for (String startupTestPlate : startupTestPlates) {
+            log.info("测试车牌: {}", startupTestPlate);
             try {
-                ProviderPosition pos = fetchPositionByPlate(testPlate);
+                ProviderPosition pos = fetchPositionByPlate(startupTestPlate);
                 if (pos != null) {
-                    log.info("车牌查询成功: lng={}, lat={}, speed={}", pos.position()[0], pos.position()[1], pos.speedKmh());
+                    log.info("车牌查询成功: plate={}, lng={}, lat={}, speed={}",
+                            startupTestPlate, pos.position()[0], pos.position()[1], pos.speedKmh());
                 } else {
-                    log.warn("车牌查询失败，请检查配置和网络");
+                    log.warn("车牌查询失败: plate={}，请检查配置和网络", startupTestPlate);
                 }
             } catch (Exception e) {
-                log.warn("车牌查询异常", e);
+                log.warn("车牌查询异常: plate={}", startupTestPlate, e);
             }
         }
 
