@@ -533,6 +533,7 @@ public class RoutePushService {
             Map<String, Object> dataBlock = (Map<String, Object>) result.get("data");
             List<Map<String, Object>> vehicleList = (List<Map<String, Object>>) dataBlock.get("data");
             if (vehicleList == null || vehicleList.isEmpty()) {
+                log.info("Plate API returned empty data for plate={}", plate);
                 return null;
             }
 
@@ -1269,8 +1270,12 @@ public class RoutePushService {
         // 先尝试从外部接口拿真实位置（校准初始进度）
         double initialProgress;
         long startTime;
-        ProviderPosition realPos = (plate != null && !plate.isBlank()) ? fetchPositionByPlate(plate) : null;
-        if (realPos == null && carId != null && !carId.isBlank()) {
+        ProviderPosition realPos = null;
+        if (plate != null && !plate.isBlank() && externalPositionConfigured()) {
+            log.debug("[TownRoad] fetching real position for plate={}", plate);
+            realPos = fetchPositionByPlate(plate);
+        }
+        if (realPos == null && carId != null && !carId.isBlank() && externalPositionConfigured()) {
             realPos = fetchPositionByCarId(carId);
         }
         if (realPos != null) {
