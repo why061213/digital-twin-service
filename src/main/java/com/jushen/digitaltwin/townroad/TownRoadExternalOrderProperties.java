@@ -24,6 +24,11 @@ public class TownRoadExternalOrderProperties {
     private double candidateToleranceRatio = 0.30;
     private int candidateAbsoluteSlack = 250;
 
+    /** 已完成订单保留时长（分钟）。
+     *  前端做模拟+修正，如果 order.updatedAt 在这个时间窗口内，
+     *  即使状态为"已完成"也推送给前端做校准；超过则过滤。 */
+    private int completedRetentionMinutes = 30;
+
     public String getPostUrl() {
         return postUrl;
     }
@@ -86,5 +91,13 @@ public class TownRoadExternalOrderProperties {
 
     public void setCandidateAbsoluteSlack(int candidateAbsoluteSlack) {
         this.candidateAbsoluteSlack = candidateAbsoluteSlack;
+    }
+
+    public int getCompletedRetentionMinutes() {
+        return completedRetentionMinutes;
+    }
+
+    public void setCompletedRetentionMinutes(int completedRetentionMinutes) {
+        this.completedRetentionMinutes = completedRetentionMinutes;
     }
 }

@@ -122,8 +122,15 @@ public class TownRoadMiddleLayer {
                 continue;
             }
 
-            if ("已完成".equals(order.status()) || "待装载".equals(order.status())) {
-                continue; // 已完成/待装载的不发送前端
+            // 待装载：始终不发送
+            if ("待装载".equals(order.status())) {
+                continue;
+            }
+            // 已完成：仅在保留时间窗口内发送（前端做模拟+修正用）
+            if ("已完成".equals(order.status())) {
+                if (isCompletedExpired(order.updatedAt())) {
+                    continue;
+                }
             }
 
             shortHaulOrders.add(order);
@@ -817,6 +824,20 @@ public class TownRoadMiddleLayer {
         // 最短路径的省份数不能超过阈值（深度控制）
         List<String> shortestPath = order.provincePaths().get(0);
         return shortestPath.size() <= MAX_SHORT_HAUL_PROVINCE_COUNT;
+    }
+
+    /** 已完成订单是否超过保留时间窗口（默认30分钟） */
+    private boolean isCompletedExpired(String updatedAt) {
+        if (updatedAt == null || updatedAt.isBlank()) return true;
+        try {
+            java.time.LocalDateTime updated = java.time.LocalDateTime.parse(
+                    updatedAt.trim().replace(" ", "T"));
+            java.time.LocalDateTime deadline = java.time.LocalDateTime.now()
+                    .minusMinutes(properties.getCompletedRetentionMinutes());
+            return updated.isBefore(deadline);
+        } catch (Exception e) {
+            return true; // 解析失败，保守过滤
+        }
     }
 
     private boolean orderHasAnyPathAsContinuousSubPath(
