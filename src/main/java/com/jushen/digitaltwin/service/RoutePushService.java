@@ -535,7 +535,8 @@ public class RoutePushService {
             Map<String, Object> dataBlock = (Map<String, Object>) result.get("data");
             List<Map<String, Object>> vehicleList = (List<Map<String, Object>>) dataBlock.get("data");
             if (vehicleList == null || vehicleList.isEmpty()) {
-                log.info("Plate API returned empty data for plate={}", plate);
+                log.info("Plate API returned empty data for plate={}, message={}, dataTime={}",
+                        plate, result.get("message"), dataBlock == null ? null : dataBlock.get("time"));
                 return null;
             }
 
@@ -547,7 +548,7 @@ public class RoutePushService {
                 speed = Double.parseDouble(String.valueOf(vehicle.get("speed")));
             } catch (NumberFormatException ignored) {}
 
-            return new ProviderPosition(new double[]{lng, lat}, speed);
+            return providerPosition(vehicle, lng, lat, speed);
 
         } catch (Exception e) {
             log.warn("Failed to fetch position by plate", e);
@@ -591,6 +592,8 @@ public class RoutePushService {
             Map<String, Object> dataBlock = (Map<String, Object>) result.get("data");
             List<Map<String, Object>> vehicleList = (List<Map<String, Object>>) dataBlock.get("data");
             if (vehicleList == null || vehicleList.isEmpty()) {
+                log.info("CarID API returned empty data for carIds={}, message={}, dataTime={}",
+                        carIds, result.get("message"), dataBlock == null ? null : dataBlock.get("time"));
                 return null;
             }
 
@@ -602,12 +605,27 @@ public class RoutePushService {
                 speed = Double.parseDouble(String.valueOf(vehicle.get("speed")));
             } catch (NumberFormatException ignored) {}
 
-            return new ProviderPosition(new double[]{lng, lat}, speed);
+            return providerPosition(vehicle, lng, lat, speed);
 
         } catch (Exception e) {
             log.warn("Failed to fetch position by carId", e);
             return null;
         }
+    }
+
+    private ProviderPosition providerPosition(Map<String, Object> vehicle, double lng, double lat, double speedKmh) {
+        return new ProviderPosition(
+                new double[]{lng, lat},
+                speedKmh,
+                stringValue(vehicle.get("vehicle_id")),
+                stringValue(vehicle.get("vehicle_name"))
+        );
+    }
+
+    private String stringValue(Object value) {
+        if (value == null) return null;
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() ? null : text;
     }
 
     public Map<String, Object> getPosition(String lineId) {
@@ -798,12 +816,12 @@ public class RoutePushService {
 
     private ProviderPosition simulatedPosition(ScheduledRoute route, long now) {
         if (now < route.startTime()) {
-            return new ProviderPosition(coordinateAtProgress(route.coordinates(), 0), 0);
+            return new ProviderPosition(coordinateAtProgress(route.coordinates(), 0), 0, null, null);
         }
         long elapsed = Math.max(0, now - route.startTime());
         double progress = Math.min(1.0, elapsed / (double) route.travelDurationMs());
         double[] position = coordinateAtProgress(route.coordinates(), progress);
-        return new ProviderPosition(position, 0);
+        return new ProviderPosition(position, 0, null, null);
     }
 
     private ProviderPosition fetchExternalVehiclePosition(String lineId) {
@@ -846,8 +864,8 @@ public class RoutePushService {
             try {
                 ProviderPosition pos = fetchPositionByPlate(startupTestPlate);
                 if (pos != null) {
-                    log.info("车牌查询成功: plate={}, lng={}, lat={}, speed={}",
-                            startupTestPlate, pos.position()[0], pos.position()[1], pos.speedKmh());
+                    log.info("车牌查询成功: queryPlate={}, vehicleId={}, vehicleName={}, lng={}, lat={}, speed={}",
+                            startupTestPlate, pos.vehicleId(), pos.vehicleName(), pos.position()[0], pos.position()[1], pos.speedKmh());
                 } else {
                     log.warn("车牌查询失败: plate={}，请检查配置和网络", startupTestPlate);
                 }
@@ -861,7 +879,8 @@ public class RoutePushService {
             try {
                 ProviderPosition pos = fetchPositionByCarId(testCarId);
                 if (pos != null) {
-                    log.info("车辆ID查询成功: lng={}, lat={}, speed={}", pos.position()[0], pos.position()[1], pos.speedKmh());
+                    log.info("车辆ID查询成功: carId={}, vehicleId={}, vehicleName={}, lng={}, lat={}, speed={}",
+                            testCarId, pos.vehicleId(), pos.vehicleName(), pos.position()[0], pos.position()[1], pos.speedKmh());
                 } else {
                     log.warn("车辆ID查询失败，请检查配置和网络");
                 }
@@ -1361,7 +1380,9 @@ public class RoutePushService {
 
     private record ProviderPosition(
             double[] position,
-            double speedKmh
+            double speedKmh,
+            String vehicleId,
+            String vehicleName
     ) {
     }
 
@@ -1403,7 +1424,7 @@ public class RoutePushService {
                 .findFirst()
                 .map(route -> {
                     ProviderPosition pos = simulatedPosition(route, now);
-                    return new ProviderPosition(pos.position(), route.speedKmh());
+                    return new ProviderPosition(pos.position(), route.speedKmh(), null, null);
                 })
                 .orElse(null);
     }
