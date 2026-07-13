@@ -49,7 +49,10 @@ public record TownRoadRenderCommand(
             Integer pathCost,
             Boolean bestPath,
             List<String> primaryOrderLineIds,
-            List<String> alongOrderLineIds
+            List<String> alongOrderLineIds,
+            List<String> cityPath,
+            List<String> cityNames,
+            List<double[]> cityCoordinates
     ) {
     }
 
@@ -81,7 +84,12 @@ public record TownRoadRenderCommand(
             ExternalOrderRecord.Vehicle vehicle,
             String status,
             String updatedAt,
-            Boolean deleted
+            Boolean deleted,
+            List<double[]> coordinates,
+            Double routeLengthKm,
+            Double speedKmh,
+            List<String> cityPath,
+            List<String> cityNames
     ) {
     }
 }

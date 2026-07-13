@@ -36,6 +36,7 @@ public class TownRoadMiddleLayer {
 
     private final ObjectMapper objectMapper;
     private final ProvinceRoadGraph provinceRoadGraph;
+    private final CityRoadGraph cityRoadGraph;
     private final ProvinceCodeResolver provinceCodeResolver;
     private final TownRoadExternalOrderProperties properties;
     private final TownRoadCoordinateResolver coordinateResolver;
@@ -66,12 +67,14 @@ public class TownRoadMiddleLayer {
     public TownRoadMiddleLayer(
             ObjectMapper objectMapper,
             ProvinceRoadGraph provinceRoadGraph,
+            CityRoadGraph cityRoadGraph,
             ProvinceCodeResolver provinceCodeResolver,
             TownRoadExternalOrderProperties properties,
             TownRoadCoordinateResolver coordinateResolver
     ) {
         this.objectMapper = objectMapper;
         this.provinceRoadGraph = provinceRoadGraph;
+        this.cityRoadGraph = cityRoadGraph;
         this.provinceCodeResolver = provinceCodeResolver;
         this.properties = properties;
         this.coordinateResolver = coordinateResolver;
@@ -445,7 +448,19 @@ public class TownRoadMiddleLayer {
         String fromProvinceKey = provinceCodeResolver.provinceKey(resolvedFrom);
         String toProvinceKey = provinceCodeResolver.provinceKey(resolvedTo);
 
-        List<ProvincePath> candidatePaths = candidateProvincePaths(fromProvinceKey, toProvinceKey);
+        List<String> cityPath = cityPathFor(resolvedFrom, resolvedTo);
+        List<String> cityNames = cityPath.stream()
+                .map(cityRoadGraph::cityName)
+                .toList();
+        List<double[]> routeCoordinates = routeCoordinatesFor(resolvedFrom, resolvedTo, cityPath);
+        double routeLengthKm = pathLengthKm(routeCoordinates);
+        Double speedKmh = raw.vehicle() == null ? null : raw.vehicle().speedKmh();
+
+        List<ProvincePath> candidatePaths = candidateProvincePathsForOrder(
+                fromProvinceKey,
+                toProvinceKey,
+                cityPath
+        );
 
         List<List<String>> provincePaths = candidatePaths.stream()
                 .map(ProvincePath::provinces)
@@ -489,6 +504,8 @@ public class TownRoadMiddleLayer {
                 "toKey", safe(toKey),
                 "fromCoords", coordsForSignature(resolvedFrom.coords()),
                 "toCoords", coordsForSignature(resolvedTo.coords()),
+                "cityPath", cityPath,
+                "routeCoordinates", routeCoordinates.stream().map(this::coordsForSignature).toList(),
                 "provincePathKeys", provincePathKeys,
                 "upToDate", Boolean.TRUE.equals(raw.upToDate())
         ));
@@ -509,6 +526,11 @@ public class TownRoadMiddleLayer {
                 provincePaths,
                 provincePathKeys,
                 provincePathCosts,
+                cityPath,
+                cityNames,
+                routeCoordinates,
+                routeLengthKm > 0 ? routeLengthKm : null,
+                speedKmh,
 
                 groupId,
                 groupName,
@@ -658,7 +680,12 @@ public class TownRoadMiddleLayer {
 
         primaryOrders.forEach(order -> flatOrderMap.put(order.instanceId(), order));
 
-        List<ProvincePath> candidateProvincePaths = candidateProvincePaths(sourceProvinceKey, targetProvinceKey);
+        List<ProvincePath> candidateProvincePaths = candidateProvincePathsForOrders(
+                sourceProvinceKey,
+                targetProvinceKey,
+                primaryOrders
+        );
+        Map<String, NormalizedTownRoadOrder> representativeOrdersByPathKey = representativeOrdersByPathKey(primaryOrders);
 
         List<ProvincePathCandidate> candidates = new ArrayList<>();
         LinkedHashSet<String> routeGroupAlongLineIds = new LinkedHashSet<>();
@@ -671,6 +698,7 @@ public class TownRoadMiddleLayer {
 
             String pathId = candidateProvincePath.pathKey();
             List<String> edgeKeys = candidateProvincePath.edgeKeys();
+            NormalizedTownRoadOrder representativeOrder = representativeOrdersByPathKey.get(pathId);
 
             LinkedHashSet<String> candidateAlongLineIds = new LinkedHashSet<>();
 
@@ -714,7 +742,10 @@ public class TownRoadMiddleLayer {
                     candidateProvincePath.cost(),
                     bestPathCost != null && candidateProvincePath.cost() == bestPathCost,
                     primaryLineIds,
-                    sortedCandidateAlongLineIds
+                    sortedCandidateAlongLineIds,
+                    representativeOrder == null ? List.of() : representativeOrder.cityPath(),
+                    representativeOrder == null ? List.of() : representativeOrder.cityNames(),
+                    representativeOrder == null ? List.of() : representativeOrder.routeCoordinates()
             ));
         }
 
@@ -823,6 +854,129 @@ public class TownRoadMiddleLayer {
                 properties.getCandidateAbsoluteSlack(),
                 properties.getMaxCandidatePathCount()
         );
+    }
+
+    private List<ProvincePath> candidateProvincePathsForOrder(
+            String fromProvinceKey,
+            String toProvinceKey,
+            List<String> cityPath
+    ) {
+        List<String> provincePath = provincePathFromCityPath(cityPath);
+        if (!provincePath.isEmpty()
+                && provincePath.get(0).equals(fromProvinceKey)
+                && provincePath.get(provincePath.size() - 1).equals(toProvinceKey)) {
+            return List.of(new ProvincePath(provincePath, Math.max(0, cityPath.size() - 1)));
+        }
+
+        return candidateProvincePaths(fromProvinceKey, toProvinceKey);
+    }
+
+    private List<ProvincePath> candidateProvincePathsForOrders(
+            String fromProvinceKey,
+            String toProvinceKey,
+            List<NormalizedTownRoadOrder> orders
+    ) {
+        LinkedHashMap<String, ProvincePath> pathsByKey = new LinkedHashMap<>();
+
+        for (NormalizedTownRoadOrder order : orders) {
+            List<List<String>> provincePaths = order.provincePaths() == null ? List.of() : order.provincePaths();
+            List<Integer> costs = order.provincePathCosts() == null ? List.of() : order.provincePathCosts();
+            for (int i = 0; i < provincePaths.size(); i++) {
+                List<String> path = provincePaths.get(i);
+                if (path == null || path.isEmpty()) continue;
+                if (!path.get(0).equals(fromProvinceKey) || !path.get(path.size() - 1).equals(toProvinceKey)) {
+                    continue;
+                }
+                int cost = i < costs.size() ? costs.get(i) : Math.max(0, path.size() - 1);
+                ProvincePath candidate = new ProvincePath(path, cost);
+                pathsByKey.putIfAbsent(candidate.pathKey(), candidate);
+            }
+        }
+
+        if (pathsByKey.isEmpty()) {
+            return candidateProvincePaths(fromProvinceKey, toProvinceKey);
+        }
+
+        return pathsByKey.values()
+                .stream()
+                .sorted(Comparator.comparingInt(ProvincePath::cost).thenComparing(ProvincePath::pathKey))
+                .limit(Math.max(1, properties.getMaxCandidatePathCount()))
+                .toList();
+    }
+
+    private Map<String, NormalizedTownRoadOrder> representativeOrdersByPathKey(List<NormalizedTownRoadOrder> orders) {
+        LinkedHashMap<String, NormalizedTownRoadOrder> result = new LinkedHashMap<>();
+        for (NormalizedTownRoadOrder order : orders) {
+            List<String> pathKeys = order.provincePathKeys() == null ? List.of() : order.provincePathKeys();
+            for (String pathKey : pathKeys) {
+                if (pathKey == null || pathKey.isBlank()) continue;
+                result.putIfAbsent(pathKey, order);
+            }
+        }
+        return result;
+    }
+
+    private List<String> cityPathFor(ExternalOrderRecord.Location from, ExternalOrderRecord.Location to) {
+        String fromCityCode = cityRoadGraph.cityCodeFor(from);
+        String toCityCode = cityRoadGraph.cityCodeFor(to);
+        if (fromCityCode.isBlank() || toCityCode.isBlank()) return List.of();
+        return cityRoadGraph.shortestPath(fromCityCode, toCityCode);
+    }
+
+    private List<String> provincePathFromCityPath(List<String> cityPath) {
+        if (cityPath == null || cityPath.isEmpty()) return List.of();
+
+        List<String> result = new ArrayList<>();
+        for (String cityCode : cityPath) {
+            String provinceCode = cityRoadGraph.provinceCode(cityCode);
+            if (provinceCode.isBlank()) continue;
+            if (result.isEmpty() || !result.get(result.size() - 1).equals(provinceCode)) {
+                result.add(provinceCode);
+            }
+        }
+        return result;
+    }
+
+    private List<double[]> routeCoordinatesFor(
+            ExternalOrderRecord.Location from,
+            ExternalOrderRecord.Location to,
+            List<String> cityPath
+    ) {
+        List<double[]> coordinates = new ArrayList<>();
+        if (hasCoords(from == null ? null : from.coords())) {
+            coordinates.add(new double[]{from.coords()[0], from.coords()[1]});
+        }
+
+        if (cityPath != null && cityPath.size() > 2) {
+            for (int i = 1; i < cityPath.size() - 1; i++) {
+                CityRoadGraph.CityInfo cityInfo = cityRoadGraph.getCityInfo(cityPath.get(i));
+                if (cityInfo == null) continue;
+                double[] coords = coordinateResolver.resolveCityCenter(cityInfo.provinceName(), cityInfo.name());
+                if (hasCoords(coords)) {
+                    addDistinctCoordinate(coordinates, coords);
+                }
+            }
+        }
+
+        if (hasCoords(to == null ? null : to.coords())) {
+            addDistinctCoordinate(coordinates, to.coords());
+        }
+
+        return coordinates.size() >= 2 ? coordinates : List.of();
+    }
+
+    private void addDistinctCoordinate(List<double[]> coordinates, double[] coords) {
+        if (!hasCoords(coords)) return;
+        double[] next = new double[]{coords[0], coords[1]};
+        if (coordinates.isEmpty()) {
+            coordinates.add(next);
+            return;
+        }
+        double[] previous = coordinates.get(coordinates.size() - 1);
+        if (Math.abs(previous[0] - next[0]) < 0.000001 && Math.abs(previous[1] - next[1]) < 0.000001) {
+            return;
+        }
+        coordinates.add(next);
     }
 
     private boolean isShortHaul(NormalizedTownRoadOrder order) {
@@ -950,7 +1104,12 @@ public class TownRoadMiddleLayer {
                 order.vehicle(),
                 order.status(),
                 order.updatedAt(),
-                order.deleted()
+                order.deleted(),
+                order.routeCoordinates(),
+                order.routeLengthKm(),
+                order.speedKmh(),
+                order.cityPath(),
+                order.cityNames()
         );
     }
 
@@ -993,6 +1152,29 @@ public class TownRoadMiddleLayer {
 
     private boolean hasCoords(double[] coords) {
         return coords != null && coords.length >= 2;
+    }
+
+    private double pathLengthKm(List<double[]> coordinates) {
+        if (coordinates == null || coordinates.size() < 2) return 0;
+        double total = 0;
+        for (int i = 1; i < coordinates.size(); i++) {
+            total += distanceKm(coordinates.get(i - 1), coordinates.get(i));
+        }
+        return total;
+    }
+
+    private double distanceKm(double[] start, double[] end) {
+        if (!hasCoords(start) || !hasCoords(end)) return 0;
+        double earthRadiusKm = 6371.0088;
+        double startLat = Math.toRadians(start[1]);
+        double endLat = Math.toRadians(end[1]);
+        double deltaLat = Math.toRadians(end[1] - start[1]);
+        double deltaLng = Math.toRadians(end[0] - start[0]);
+        double a = Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2)
+                + Math.cos(startLat) * Math.cos(endLat)
+                * Math.sin(deltaLng / 2) * Math.sin(deltaLng / 2);
+        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return earthRadiusKm * c;
     }
 
     private String signature(Map<String, Object> data) {

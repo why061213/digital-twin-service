@@ -1015,6 +1015,7 @@ public class RoutePushService {
             String to,
             double[] fromCoords,
             double[] toCoords,
+            List<double[]> routeCoordinates,
             double[] currentCoords,
             String plate,
             String carId,
@@ -1030,10 +1031,7 @@ public class RoutePushService {
         long now = System.currentTimeMillis();
         cleanupExpiredRoutes(now);
 
-        List<double[]> coordinates = List.of(
-                new double[]{fromCoords[0], fromCoords[1]},
-                new double[]{toCoords[0], toCoords[1]}
-        );
+        List<double[]> coordinates = sanitizeRouteCoordinates(fromCoords, toCoords, routeCoordinates);
         double routeLengthKm = pathLengthKm(coordinates);
         if (plate != null && !plate.isBlank()) {
             lineIdPlateMap.put(lineId, plate);
@@ -1091,6 +1089,40 @@ public class RoutePushService {
         log.info("[RoadMap] dispatched external long-haul route: {} -> {}, lineId={}, orderId={}, progress={}%",
                 from, to, lineId, route.orderId(), Math.round(progress * 100));
         return message;
+    }
+
+    private List<double[]> sanitizeRouteCoordinates(double[] fromCoords, double[] toCoords, List<double[]> routeCoordinates) {
+        List<double[]> coordinates = new ArrayList<>();
+        if (routeCoordinates != null) {
+            for (double[] coord : routeCoordinates) {
+                if (coord == null || coord.length < 2) continue;
+                if (!Double.isFinite(coord[0]) || !Double.isFinite(coord[1])) continue;
+                addDistinctCoordinate(coordinates, coord);
+            }
+        }
+
+        if (coordinates.size() >= 2) {
+            return coordinates;
+        }
+
+        coordinates.clear();
+        addDistinctCoordinate(coordinates, fromCoords);
+        addDistinctCoordinate(coordinates, toCoords);
+        return coordinates;
+    }
+
+    private void addDistinctCoordinate(List<double[]> coordinates, double[] coord) {
+        if (coord == null || coord.length < 2) return;
+        double[] next = new double[]{coord[0], coord[1]};
+        if (coordinates.isEmpty()) {
+            coordinates.add(next);
+            return;
+        }
+        double[] previous = coordinates.get(coordinates.size() - 1);
+        if (Math.abs(previous[0] - next[0]) < 0.000001 && Math.abs(previous[1] - next[1]) < 0.000001) {
+            return;
+        }
+        coordinates.add(next);
     }
 
     private double initialProgressForExternalOrder(

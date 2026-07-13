@@ -120,6 +120,20 @@ public class TownRoadCoordinateResolver {
         return location;
     }
 
+    public double[] resolveCityCenter(String province, String city) {
+        String safeProvince = trimToNull(province);
+        String safeCity = trimToNull(city);
+        if (safeCity == null) return null;
+
+        double[] resolved = localCoordDb.resolve(safeProvince, safeCity, null, safeCity);
+        if (resolved != null) return resolved;
+
+        resolved = localCoordDb.get(safeCity);
+        if (resolved != null) return resolved;
+
+        return amapClient.geocode(safeProvince, safeCity, null, safeCity);
+    }
+
     private double[] tryLocalDb(String p, String c, String d, String n) {
         if (p != null && n != null) {
             double[] r = localCoordDb.resolve(p, c, d, n);

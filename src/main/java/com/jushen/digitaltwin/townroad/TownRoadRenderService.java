@@ -145,6 +145,7 @@ public class TownRoadRenderService {
                     order.to().name(),
                     fc,
                     tc,
+                    order.routeCoordinates(),
                     vehicle == null ? null : vehicle.currentCoords(),
                     vehicle == null ? null : vehicle.plate(),
                     vehicle == null ? null : vehicle.carId(),

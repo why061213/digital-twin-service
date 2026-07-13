@@ -13,6 +13,8 @@ public class CityRoadGraph {
 
     private final Map<String, List<Edge>> graph = new LinkedHashMap<>();
     private final Map<String, CityInfo> cityInfo = new LinkedHashMap<>();
+    private final Map<String, String> cityNameToCode = new LinkedHashMap<>();
+    private final Map<String, String> provinceCityNameToCode = new LinkedHashMap<>();
     private final Map<String, List<String>> provinceToCities = new LinkedHashMap<>();
     private final Map<String, String> provinceNames = new LinkedHashMap<>();
 
@@ -51,6 +53,49 @@ public class CityRoadGraph {
 
     public boolean hasCity(String cityCode) { return graph.containsKey(cityCode); }
     public CityInfo getCityInfo(String cityCode) { return cityInfo.get(cityCode); }
+    public String cityName(String cityCode) {
+        CityInfo info = cityInfo.get(cityCode);
+        return info == null ? cityCode : info.name();
+    }
+    public String provinceCode(String cityCode) {
+        CityInfo info = cityInfo.get(cityCode);
+        return info == null ? "" : info.provinceCode();
+    }
+    public String provinceName(String provinceCode) {
+        return provinceNames.getOrDefault(provinceCode, provinceCode);
+    }
+
+    public String cityCodeFor(ExternalOrderRecord.Location location) {
+        if (location == null) return "";
+
+        String adcode = safe(location.adcode());
+        if (adcode.length() >= 6) {
+            String direct = adcode.substring(0, 6);
+            if (graph.containsKey(direct)) return direct;
+
+            String cityCode = adcode.substring(0, 4) + "00";
+            if (graph.containsKey(cityCode)) return cityCode;
+
+            String provinceCode = adcode.substring(0, 2) + "0000";
+            if (graph.containsKey(provinceCode)) return provinceCode;
+        }
+
+        String province = safe(location.province());
+        String city = safe(location.city());
+        String name = safe(location.name());
+        String candidateName = !city.isBlank() ? city : name;
+
+        if (!province.isBlank() && !candidateName.isBlank()) {
+            String byProvince = provinceCityNameToCode.get(province + "|" + candidateName);
+            if (byProvince != null) return byProvince;
+        }
+
+        if (!candidateName.isBlank()) {
+            return cityNameToCode.getOrDefault(candidateName, "");
+        }
+
+        return "";
+    }
 
     private void initCityData() {
         String[][] raw = {
@@ -88,7 +133,9 @@ public class CityRoadGraph {
         for (String[] row : raw) {
             String code = row[0], name = row[1], provinceName = row[2];
             String provinceCode = code.substring(0, 2) + "0000";
-            cityInfo.put(code, new CityInfo(name, provinceCode));
+            cityInfo.put(code, new CityInfo(name, provinceCode, provinceName));
+            cityNameToCode.putIfAbsent(name, code);
+            provinceCityNameToCode.put(provinceName + "|" + name, code);
             provinceToCities.computeIfAbsent(provinceCode, k -> new ArrayList<>()).add(code);
             provinceNames.putIfAbsent(provinceCode, provinceName);
             graph.putIfAbsent(code, new ArrayList<>());
@@ -198,10 +245,11 @@ public class CityRoadGraph {
     }
 
     private boolean isBlank(String s) { return s == null || s.isBlank(); }
+    private String safe(String s) { return s == null ? "" : s.trim(); }
 
     private record Edge(String to, int cost) {}
     public record CityPath(List<String> cityCodes, int cost) {
         public String pathKey() { return String.join(">", cityCodes); }
     }
-    public record CityInfo(String name, String provinceCode) {}
+    public record CityInfo(String name, String provinceCode, String provinceName) {}
 }

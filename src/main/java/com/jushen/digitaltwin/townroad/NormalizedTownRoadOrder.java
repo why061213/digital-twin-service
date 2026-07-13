@@ -23,6 +23,11 @@ public record NormalizedTownRoadOrder(
         List<List<String>> provincePaths,
         List<String> provincePathKeys,
         List<Integer> provincePathCosts,
+        List<String> cityPath,
+        List<String> cityNames,
+        List<double[]> routeCoordinates,
+        Double routeLengthKm,
+        Double speedKmh,
 
         String groupId,
         String groupName,
