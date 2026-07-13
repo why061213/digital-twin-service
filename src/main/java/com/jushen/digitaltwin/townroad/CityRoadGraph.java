@@ -25,8 +25,84 @@ public class CityRoadGraph {
     }
 
     public List<String> shortestPath(String startCityCode, String targetCityCode) {
-        List<CityPath> paths = candidatePaths(startCityCode, targetCityCode, 10, 0, 0, 1);
-        return paths.isEmpty() ? List.of() : paths.get(0).cityCodes();
+        return shortestPath(startCityCode, targetCityCode, List.of());
+    }
+
+    public List<String> shortestPath(String startCityCode, String targetCityCode, List<String> preferredProvincePath) {
+        if (isBlank(startCityCode) || isBlank(targetCityCode)) return List.of();
+        if (startCityCode.equals(targetCityCode)) return List.of(startCityCode);
+        if (!graph.containsKey(startCityCode) || !graph.containsKey(targetCityCode)) return List.of();
+
+        Map<String, Integer> preferredProvinceIndex = new HashMap<>();
+        for (int i = 0; preferredProvincePath != null && i < preferredProvincePath.size(); i++) {
+            preferredProvinceIndex.putIfAbsent(preferredProvincePath.get(i), i);
+        }
+
+        Map<String, Integer> distance = new HashMap<>();
+        Map<String, Integer> guideScore = new HashMap<>();
+        Map<String, String> previous = new HashMap<>();
+        PriorityQueue<PathNode> queue = new PriorityQueue<>(
+                Comparator.comparingInt(PathNode::cost)
+                        .thenComparingInt(PathNode::guideScore)
+                        .thenComparing(PathNode::cityCode)
+        );
+
+        distance.put(startCityCode, 0);
+        guideScore.put(startCityCode, 0);
+        queue.add(new PathNode(startCityCode, 0, 0));
+
+        while (!queue.isEmpty()) {
+            PathNode current = queue.poll();
+            if (current.cost() > distance.getOrDefault(current.cityCode(), Integer.MAX_VALUE)) {
+                continue;
+            }
+            if (current.cityCode().equals(targetCityCode)) {
+                break;
+            }
+
+            List<Edge> neighbors = new ArrayList<>(graph.getOrDefault(current.cityCode(), List.of()));
+            neighbors.sort(Comparator.comparing(Edge::to));
+            for (Edge edge : neighbors) {
+                int nextCost = current.cost() + edge.cost();
+                int nextGuideScore = current.guideScore()
+                        + provinceGuideScore(current.cityCode(), edge.to(), preferredProvinceIndex);
+                int knownCost = distance.getOrDefault(edge.to(), Integer.MAX_VALUE);
+                int knownGuideScore = guideScore.getOrDefault(edge.to(), Integer.MAX_VALUE);
+                if (nextCost > knownCost || (nextCost == knownCost && nextGuideScore >= knownGuideScore)) {
+                    continue;
+                }
+                distance.put(edge.to(), nextCost);
+                guideScore.put(edge.to(), nextGuideScore);
+                previous.put(edge.to(), current.cityCode());
+                queue.add(new PathNode(edge.to(), nextCost, nextGuideScore));
+            }
+        }
+
+        if (!distance.containsKey(targetCityCode)) return List.of();
+
+        LinkedList<String> path = new LinkedList<>();
+        String cursor = targetCityCode;
+        while (cursor != null) {
+            path.addFirst(cursor);
+            cursor = previous.get(cursor);
+        }
+
+        return path;
+    }
+
+    private int provinceGuideScore(String fromCityCode, String toCityCode, Map<String, Integer> preferredProvinceIndex) {
+        if (preferredProvinceIndex == null || preferredProvinceIndex.isEmpty()) return 0;
+
+        String fromProvince = provinceCode(fromCityCode);
+        String toProvince = provinceCode(toCityCode);
+        Integer fromIndex = preferredProvinceIndex.get(fromProvince);
+        Integer toIndex = preferredProvinceIndex.get(toProvince);
+
+        if (toIndex == null) return 8;
+        if (fromIndex == null) return 2;
+        if (toIndex < fromIndex) return 4;
+        if (toIndex == fromIndex || toIndex == fromIndex + 1) return 0;
+        return 1;
     }
 
     public List<CityPath> candidatePaths(
@@ -248,6 +324,7 @@ public class CityRoadGraph {
     private String safe(String s) { return s == null ? "" : s.trim(); }
 
     private record Edge(String to, int cost) {}
+    private record PathNode(String cityCode, int cost, int guideScore) {}
     public record CityPath(List<String> cityCodes, int cost) {
         public String pathKey() { return String.join(">", cityCodes); }
     }

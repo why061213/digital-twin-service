@@ -448,7 +448,7 @@ public class TownRoadMiddleLayer {
         String fromProvinceKey = provinceCodeResolver.provinceKey(resolvedFrom);
         String toProvinceKey = provinceCodeResolver.provinceKey(resolvedTo);
 
-        List<String> cityPath = cityPathFor(resolvedFrom, resolvedTo);
+        List<String> cityPath = cityPathFor(resolvedFrom, resolvedTo, fromProvinceKey, toProvinceKey);
         List<String> cityNames = cityPath.stream()
                 .map(cityRoadGraph::cityName)
                 .toList();
@@ -916,11 +916,17 @@ public class TownRoadMiddleLayer {
         return result;
     }
 
-    private List<String> cityPathFor(ExternalOrderRecord.Location from, ExternalOrderRecord.Location to) {
+    private List<String> cityPathFor(
+            ExternalOrderRecord.Location from,
+            ExternalOrderRecord.Location to,
+            String fromProvinceKey,
+            String toProvinceKey
+    ) {
         String fromCityCode = cityRoadGraph.cityCodeFor(from);
         String toCityCode = cityRoadGraph.cityCodeFor(to);
         if (fromCityCode.isBlank() || toCityCode.isBlank()) return List.of();
-        return cityRoadGraph.shortestPath(fromCityCode, toCityCode);
+        List<String> preferredProvincePath = provinceRoadGraph.shortestPath(fromProvinceKey, toProvinceKey);
+        return cityRoadGraph.shortestPath(fromCityCode, toCityCode, preferredProvincePath);
     }
 
     private List<String> provincePathFromCityPath(List<String> cityPath) {

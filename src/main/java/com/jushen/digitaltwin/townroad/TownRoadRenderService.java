@@ -49,11 +49,33 @@ public class TownRoadRenderService {
     }
 
     public Map<String, Object> processAndBroadcast(List<ExternalOrderRecord> rawOrders) {
-        ExternalOrderSnapshotResult result = middleLayer.processSnapshot(rawOrders);
+        return processAndBroadcastInternal(rawOrders, false);
+    }
 
+    public Map<String, Object> processAndBroadcastWithTrace(List<ExternalOrderRecord> rawOrders) {
+        return processAndBroadcastInternal(rawOrders, true);
+    }
+
+    private Map<String, Object> processAndBroadcastInternal(List<ExternalOrderRecord> rawOrders, boolean traceEnabled) {
+        long startedAt = System.currentTimeMillis();
+        int inputRawCount = rawOrders == null ? 0 : rawOrders.size();
+        Map<String, Object> pipeline = traceEnabled ? new LinkedHashMap<>() : null;
+        if (traceEnabled) {
+            pipeline.put("input", inputSummary(rawOrders));
+        }
+
+        long middleLayerStartedAt = System.currentTimeMillis();
+        ExternalOrderSnapshotResult result = middleLayer.processSnapshot(rawOrders);
+        long middleLayerFinishedAt = System.currentTimeMillis();
+        if (traceEnabled) {
+            pipeline.put("middleLayer", middleLayerSummary(result, middleLayerFinishedAt - middleLayerStartedAt));
+        }
+
+        long broadcastStartedAt = System.currentTimeMillis();
         for (TownRoadRenderCommand command : result.commands()) {
             realtimeWebSocketHandler.broadcast(command);
         }
+        long broadcastFinishedAt = System.currentTimeMillis();
 
         int deletedOrCancelled = result.diff().deletedOrCancelled();
         int rawCount = result.rawCount();
@@ -63,7 +85,9 @@ public class TownRoadRenderService {
         int skippedInvalid = result.diff().skippedInvalid();
         int skippedNotRenderable = result.diff().skippedNotRenderable();
         int skippedLongHaul = result.diff().skippedLongHaul();
+        long roadMapStartedAt = System.currentTimeMillis();
         int roadMapRouteCount = dispatchLongHaulRoutesToRoadMap(result.longHaulOrders());
+        long roadMapFinishedAt = System.currentTimeMillis();
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("ok", true);
@@ -97,13 +121,14 @@ public class TownRoadRenderService {
         response.put("accounting", accounting);
 
         response.put("commands", result.commands());
-        this.lastResult = response;
 
         // 打印统计
         log.info(coordinateResolver.getStatsAndReset());
         log.info(amapGeocodeClient.getStatsAndReset());
 
         // 自动启动模拟：对"运输中"的订单启动车辆位置模拟（异步）
+        long townRouteStartedAt = System.currentTimeMillis();
+        int townRouteDispatchCount = 0;
         for (TownRoadRenderCommand command : result.commands()) {
             if (command.orders() == null) continue;
             for (TownRoadRenderCommand.TownRoadOrder order : command.orders()) {
@@ -117,10 +142,166 @@ public class TownRoadRenderService {
                         order.from().name(), order.to().name(),
                         fc[0], fc[1], tc[0], tc[1]
                 );
+                townRouteDispatchCount++;
             }
         }
+        long townRouteFinishedAt = System.currentTimeMillis();
+
+        if (traceEnabled) {
+            pipeline.put("output", outputSummary(result, roadMapRouteCount, townRouteDispatchCount));
+            Map<String, Object> timings = new LinkedHashMap<>();
+            timings.put("inputRawCount", inputRawCount);
+            timings.put("middleLayerMs", middleLayerFinishedAt - middleLayerStartedAt);
+            timings.put("broadcastCommandsMs", broadcastFinishedAt - broadcastStartedAt);
+            timings.put("roadMapDispatchMs", roadMapFinishedAt - roadMapStartedAt);
+            timings.put("townRouteDispatchMs", townRouteFinishedAt - townRouteStartedAt);
+            timings.put("totalMs", System.currentTimeMillis() - startedAt);
+            pipeline.put("timings", timings);
+            response.put("pipeline", pipeline);
+        }
+
+        this.lastResult = response;
 
         return response;
+    }
+
+    private Map<String, Object> inputSummary(List<ExternalOrderRecord> rawOrders) {
+        List<ExternalOrderRecord> safeRawOrders = rawOrders == null ? List.of() : rawOrders;
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("rawCount", safeRawOrders.size());
+        summary.put("samples", safeRawOrders.stream().limit(5).map(this::rawOrderSample).toList());
+        return summary;
+    }
+
+    private Map<String, Object> rawOrderSample(ExternalOrderRecord order) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        if (order == null) {
+            sample.put("null", true);
+            return sample;
+        }
+        sample.put("orderId", order.orderId());
+        sample.put("lineId", order.lineId());
+        sample.put("status", order.status());
+        sample.put("from", locationSample(order.from()));
+        sample.put("to", locationSample(order.to()));
+        sample.put("vehicle", vehicleSample(order.vehicle()));
+        sample.put("lineCount", order.lines() == null ? 0 : order.lines().size());
+        return sample;
+    }
+
+    private Map<String, Object> locationSample(ExternalOrderRecord.Location location) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        if (location == null) {
+            sample.put("null", true);
+            return sample;
+        }
+        sample.put("name", location.name());
+        sample.put("province", location.province());
+        sample.put("city", location.city());
+        sample.put("district", location.district());
+        sample.put("adcode", location.adcode());
+        sample.put("hasCoords", location.coords() != null && location.coords().length >= 2);
+        return sample;
+    }
+
+    private Map<String, Object> vehicleSample(ExternalOrderRecord.Vehicle vehicle) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        if (vehicle == null) {
+            sample.put("null", true);
+            return sample;
+        }
+        sample.put("plate", vehicle.plate());
+        sample.put("carId", vehicle.carId());
+        sample.put("hasCurrentCoords", vehicle.currentCoords() != null && vehicle.currentCoords().length >= 2);
+        sample.put("speedKmh", vehicle.speedKmh());
+        return sample;
+    }
+
+    private Map<String, Object> middleLayerSummary(ExternalOrderSnapshotResult result, long elapsedMs) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("elapsedMs", elapsedMs);
+        summary.put("rawCount", result.rawCount());
+        summary.put("normalizedCount", result.normalizedCount());
+        summary.put("shortHaulCount", result.shortHaulCount());
+        summary.put("longHaulCount", result.longHaulCount());
+        summary.put("diff", result.diff().toMap());
+        summary.put("longHaulSamples", result.longHaulOrders() == null
+                ? List.of()
+                : result.longHaulOrders().stream().limit(5).map(this::normalizedOrderSample).toList());
+        return summary;
+    }
+
+    private Map<String, Object> normalizedOrderSample(NormalizedTownRoadOrder order) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        if (order == null) {
+            sample.put("null", true);
+            return sample;
+        }
+        sample.put("instanceId", order.instanceId());
+        sample.put("orderId", order.orderId());
+        sample.put("lineId", order.lineId());
+        sample.put("status", order.status());
+        sample.put("fromProvinceKey", order.fromProvinceKey());
+        sample.put("toProvinceKey", order.toProvinceKey());
+        sample.put("provincePathKeys", order.provincePathKeys());
+        sample.put("cityPath", order.cityPath());
+        sample.put("cityNames", order.cityNames());
+        sample.put("routeCoordinateCount", order.routeCoordinates() == null ? 0 : order.routeCoordinates().size());
+        sample.put("routeLengthKm", order.routeLengthKm());
+        return sample;
+    }
+
+    private Map<String, Object> outputSummary(
+            ExternalOrderSnapshotResult result,
+            int roadMapRouteCount,
+            int townRouteDispatchCount
+    ) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("broadcastCommandCount", result.commands().size());
+        summary.put("roadMapRouteCount", roadMapRouteCount);
+        summary.put("townRouteDispatchCount", townRouteDispatchCount);
+        summary.put("commands", result.commands().stream().map(this::commandSample).toList());
+        return summary;
+    }
+
+    private Map<String, Object> commandSample(TownRoadRenderCommand command) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        sample.put("commandId", command.commandId());
+        sample.put("sourceProvince", command.sourceProvince());
+        sample.put("renderProvinces", command.renderProvinces());
+        sample.put("routeGroupCount", command.routeGroups() == null ? 0 : command.routeGroups().size());
+        sample.put("displayRouteGroupCount", command.displayRouteGroups() == null ? 0 : command.displayRouteGroups().size());
+        sample.put("provinceEdgeCount", command.provinceEdges() == null ? 0 : command.provinceEdges().size());
+        sample.put("orderCount", command.orders() == null ? 0 : command.orders().size());
+        sample.put("routeGroups", command.routeGroups() == null
+                ? List.of()
+                : command.routeGroups().stream().limit(5).map(this::routeGroupSample).toList());
+        return sample;
+    }
+
+    private Map<String, Object> routeGroupSample(TownRoadRenderCommand.TownRoadRouteGroup group) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        sample.put("groupId", group.groupId());
+        sample.put("fromProvinceKey", group.fromProvinceKey());
+        sample.put("toProvinceKey", group.toProvinceKey());
+        sample.put("primaryOrderLineIds", group.primaryOrderLineIds());
+        sample.put("alongOrderLineIds", group.alongOrderLineIds());
+        sample.put("candidatePathCount", group.candidatePaths() == null ? 0 : group.candidatePaths().size());
+        sample.put("candidatePaths", group.candidatePaths() == null
+                ? List.of()
+                : group.candidatePaths().stream().limit(3).map(this::candidatePathSample).toList());
+        return sample;
+    }
+
+    private Map<String, Object> candidatePathSample(TownRoadRenderCommand.ProvincePathCandidate candidate) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        sample.put("pathId", candidate.pathId());
+        sample.put("provincePath", candidate.provincePath());
+        sample.put("cityNames", candidate.cityNames());
+        sample.put("cityCoordinateCount", candidate.cityCoordinates() == null ? 0 : candidate.cityCoordinates().size());
+        sample.put("pathCost", candidate.pathCost());
+        sample.put("bestPath", candidate.bestPath());
+        return sample;
     }
 
     private int dispatchLongHaulRoutesToRoadMap(List<NormalizedTownRoadOrder> longHaulOrders) {

@@ -33,7 +33,7 @@ public class TownRoadController {
     public Map<String, Object> pushRawOrders(
             @RequestBody List<ExternalOrderRecord> rawOrders
     ) {
-        return renderService.processAndBroadcast(rawOrders);
+        return renderService.processAndBroadcastWithTrace(rawOrders);
     }
 
     /**
