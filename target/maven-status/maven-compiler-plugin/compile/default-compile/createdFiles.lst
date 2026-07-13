@@ -13,9 +13,11 @@ com\jushen\digitaltwin\grouping\OrderGroupingStrategy.class
 com\jushen\digitaltwin\web\WarehouseController.class
 com\jushen\digitaltwin\townroad\TownRoadExternalOrderClient$1.class
 com\jushen\digitaltwin\townroad\LocalCoordDb.class
+com\jushen\digitaltwin\townroad\CityRoadGraph$CityPath.class
 com\jushen\digitaltwin\externalorder\ExternalOrderRecord$Location.class
 com\jushen\digitaltwin\service\RoutePushService$3.class
 com\jushen\digitaltwin\web\RoadController.class
+com\jushen\digitaltwin\townroad\CityRoadGraph$Edge.class
 com\jushen\digitaltwin\townroad\TownRoadController.class
 com\jushen\digitaltwin\model\PushMessage.class
 com\jushen\digitaltwin\townroad\TownRoadExternalOrderProperties.class
@@ -58,6 +60,7 @@ com\jushen\digitaltwin\service\RealtimePushService$RouteState.class
 com\jushen\digitaltwin\model\InventorySnapshot.class
 com\jushen\digitaltwin\townroad\CoordDbProperties.class
 com\jushen\digitaltwin\townroad\TownRoadCoordinateResolver$1.class
+com\jushen\digitaltwin\townroad\CityRoadGraph$PathNode.class
 com\jushen\digitaltwin\grouping\PathGroupingStrategy.class
 com\jushen\digitaltwin\townroad\ExternalOrderRecord$Vehicle.class
 com\jushen\digitaltwin\grouping\AdvancedSequentialGroupingStrategy.class
@@ -105,6 +108,7 @@ com\jushen\digitaltwin\townroad\LocalCoordDb$1.class
 com\jushen\digitaltwin\grouping\GroupSummary.class
 com\jushen\digitaltwin\townroad\NormalizedTownRoadOrder.class
 com\jushen\digitaltwin\townroad\TownRoadModels$Vehicle.class
+com\jushen\digitaltwin\townroad\CityRoadGraph.class
 com\jushen\digitaltwin\config\WarehouseProperties$PanelConfig.class
 com\jushen\digitaltwin\townroad\TownRoadRenderCommand$TownRoadRouteGroup.class
 com\jushen\digitaltwin\townroad\TownRoadMiddleLayer.class
@@ -122,6 +126,7 @@ com\jushen\digitaltwin\config\WebSocketConfig.class
 com\jushen\digitaltwin\grouping\GroupingStrategy.class
 com\jushen\digitaltwin\config\WarehouseProperties$PanelStyle.class
 com\jushen\digitaltwin\townroad\AmapGeocodeClient.class
+com\jushen\digitaltwin\townroad\CityRoadGraph$CityInfo.class
 com\jushen\digitaltwin\config\WarehouseProperties$WarehouseConfig.class
 com\jushen\digitaltwin\externalorder\ExternalOrderRecord.class
 com\jushen\digitaltwin\config\WarehouseProperties$ColumnConfig.class
