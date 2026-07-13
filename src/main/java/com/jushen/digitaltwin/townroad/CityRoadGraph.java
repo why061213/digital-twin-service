@@ -25,10 +25,19 @@ public class CityRoadGraph {
     }
 
     public List<String> shortestPath(String startCityCode, String targetCityCode) {
-        return shortestPath(startCityCode, targetCityCode, List.of());
+        return shortestPath(startCityCode, targetCityCode, List.of(), Set.of());
     }
 
     public List<String> shortestPath(String startCityCode, String targetCityCode, List<String> preferredProvincePath) {
+        return shortestPath(startCityCode, targetCityCode, preferredProvincePath, Set.of());
+    }
+
+    public List<String> shortestPath(
+            String startCityCode,
+            String targetCityCode,
+            List<String> preferredProvincePath,
+            Set<String> allowedProvinceCodes
+    ) {
         if (isBlank(startCityCode) || isBlank(targetCityCode)) return List.of();
         if (startCityCode.equals(targetCityCode)) return List.of(startCityCode);
         if (!graph.containsKey(startCityCode) || !graph.containsKey(targetCityCode)) return List.of();
@@ -63,6 +72,9 @@ public class CityRoadGraph {
             List<Edge> neighbors = new ArrayList<>(graph.getOrDefault(current.cityCode(), List.of()));
             neighbors.sort(Comparator.comparing(Edge::to));
             for (Edge edge : neighbors) {
+                if (!provinceAllowed(edge.to(), allowedProvinceCodes)) {
+                    continue;
+                }
                 int nextCost = current.cost() + edge.cost();
                 int nextGuideScore = current.guideScore()
                         + provinceGuideScore(current.cityCode(), edge.to(), preferredProvinceIndex);
@@ -88,6 +100,12 @@ public class CityRoadGraph {
         }
 
         return path;
+    }
+
+    private boolean provinceAllowed(String cityCode, Set<String> allowedProvinceCodes) {
+        return allowedProvinceCodes == null
+                || allowedProvinceCodes.isEmpty()
+                || allowedProvinceCodes.contains(provinceCode(cityCode));
     }
 
     private int provinceGuideScore(String fromCityCode, String toCityCode, Map<String, Integer> preferredProvinceIndex) {

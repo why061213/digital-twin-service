@@ -448,7 +448,12 @@ public class TownRoadMiddleLayer {
         String fromProvinceKey = provinceCodeResolver.provinceKey(resolvedFrom);
         String toProvinceKey = provinceCodeResolver.provinceKey(resolvedTo);
 
-        List<String> cityPath = cityPathFor(resolvedFrom, resolvedTo, fromProvinceKey, toProvinceKey);
+        List<ProvincePath> provinceCandidatePaths = candidateProvincePaths(fromProvinceKey, toProvinceKey);
+        List<String> cityPath = cityPathFor(
+                resolvedFrom,
+                resolvedTo,
+                provinceCandidatePaths
+        );
         List<String> cityNames = cityPath.stream()
                 .map(cityRoadGraph::cityName)
                 .toList();
@@ -459,7 +464,8 @@ public class TownRoadMiddleLayer {
         List<ProvincePath> candidatePaths = candidateProvincePathsForOrder(
                 fromProvinceKey,
                 toProvinceKey,
-                cityPath
+                cityPath,
+                provinceCandidatePaths
         );
 
         List<List<String>> provincePaths = candidatePaths.stream()
@@ -859,7 +865,8 @@ public class TownRoadMiddleLayer {
     private List<ProvincePath> candidateProvincePathsForOrder(
             String fromProvinceKey,
             String toProvinceKey,
-            List<String> cityPath
+            List<String> cityPath,
+            List<ProvincePath> fallbackProvincePaths
     ) {
         List<String> provincePath = provincePathFromCityPath(cityPath);
         if (!provincePath.isEmpty()
@@ -868,7 +875,9 @@ public class TownRoadMiddleLayer {
             return List.of(new ProvincePath(provincePath, Math.max(0, cityPath.size() - 1)));
         }
 
-        return candidateProvincePaths(fromProvinceKey, toProvinceKey);
+        return fallbackProvincePaths == null || fallbackProvincePaths.isEmpty()
+                ? candidateProvincePaths(fromProvinceKey, toProvinceKey)
+                : fallbackProvincePaths;
     }
 
     private List<ProvincePath> candidateProvincePathsForOrders(
@@ -919,14 +928,26 @@ public class TownRoadMiddleLayer {
     private List<String> cityPathFor(
             ExternalOrderRecord.Location from,
             ExternalOrderRecord.Location to,
-            String fromProvinceKey,
-            String toProvinceKey
+            List<ProvincePath> provinceCandidatePaths
     ) {
         String fromCityCode = cityRoadGraph.cityCodeFor(from);
         String toCityCode = cityRoadGraph.cityCodeFor(to);
         if (fromCityCode.isBlank() || toCityCode.isBlank()) return List.of();
-        List<String> preferredProvincePath = provinceRoadGraph.shortestPath(fromProvinceKey, toProvinceKey);
-        return cityRoadGraph.shortestPath(fromCityCode, toCityCode, preferredProvincePath);
+        List<String> preferredProvincePath = provinceCandidatePaths == null || provinceCandidatePaths.isEmpty()
+                ? List.of()
+                : provinceCandidatePaths.get(0).provinces();
+        Set<String> allowedProvinceCodes = allowedProvinceCodes(provinceCandidatePaths);
+        return cityRoadGraph.shortestPath(fromCityCode, toCityCode, preferredProvincePath, allowedProvinceCodes);
+    }
+
+    private Set<String> allowedProvinceCodes(List<ProvincePath> provinceCandidatePaths) {
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        if (provinceCandidatePaths == null) return result;
+        for (ProvincePath provincePath : provinceCandidatePaths) {
+            if (provincePath == null || provincePath.provinces() == null) continue;
+            result.addAll(provincePath.provinces());
+        }
+        return result;
     }
 
     private List<String> provincePathFromCityPath(List<String> cityPath) {
