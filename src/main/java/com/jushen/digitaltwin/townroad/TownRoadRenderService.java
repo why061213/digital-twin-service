@@ -1,5 +1,6 @@
 package com.jushen.digitaltwin.townroad;
 
+import com.jushen.digitaltwin.service.RoutePushService;
 import com.jushen.digitaltwin.websocket.RealtimeWebSocketHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,6 +20,7 @@ public class TownRoadRenderService {
     private final RealtimeWebSocketHandler realtimeWebSocketHandler;
     private final AmapGeocodeClient amapGeocodeClient;
     private final TownRoadCoordinateResolver coordinateResolver;
+    private final RoutePushService routePushService;
     private Map<String, Object> lastResult = Map.of();
 
     public Map<String, Object> latestResult() {
@@ -30,13 +32,15 @@ public class TownRoadRenderService {
             TownRoadMiddleLayer middleLayer,
             RealtimeWebSocketHandler realtimeWebSocketHandler,
             AmapGeocodeClient amapGeocodeClient,
-            TownRoadCoordinateResolver coordinateResolver
+            TownRoadCoordinateResolver coordinateResolver,
+            RoutePushService routePushService
     ) {
         this.townRoadExternalOrderClient = townRoadExternalOrderClient;
         this.middleLayer = middleLayer;
         this.realtimeWebSocketHandler = realtimeWebSocketHandler;
         this.amapGeocodeClient = amapGeocodeClient;
         this.coordinateResolver = coordinateResolver;
+        this.routePushService = routePushService;
     }
 
     public Map<String, Object> fetchProcessAndBroadcast() {
@@ -93,6 +97,23 @@ public class TownRoadRenderService {
         // 打印统计
         log.info(coordinateResolver.getStatsAndReset());
         log.info(amapGeocodeClient.getStatsAndReset());
+
+        // 自动启动模拟：对"运输中"的订单启动车辆位置模拟（异步）
+        for (TownRoadRenderCommand command : result.commands()) {
+            if (command.orders() == null) continue;
+            for (TownRoadRenderCommand.TownRoadOrder order : command.orders()) {
+                if (!"运输中".equals(order.status())) continue;
+                if (order.from() == null || order.to() == null) continue;
+                double[] fc = order.from().coords();
+                double[] tc = order.to().coords();
+                if (fc == null || tc == null || fc.length < 2 || tc.length < 2) continue;
+                routePushService.dispatchTownRoute(
+                        order.lineId(), order.orderId() != null ? order.orderId() : order.lineId(),
+                        order.from().name(), order.to().name(),
+                        fc[0], fc[1], tc[0], tc[1]
+                );
+            }
+        }
 
         return response;
     }

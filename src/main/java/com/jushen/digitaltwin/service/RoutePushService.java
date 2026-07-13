@@ -991,6 +991,41 @@ public class RoutePushService {
         return "real".equalsIgnoreCase(simulationProfile);
     }
 
+    /**
+     * TownRoad 专用：指定起终点 + 直线路线 + 中途随机起点 + real 速度。
+     * 共享 RoadMap 的 activeRoutes 和 pushPassiveTruckPositions 定时推送。
+     */
+    public synchronized void dispatchTownRoute(
+            String lineId, String orderId, String from, String to,
+            double fromLng, double fromLat, double toLng, double toLat
+    ) {
+        if (!passivePositionPushEnabled) return;
+        cleanupExpiredRoutes(System.currentTimeMillis());
+
+        // 直线：只有起终点两个坐标
+        List<double[]> coordinates = List.of(
+                new double[]{fromLng, fromLat},
+                new double[]{toLng, toLat}
+        );
+        String pathKey = pathKey(from, to, coordinates);
+        double routeLengthKm = pathLengthKm(coordinates);
+        double speedKmh = realSimulationSpeedKmh;
+        long travelDurationMs = Math.max(60_000L, Math.round(routeLengthKm / speedKmh * 3_600_000));
+
+        // 中途随机起点：模拟车辆已经走了一段
+        double initialProgress = ThreadLocalRandom.current().nextDouble(0.1, 0.9);
+        long startTime = System.currentTimeMillis() - Math.round(initialProgress * travelDurationMs);
+
+        ScheduledRoute route = new ScheduledRoute(
+                lineId, orderId, orderId, "短途运输",
+                0, 1, from, to, coordinates, pathKey,
+                startTime, routeLengthKm, speedKmh, travelDurationMs
+        );
+        activeRoutes.put(lineId, route);
+        log.info("[TownRoad] dispatched town route: {} -> {}, lineId={}, progress={}%",
+                from, to, lineId, Math.round(initialProgress * 100));
+    }
+
     @PreDestroy
     public void shutdownBulkDispatchExecutor() {
         bulkDispatchExecutor.shutdownNow();
