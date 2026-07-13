@@ -48,7 +48,7 @@ dashboard:
     simulation-profile: test
     passive-position-push-enabled: true
     group-size: 12
-    truck-position-push-rate-ms: 60000
+    truck-position-push-rate-ms: 1200000
     low-speed-threshold-kmh: 50
     default-group-strategy: business-priority
 
