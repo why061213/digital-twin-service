@@ -813,7 +813,10 @@ public class TownRoadMiddleLayer {
     }
 
     private boolean isShortHaul(NormalizedTownRoadOrder order) {
-        return order.provincePaths() != null && !order.provincePaths().isEmpty();
+        if (order.provincePaths() == null || order.provincePaths().isEmpty()) return false;
+        // 最短路径的省份数不能超过阈值（深度控制）
+        List<String> shortestPath = order.provincePaths().get(0);
+        return shortestPath.size() <= MAX_SHORT_HAUL_PROVINCE_COUNT;
     }
 
     private boolean orderHasAnyPathAsContinuousSubPath(
