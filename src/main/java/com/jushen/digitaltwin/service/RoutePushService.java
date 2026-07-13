@@ -508,7 +508,7 @@ public class RoutePushService {
         try {
             String token = getAccessToken();
             String url = externalPositionUrl + "/video/webapi/location/get-location-use-plates";
-            Map<String, Object> body = Map.of("plates", plate);
+            Map<String, Object> body = Map.of("vehicle_name", plate);
             String json = objectMapper.writeValueAsString(body);
 
             HttpRequest request = HttpRequest.newBuilder()
