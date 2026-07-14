@@ -10,6 +10,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -32,9 +35,11 @@ public class TownRoadRenderService {
     private Map<String, Object> lastResult = Map.of();
     /** RM2 原子快照 */
     private volatile Rm2Snapshot latestRm2Snapshot = new Rm2Snapshot("0", Instant.now(), List.of(), List.of(), Map.of(), Map.of());
-    /** 上一版 groupId 集合，用于计算 changed/removed */
+    /** 上一版 groupId 集合，用于计算 removed */
     private volatile Set<String> previousRm2GroupIds = Set.of();
-    /** 上一版快照内容指纹，用于跳过无变化处理 */
+    /** 上一版 lineId→groupId 索引，用于反查 changedGroupIds */
+    private volatile Map<String, String> previousGroupIdByLineId = Map.of();
+    /** 上一版快照内容指纹 */
     private volatile String previousFingerprint = "";
 
     public Rm2Snapshot getLatestRm2Snapshot() { return latestRm2Snapshot; }
@@ -87,7 +92,7 @@ public class TownRoadRenderService {
             pipeline.put("middleLayer", middleLayerSummary(result, middleLayerFinishedAt - middleLayerStartedAt));
         }
 
-        // 构造 RM2 快照：用稳定分组的 orderLineIds 建立索引，替换路线 groupId
+        // 构造 RM2 分组和索引
         List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(result.shortHaulOrders());
         List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
 
@@ -101,7 +106,6 @@ public class TownRoadRenderService {
             for (String lineId : group.orderLineIds()) {
                 RenderRouteDTO route = routeByLineId.get(lineId);
                 if (route == null) continue;
-                // 替换为正式展示 groupId
                 RenderRouteDTO withGroupId = new RenderRouteDTO(
                         route.lineId(), route.orderId(), route.plate(), route.vehicleId(),
                         route.from(), route.to(), route.fromCoords(), route.toCoords(),
@@ -119,66 +123,40 @@ public class TownRoadRenderService {
         Map<String, List<RenderRouteDTO>> immutableRoutesByGroupId = Map.copyOf(routesByGroupId);
         Map<String, String> immutableGroupIdByLineId = Map.copyOf(groupIdByLineId);
 
-        // 计算快照指纹（按稳定顺序拼接 groupId + lineId + routeSignature + status + updatedAt）
-        StringBuilder fingerprintInput = new StringBuilder();
-        for (Rm2RouteGroupDTO g : rm2Groups) {
-            fingerprintInput.append(g.groupId()).append('|');
-            for (String lineId : g.orderLineIds()) {
-                RenderRouteDTO r = routeByLineId.get(lineId);
-                if (r != null) {
-                    fingerprintInput.append(r.lineId()).append('|')
-                            .append(r.routeSignature()).append('|')
-                            .append(r.status()).append('|')
-                            .append(r.updatedAt()).append('|');
-                }
+        // SHA-256 内容指纹，只有 RM2 变化才更新快照和广播
+        String version = rm2Fingerprint(rm2Groups, routeByLineId);
+        boolean rm2SnapshotChanged = !version.equals(previousFingerprint);
+
+        if (rm2SnapshotChanged) {
+            this.previousFingerprint = version;
+
+            List<RenderRouteDTO> assignedRoutes = routesByGroupId.values().stream()
+                    .flatMap(List::stream).toList();
+            this.latestRm2Snapshot = new Rm2Snapshot(version, Instant.now(),
+                    List.copyOf(assignedRoutes), List.copyOf(rm2Groups),
+                    immutableRoutesByGroupId, immutableGroupIdByLineId);
+
+            Set<String> currentGroupIds = new LinkedHashSet<>();
+            for (Rm2RouteGroupDTO g : rm2Groups) currentGroupIds.add(g.groupId());
+            Set<String> changedGroupIds = collectChangedGroupIds(result.diff(), groupIdByLineId, previousGroupIdByLineId);
+            Set<String> removedGroupIds = new LinkedHashSet<>(previousRm2GroupIds);
+            removedGroupIds.removeAll(currentGroupIds);
+            this.previousRm2GroupIds = currentGroupIds;
+            this.previousGroupIdByLineId = immutableGroupIdByLineId;
+
+            if (!changedGroupIds.isEmpty() || !removedGroupIds.isEmpty()) {
+                Map<String, Object> event = new LinkedHashMap<>();
+                event.put("type", "route_snapshot_changed");
+                event.put("scope", "rm2");
+                event.put("snapshotVersion", version);
+                event.put("changedGroupIds", new ArrayList<>(changedGroupIds));
+                event.put("removedGroupIds", new ArrayList<>(removedGroupIds));
+                event.put("serverTime", Instant.now().toString());
+                realtimeWebSocketHandler.broadcast(event);
             }
         }
-        String version = "rm2-" + Integer.toHexString(fingerprintInput.toString().hashCode());
 
-        // 内容未变 → 不更新快照，不广播
-        if (version.equals(previousFingerprint)) {
-            Map<String, Object> resp = new LinkedHashMap<>();
-            resp.put("ok", true);
-            resp.put("snapshotVersion", version);
-            resp.put("message", "snapshot unchanged");
-            resp.put("rm2Routes", rm2Routes.size());
-            resp.put("rm2Groups", rm2Groups.size());
-            this.lastResult = resp;
-            return resp;
-        }
-        this.previousFingerprint = version;
-
-        // 构造不可变快照（assignedRoutes 使用正式展示 groupId）
-        List<RenderRouteDTO> assignedRoutes = routesByGroupId.values().stream()
-                .flatMap(List::stream).toList();
-        this.latestRm2Snapshot = new Rm2Snapshot(version, Instant.now(),
-                List.copyOf(assignedRoutes), List.copyOf(rm2Groups),
-                immutableRoutesByGroupId, immutableGroupIdByLineId);
-
-        // 检测是否有实质变化：订单 diff 非空 或 groupId 集合变化
-        boolean hasOrderChanges = result.diff().added() > 0 || result.diff().updated() > 0
-                || result.diff().deleted() > 0 || result.diff().routeChanged() > 0;
-        long broadcastStartedAt = System.currentTimeMillis();
-        Set<String> currentGroupIds = new LinkedHashSet<>();
-        for (Rm2RouteGroupDTO g : rm2Groups) currentGroupIds.add(g.groupId());
-        Set<String> changedGroupIds = new LinkedHashSet<>(currentGroupIds);
-        changedGroupIds.removeAll(previousRm2GroupIds);
-        Set<String> removedGroupIds = new LinkedHashSet<>(previousRm2GroupIds);
-        removedGroupIds.removeAll(currentGroupIds);
-        this.previousRm2GroupIds = currentGroupIds;
-
-        if (hasOrderChanges || !changedGroupIds.isEmpty() || !removedGroupIds.isEmpty()) {
-            Map<String, Object> event = new LinkedHashMap<>();
-            event.put("type", "route_snapshot_changed");
-            event.put("scope", "rm2");
-            event.put("snapshotVersion", version);
-            event.put("changedGroupIds", new ArrayList<>(changedGroupIds));
-            event.put("removedGroupIds", new ArrayList<>(removedGroupIds));
-            event.put("serverTime", Instant.now().toString());
-            realtimeWebSocketHandler.broadcast(event);
-        }
-        long broadcastFinishedAt = System.currentTimeMillis();
-
+        // RM1 长途 + 短途车辆注册（不受 RM2 不变影响）
         int deletedOrCancelled = result.diff().deletedOrCancelled();
         int rawCount = result.rawCount();
         int normalizedCount = result.normalizedCount();
@@ -187,13 +165,13 @@ public class TownRoadRenderService {
         int skippedInvalid = result.diff().skippedInvalid();
         int skippedNotRenderable = result.diff().skippedNotRenderable();
         int skippedLongHaul = result.diff().skippedLongHaul();
-        long roadMapStartedAt = System.currentTimeMillis();
         int roadMapRouteCount = dispatchLongHaulRoutesToRoadMap(result.longHaulOrders());
-        long roadMapFinishedAt = System.currentTimeMillis();
+
+        String snapshotVersion = latestRm2Snapshot.snapshotVersion();
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("ok", true);
-        response.put("type","town_road_render");
+        response.put("type", "town_road_render");
         response.put("message", "town_road_render commands broadcasted");
         response.put("rawCount", rawCount);
         response.put("normalizedCount", normalizedCount);
@@ -203,7 +181,8 @@ public class TownRoadRenderService {
         response.put("commandCount", result.commands().size());
         response.put("displayMode", result.commands().size() > 1 ? "multi_source_rotation" : "single_source");
         response.put("diff", result.diff().toMap());
-        response.put("snapshotVersion", version);
+        response.put("snapshotVersion", snapshotVersion);
+        response.put("rm2SnapshotChanged", rm2SnapshotChanged);
         response.put("rm2Routes", rm2Routes.size());
         response.put("rm2Groups", rm2Groups.size());
 
@@ -227,7 +206,6 @@ public class TownRoadRenderService {
         log.info(coordinateResolver.getStatsAndReset());
         log.info(amapGeocodeClient.getStatsAndReset());
 
-        long townRouteStartedAt = System.currentTimeMillis();
         int townRouteDispatchCount = 0;
         for (TownRoadRenderCommand command : result.commands()) {
             if (command.orders() == null) continue;
@@ -250,16 +228,12 @@ public class TownRoadRenderService {
                 townRouteDispatchCount++;
             }
         }
-        long townRouteFinishedAt = System.currentTimeMillis();
 
         if (traceEnabled) {
             pipeline.put("output", outputSummary(result, roadMapRouteCount, townRouteDispatchCount));
             Map<String, Object> timings = new LinkedHashMap<>();
             timings.put("inputRawCount", inputRawCount);
             timings.put("middleLayerMs", middleLayerFinishedAt - middleLayerStartedAt);
-            timings.put("broadcastCommandsMs", broadcastFinishedAt - broadcastStartedAt);
-            timings.put("roadMapDispatchMs", roadMapFinishedAt - roadMapStartedAt);
-            timings.put("townRouteDispatchMs", townRouteFinishedAt - townRouteStartedAt);
             timings.put("totalMs", System.currentTimeMillis() - startedAt);
             pipeline.put("timings", timings);
             response.put("pipeline", pipeline);
@@ -269,7 +243,84 @@ public class TownRoadRenderService {
         return response;
     }
 
-    // ... (helper methods unchanged)
+    // ---------------------------------------------------------------
+    // 指纹与变化检测
+    // ---------------------------------------------------------------
+
+    /**
+     * 完整渲染字段 SHA-256，取前 16 位 hex。
+     * 包含：groupId, lineId, routeSignature, status, updatedAt,
+     * plate, vehicleId, cargo, speedKmh, routeLengthKm, from, to, role, coordinateSystem
+     */
+    private String rm2Fingerprint(List<Rm2RouteGroupDTO> groups, Map<String, RenderRouteDTO> routeByLineId) {
+        StringBuilder sb = new StringBuilder();
+        for (Rm2RouteGroupDTO g : groups) {
+            sb.append(g.groupId()).append('|');
+            for (String lineId : g.orderLineIds()) {
+                RenderRouteDTO r = routeByLineId.get(lineId);
+                if (r == null) continue;
+                sb.append(r.lineId()).append('|')
+                        .append(r.routeSignature()).append('|')
+                        .append(r.status()).append('|')
+                        .append(r.updatedAt()).append('|')
+                        .append(r.plate()).append('|')
+                        .append(r.vehicleId()).append('|')
+                        .append(r.cargo()).append('|')
+                        .append(r.speedKmh()).append('|')
+                        .append(r.routeLengthKm()).append('|')
+                        .append(r.from()).append('|')
+                        .append(r.to()).append('|')
+                        .append(r.role()).append('|')
+                        .append(r.coordinateSystem()).append('|');
+            }
+        }
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(sb.toString().getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (int i = 0; i < 8; i++) { // 前 16 位 hex
+                hex.append(String.format("%02x", digest[i]));
+            }
+            return "rm2-" + hex;
+        } catch (NoSuchAlgorithmException e) {
+            // fallback to hashCode
+            return "rm2-" + Integer.toHexString(sb.toString().hashCode());
+        }
+    }
+
+    /**
+     * 从 diff 的 changed lineIds 反查 groupId。
+     * 新增/更新/路线变化用新 groupIdByLineId，删除用旧 previousGroupIdByLineId。
+     */
+    private Set<String> collectChangedGroupIds(
+            OrderSnapshotDiff diff,
+            Map<String, String> groupIdByLineId,
+            Map<String, String> previousGroupIdByLineId
+    ) {
+        Set<String> result = new LinkedHashSet<>();
+        for (String lineId : diff.addedLineIds()) {
+            String gid = groupIdByLineId.get(lineId);
+            if (gid != null) result.add(gid);
+        }
+        for (String lineId : diff.updatedLineIds()) {
+            String gid = groupIdByLineId.get(lineId);
+            if (gid != null) result.add(gid);
+        }
+        for (String lineId : diff.routeChangedLineIds()) {
+            String gid = groupIdByLineId.get(lineId);
+            if (gid != null) result.add(gid);
+        }
+        for (String lineId : diff.deletedLineIds()) {
+            String gid = previousGroupIdByLineId.get(lineId);
+            if (gid != null) result.add(gid);
+        }
+        return result;
+    }
+
+    // ---------------------------------------------------------------
+    // helpers (unchanged)
+    // ---------------------------------------------------------------
+
     private Map<String, Object> inputSummary(List<ExternalOrderRecord> rawOrders) {
         List<ExternalOrderRecord> safeRawOrders = rawOrders == null ? List.of() : rawOrders;
         Map<String, Object> summary = new LinkedHashMap<>();
