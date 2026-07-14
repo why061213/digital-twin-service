@@ -53,6 +53,15 @@ dashboard:
     low-speed-threshold-kmh: 50
     default-group-strategy: business-priority
 
+    # 位置批量刷新配置（替代逐车穿透外部接口）
+    position-refresh:
+      enabled: true
+      fixed-delay-ms: 30000
+      batch-size: 50
+      max-concurrency: 2
+      request-timeout-ms: 10000
+      stale-after-ms: 180000
+
     # 以下为外部车辆位置模块的公开默认值；真实地址、账号、测试车辆请放到 application-private.yml。
     auth-enabled: false
     auth-url: ""

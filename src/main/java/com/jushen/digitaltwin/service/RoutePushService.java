@@ -75,6 +75,7 @@ public class RoutePushService {
     private final int groupSize;
     private final String defaultGroupStrategy;
     private final RouteGroupingEngine routeGroupingEngine;
+    private final VehiclePositionCacheService positionCache;
     private final String externalPositionToken;
     private final int externalPositionBatchSize;
     private final ConcurrentHashMap<String, String> lineIdPlateMap = new ConcurrentHashMap<>();
@@ -98,6 +99,7 @@ public class RoutePushService {
             SimulationDataFactory dataFactory,
             ObjectMapper objectMapper,
             RouteGroupingEngine routeGroupingEngine,
+            VehiclePositionCacheService positionCache,
             @Value("${dashboard.route.passive-position-push-enabled:false}") boolean passivePositionPushEnabled,
             @Value("${dashboard.route.simulation-profile:test}") String simulationProfile,
             @Value("${dashboard.route.external-position-url:}") String externalPositionUrl,
@@ -121,6 +123,7 @@ public class RoutePushService {
         this.dataFactory = dataFactory;
         this.objectMapper = objectMapper;
         this.routeGroupingEngine = routeGroupingEngine;
+        this.positionCache = positionCache;
         this.passivePositionPushEnabled = passivePositionPushEnabled;
         this.simulationProfile = simulationProfile;
         this.externalPositionUrl = externalPositionUrl;
@@ -263,6 +266,13 @@ public class RoutePushService {
         }
     }
 
+
+    /**
+     * 获取有效的 accessToken（公开方法，供 VehiclePositionCacheService 调用）。
+     */
+    public String getAccessTokenForExternal() throws IOException, InterruptedException {
+        return getAccessToken();
+    }
 
     public synchronized Map<String, Object> dispatchRandomRoute() {
         cleanupExpiredRoutes(System.currentTimeMillis());
@@ -699,13 +709,53 @@ public class RoutePushService {
         return positionMessage(route, now);
     }
 
-    @Scheduled(fixedRateString = "${dashboard.route.truck-position-push-rate-ms:60000}")
-    public void pushPassiveTruckPositions() {
-        if (!passivePositionPushEnabled) return;
+    @Scheduled(fixedDelayString = "${dashboard.route.position-refresh.fixed-delay-ms:30000}")
+    public void scheduledPositionRefresh() {
+        if (!passivePositionPushEnabled || !positionCache.isEnabled()) return;
 
         long now = System.currentTimeMillis();
         cleanupExpiredRoutes(now);
-        activeRoutes.values().forEach((route) -> webSocketHandler.broadcast(positionMessage(route, now)));
+
+        Map<String, Set<String>> vehicleToLineIds = collectActiveTransportVehicleMap();
+        Map<String, Object> summary = positionCache.runBatchRefresh(this::getAccessTokenForExternalSafe, vehicleToLineIds);
+
+        // 刷新完成后推送变化的位置
+        if (passivePositionPushEnabled) {
+            activeRoutes.values().forEach((route) -> webSocketHandler.broadcast(positionMessage(route, now)));
+        }
+    }
+
+    /**
+     * 收集所有运输中的活跃线路，按 vehicleId 去重映射。
+     */
+    public Map<String, Set<String>> collectActiveTransportVehicleMap() {
+        Map<String, Set<String>> result = new LinkedHashMap<>();
+        for (Map.Entry<String, ScheduledRoute> entry : activeRoutes.entrySet()) {
+            String lineId = entry.getKey();
+            ScheduledRoute route = entry.getValue();
+            if (route.scope() != RouteScope.TOWN && route.scope() != RouteScope.ROAD) continue;
+
+            String vehicleId = lineIdCarIdMap.get(lineId);
+            if (vehicleId == null || vehicleId.isBlank()) continue;
+
+            result.computeIfAbsent(vehicleId, k -> new LinkedHashSet<>()).add(lineId);
+        }
+        return result;
+    }
+
+    private String getAccessTokenForExternalSafe() {
+        try {
+            return getAccessToken();
+        } catch (Exception e) {
+            log.warn("Failed to get access token for position refresh", e);
+            return null;
+        }
+    }
+
+    /** @deprecated 由 scheduledPositionRefresh 替代 */
+    @Deprecated
+    public void pushPassiveTruckPositions() {
+        // 保留空实现以兼容 @Scheduled 引用
     }
 
     private List<double[]> buildRandomRoadCoordinates(City from, City to) {
@@ -885,20 +935,44 @@ public class RoutePushService {
             return null;
         }
 
-        // 外部订单当前只有车牌号，先按车牌查；保留 carId 作为以后兼容兜底。
+        // 优先读缓存
+        PositionSnapshot cached = positionCache.getPosition(lineId);
+        if (cached != null && !cached.stale()) {
+            return new ProviderPosition(
+                    cached.position(), cached.speedKmh(),
+                    cached.vehicleId(), cached.vehicleName());
+        }
+
+        // 缓存未命中或已过期：同步查询外部接口（兼容旧行为，同时写入缓存）
         String plate = lineIdPlateMap.get(lineId);
         if (plate != null && !plate.isBlank()) {
             ProviderPosition pos = fetchPositionByPlate(plate);
-            if (pos != null) return pos;
+            if (pos != null) {
+                positionCache.putPosition(lineId, PositionSnapshot.fromProvider(
+                        lineId, pos.vehicleId(), pos.vehicleName(), plate,
+                        pos.position()[0], pos.position()[1], pos.speedKmh()));
+                return pos;
+            }
         }
 
         String carId = lineIdCarIdMap.get(lineId);
         if (carId != null && !carId.isBlank()) {
             ProviderPosition pos = fetchPositionByCarId(carId);
-            if (pos != null) return pos;
+            if (pos != null) {
+                positionCache.putPosition(lineId, PositionSnapshot.fromProvider(
+                        lineId, pos.vehicleId(), pos.vehicleName(), plate,
+                        pos.position()[0], pos.position()[1], pos.speedKmh()));
+                return pos;
+            }
         }
 
-        // 都没有或接口失败，返回 null，使用模拟位置
+        // 缓存有 stale 数据：返回 stale 位置而非回退模拟
+        if (cached != null) {
+            return new ProviderPosition(
+                    cached.position(), cached.speedKmh(),
+                    cached.vehicleId(), cached.vehicleName());
+        }
+
         return null;
     }
 

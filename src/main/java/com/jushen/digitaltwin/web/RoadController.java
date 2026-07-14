@@ -2,6 +2,8 @@ package com.jushen.digitaltwin.web;
 
 import com.jushen.digitaltwin.service.SimulationDataFactory;
 import com.jushen.digitaltwin.service.RoutePushService;
+import com.jushen.digitaltwin.service.VehiclePositionCacheService;
+import com.jushen.digitaltwin.service.PositionSnapshot;
 import com.jushen.digitaltwin.websocket.RealtimeWebSocketHandler;
 import org.springframework.web.bind.annotation.*;
 
@@ -9,20 +11,24 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.LinkedHashSet;
 @RestController
 @RequestMapping("/api/road")
 public class RoadController {
 
     private final SimulationDataFactory dataFactory;
     private final RoutePushService routePushService;
-
+    private final VehiclePositionCacheService positionCache;
     private final RealtimeWebSocketHandler webSocketHandler;
 
     public RoadController(SimulationDataFactory dataFactory,
                           RoutePushService routePushService,
+                          VehiclePositionCacheService positionCache,
                           RealtimeWebSocketHandler webSocketHandler) {
         this.dataFactory = dataFactory;
         this.routePushService = routePushService;
+        this.positionCache = positionCache;
         this.webSocketHandler = webSocketHandler;
     }
     @PostMapping("/dispatch")
@@ -53,6 +59,63 @@ public class RoadController {
     @GetMapping("/routes/{lineId}/position")
     public Map<String, Object> getTruckPosition(@PathVariable String lineId) {
         return routePushService.getPosition(lineId);
+    }
+
+    /**
+     * 批量查询车辆位置（只读缓存，不穿透外部接口）。
+     */
+    @PostMapping("/vehicles/positions/query")
+    public Map<String, Object> queryPositions(@RequestBody Map<String, Object> body) {
+        @SuppressWarnings("unchecked")
+        List<String> lineIds = (List<String>) body.get("lineIds");
+        if (lineIds == null || lineIds.isEmpty()) {
+            return Map.of("serverTime", java.time.Instant.now().toString(),
+                    "positions", List.of(),
+                    "missingLineIds", List.of(),
+                    "staleLineIds", List.of());
+        }
+
+        // 去重
+        Set<String> deduped = new LinkedHashSet<>(lineIds);
+        List<Map<String, Object>> positions = new ArrayList<>();
+        List<String> missingLineIds = new ArrayList<>();
+        List<String> staleLineIds = new ArrayList<>();
+
+        for (String lineId : deduped) {
+            if (lineId == null || lineId.isBlank()) continue;
+            PositionSnapshot snapshot = positionCache.getPosition(lineId);
+            if (snapshot == null) {
+                // 缓存没有，回退到 getPosition（可能触发模拟位置）
+                Map<String, Object> pos = routePushService.getPosition(lineId);
+                if (pos != null && pos.containsKey("position")) {
+                    positions.add(pos);
+                } else {
+                    missingLineIds.add(lineId);
+                }
+            } else {
+                if (snapshot.stale()) {
+                    staleLineIds.add(lineId);
+                }
+                Map<String, Object> pos = new LinkedHashMap<>();
+                pos.put("lineId", lineId);
+                pos.put("type", "truck_position");
+                pos.put("position", snapshot.position());
+                pos.put("speedKmh", snapshot.speedKmh());
+                pos.put("source", snapshot.source());
+                pos.put("stale", snapshot.stale());
+                pos.put("fetchedAt", snapshot.fetchedAt().toString());
+                if (snapshot.vehicleId() != null) pos.put("vehicleId", snapshot.vehicleId());
+                positions.add(pos);
+            }
+        }
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("serverTime", java.time.Instant.now().toString());
+        response.put("cacheAgeMs", 0);
+        response.put("positions", positions);
+        response.put("missingLineIds", missingLineIds);
+        response.put("staleLineIds", staleLineIds);
+        return response;
     }
 
     // 原有直线接口保持不变
