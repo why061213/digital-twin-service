@@ -70,6 +70,8 @@ dashboard:
     external-position-url: ""
     external-position-token: ""
     external-position-batch-size: 50
+    # 车辆字典 vehicle_name -> vehicle_id。0 表示进程启动后仅加载一次；正数才定时刷新。
+    vehicle-dictionary-refresh-ms: 0
     test-plate: ""
     test-car-id: ""
     test-on-startup: false

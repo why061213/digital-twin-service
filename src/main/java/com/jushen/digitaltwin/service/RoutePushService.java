@@ -79,9 +79,13 @@ public class RoutePushService {
     private final VehiclePositionCacheService positionCache;
     private final String externalPositionToken;
     private final int externalPositionBatchSize;
+    private final long vehicleDictionaryRefreshMs;
     private final ConcurrentHashMap<String, String> lineIdPlateMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> lineIdCarIdMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, VehicleRef> vehicleByNormalizedPlate = new ConcurrentHashMap<>();
+    private final Set<String> unresolvedVehiclePlates = ConcurrentHashMap.newKeySet();
+    private volatile boolean vehicleDictionaryInitialized;
+    private volatile long vehicleDictionaryLoadedAt;
     private final String testPlate;
     private final String testCarId;
     private final boolean testOnStartup;
@@ -110,6 +114,7 @@ public class RoutePushService {
             @Value("${dashboard.route.default-group-strategy:sequential}") String defaultGroupStrategy,
             @Value("${dashboard.route.external-position-token:}") String externalPositionToken,
             @Value("${dashboard.route.external-position-batch-size:50}") int externalPositionBatchSize,
+            @Value("${dashboard.route.vehicle-dictionary-refresh-ms:0}") long vehicleDictionaryRefreshMs,
             @Value("${dashboard.route.test-plate:}") String testPlate,
             @Value("${dashboard.route.test-car-id:}") String testCarId,
             @Value("${dashboard.route.test-on-startup:false}") boolean testOnStartup,
@@ -134,6 +139,7 @@ public class RoutePushService {
         this.defaultGroupStrategy = defaultGroupStrategy;
         this.externalPositionToken = externalPositionToken;
         this.externalPositionBatchSize = externalPositionBatchSize;
+        this.vehicleDictionaryRefreshMs = Math.max(0, vehicleDictionaryRefreshMs);
         this.testPlate = testPlate;
         this.testCarId = testCarId;
         this.testOnStartup = testOnStartup;
@@ -143,6 +149,7 @@ public class RoutePushService {
         this.authSecret = authSecret;
         this.tokenCacheEnabled = tokenCacheEnabled;
         this.tokenCachePathStr = tokenCachePathStr;
+        log.info("[VehicleDictionary] refreshIntervalMs={} (0 means load once per process)", this.vehicleDictionaryRefreshMs);
     }
 
 
@@ -527,9 +534,13 @@ public class RoutePushService {
 
         VehicleRef vehicleRef = resolveVehicleByPlate(plate);
         if (vehicleRef == null) {
-            log.warn("Vehicle dictionary has no vehicleId for plate={}; using simulated position", plate);
+            String plateKey = normalizePlateKey(plate);
+            if (unresolvedVehiclePlates.add(plateKey)) {
+                log.warn("Vehicle dictionary has no vehicleId for plate={}; using simulated position", plate);
+            }
             return null;
         }
+        unresolvedVehiclePlates.remove(normalizePlateKey(plate));
 
         ProviderPosition position = fetchPositionByCarId(vehicleRef.vehicleId());
         if (position != null) {
@@ -544,19 +555,25 @@ public class RoutePushService {
 
     private VehicleRef resolveVehicleByPlate(String plate) {
         if (plate == null || plate.isBlank()) return null;
-        if (vehicleByNormalizedPlate.isEmpty()) {
+        ensureVehicleDictionary();
+        return vehicleByNormalizedPlate.get(normalizePlateKey(plate));
+    }
+
+    private void ensureVehicleDictionary() {
+        long now = System.currentTimeMillis();
+        boolean refreshDue = vehicleDictionaryRefreshMs > 0
+                && now - vehicleDictionaryLoadedAt >= vehicleDictionaryRefreshMs;
+        if (!vehicleDictionaryInitialized || refreshDue) {
             refreshVehicleDictionary();
         }
-        VehicleRef vehicleRef = vehicleByNormalizedPlate.get(normalizePlateKey(plate));
-        if (vehicleRef == null) {
-            refreshVehicleDictionary();
-            vehicleRef = vehicleByNormalizedPlate.get(normalizePlateKey(plate));
-        }
-        return vehicleRef;
     }
 
     private synchronized void refreshVehicleDictionary() {
-        if (!externalPositionConfigured()) return;
+        if (!externalPositionConfigured()) {
+            vehicleDictionaryInitialized = true;
+            vehicleDictionaryLoadedAt = System.currentTimeMillis();
+            return;
+        }
 
         try {
             String token = getAccessToken();
@@ -609,6 +626,9 @@ public class RoutePushService {
                     dataBlock == null ? null : dataBlock.get("total"), pageList.size(), vehicleByNormalizedPlate.size(), size);
         } catch (Exception e) {
             log.warn("Failed to refresh vehicle dictionary", e);
+        } finally {
+            vehicleDictionaryInitialized = true;
+            vehicleDictionaryLoadedAt = System.currentTimeMillis();
         }
     }
 
@@ -1633,9 +1653,6 @@ public class RoutePushService {
         ProviderPosition pos = null;
         if (externalPositionConfigured() && vehicleKey != null && !vehicleKey.isBlank()) {
             pos = fetchPositionByPlate(vehicleKey);
-            if (pos == null) {
-                pos = fetchPositionByPlate(vehicleKey);
-            }
         }
         if (pos == null) {
             pos = querySimulatedPosition(vehicleKey);
