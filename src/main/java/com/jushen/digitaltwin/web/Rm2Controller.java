@@ -5,7 +5,6 @@ import com.jushen.digitaltwin.dto.Rm2Snapshot;
 import com.jushen.digitaltwin.townroad.TownRoadRenderService;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,54 +33,30 @@ public class Rm2Controller {
     }
 
     @GetMapping("/groups/{groupId}/routes")
-    public Map<String, Object> listGroupRoutes(@PathVariable String groupId) {
+    public Map<String, Object> listGroupRoutes(
+            @PathVariable String groupId,
+            @RequestParam(required = false) String snapshotVersion
+    ) {
         Rm2Snapshot s = renderService.getLatestRm2Snapshot();
+
+        // 版本不一致：返回当前版本让前端重新同步 groups
+        if (snapshotVersion != null && !snapshotVersion.equals(s.snapshotVersion())) {
+            Map<String, Object> mismatch = new LinkedHashMap<>();
+            mismatch.put("scope", "rm2");
+            mismatch.put("snapshotVersion", s.snapshotVersion());
+            mismatch.put("groupId", groupId);
+            mismatch.put("routes", List.of());
+            mismatch.put("mismatch", true);
+            return mismatch;
+        }
 
         List<RenderRouteDTO> groupRoutes = s.routesByGroupId().getOrDefault(groupId, List.of());
 
-        List<RenderRouteDTO> validRoutes = new ArrayList<>();
-        List<Map<String, Object>> rejected = new ArrayList<>();
-        for (RenderRouteDTO route : groupRoutes) {
-            if (isValidRoute(route)) {
-                validRoutes.add(route);
-            } else {
-                Map<String, Object> rejectEntry = new LinkedHashMap<>();
-                rejectEntry.put("lineId", route.lineId());
-                rejectEntry.put("reason", describeRejection(route));
-                rejected.add(rejectEntry);
-            }
-        }
-
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("snapshotVersion", s.snapshotVersion());
         response.put("scope", "rm2");
+        response.put("snapshotVersion", s.snapshotVersion());
         response.put("groupId", groupId);
-        response.put("coordinateSystem", "GCJ02");
-        response.put("routes", validRoutes);
-        response.put("rejected", rejected);
+        response.put("routes", groupRoutes);
         return response;
-    }
-
-    private boolean isValidRoute(RenderRouteDTO route) {
-        if (route.coordinates() == null || route.coordinates().size() < 2) return false;
-        for (double[] c : route.coordinates()) {
-            if (c == null || c.length < 2) return false;
-            if (!Double.isFinite(c[0]) || !Double.isFinite(c[1])) return false;
-            if (c[0] < -180 || c[0] > 180) return false;
-            if (c[1] < -90 || c[1] > 90) return false;
-        }
-        return true;
-    }
-
-    private String describeRejection(RenderRouteDTO route) {
-        if (route.coordinates() == null || route.coordinates().isEmpty()) return "缺少坐标";
-        if (route.coordinates().size() < 2) return "坐标点不足2个";
-        for (double[] c : route.coordinates()) {
-            if (c == null || c.length < 2) return "坐标格式错误";
-            if (!Double.isFinite(c[0]) || !Double.isFinite(c[1])) return "坐标含NaN或Infinity";
-            if (c[0] < -180 || c[0] > 180) return "经度越界";
-            if (c[1] < -90 || c[1] > 90) return "纬度越界";
-        }
-        return "未知原因";
     }
 }

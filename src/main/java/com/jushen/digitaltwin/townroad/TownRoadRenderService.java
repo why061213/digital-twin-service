@@ -4,7 +4,6 @@ import com.jushen.digitaltwin.dto.RenderRouteDTO;
 import com.jushen.digitaltwin.dto.Rm2RouteGroupDTO;
 import com.jushen.digitaltwin.dto.Rm2Snapshot;
 import com.jushen.digitaltwin.dto.RouteDtoConverter;
-import com.jushen.digitaltwin.dto.RouteSnapshotDTO;
 import com.jushen.digitaltwin.service.RoutePushService;
 import com.jushen.digitaltwin.websocket.RealtimeWebSocketHandler;
 import org.slf4j.Logger;
@@ -12,9 +11,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public class TownRoadRenderService {
@@ -30,6 +32,8 @@ public class TownRoadRenderService {
     private Map<String, Object> lastResult = Map.of();
     /** RM2 原子快照 */
     private volatile Rm2Snapshot latestRm2Snapshot = new Rm2Snapshot("0", Instant.now(), List.of(), List.of(), Map.of(), Map.of());
+    /** 上一版 groupId 集合，用于计算 changed/removed */
+    private volatile Set<String> previousRm2GroupIds = Set.of();
 
     public Rm2Snapshot getLatestRm2Snapshot() { return latestRm2Snapshot; }
 
@@ -95,11 +99,26 @@ public class TownRoadRenderService {
         String version = "snapshot-" + System.currentTimeMillis();
         this.latestRm2Snapshot = new Rm2Snapshot(version, Instant.now(), rm2Routes, rm2Groups, routesByGroupId, groupIdByLineId);
 
-        // 快照保存完成后才广播 WebSocket
+        // 只广播一条快照变化事件，不逐个广播 RouteSnapshotDTO
         long broadcastStartedAt = System.currentTimeMillis();
-        for (TownRoadRenderCommand command : result.commands()) {
-            RouteSnapshotDTO snapshot = RouteDtoConverter.fromRenderCommand(command);
-            realtimeWebSocketHandler.broadcast(snapshot);
+        Set<String> currentGroupIds = rm2Groups.stream()
+                .map(Rm2RouteGroupDTO::groupId)
+                .collect(java.util.stream.Collectors.toSet());
+        Set<String> changedGroupIds = new LinkedHashSet<>(currentGroupIds);
+        changedGroupIds.removeAll(previousRm2GroupIds);
+        Set<String> removedGroupIds = new LinkedHashSet<>(previousRm2GroupIds);
+        removedGroupIds.removeAll(currentGroupIds);
+        this.previousRm2GroupIds = currentGroupIds;
+
+        if (!changedGroupIds.isEmpty() || !removedGroupIds.isEmpty()) {
+            Map<String, Object> event = new LinkedHashMap<>();
+            event.put("type", "route_snapshot_changed");
+            event.put("scope", "rm2");
+            event.put("snapshotVersion", version);
+            event.put("changedGroupIds", new ArrayList<>(changedGroupIds));
+            event.put("removedGroupIds", new ArrayList<>(removedGroupIds));
+            event.put("serverTime", Instant.now().toString());
+            realtimeWebSocketHandler.broadcast(event);
         }
         long broadcastFinishedAt = System.currentTimeMillis();
 
