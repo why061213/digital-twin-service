@@ -163,6 +163,7 @@ public class TownRoadMiddleLayer {
                 normalized.size(),
                 shortHaulOrders.size(),
                 longHaulOrders.size(),
+                shortHaulOrders,
                 longHaulOrders,
                 commands,
                 diff

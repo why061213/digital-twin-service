@@ -15,7 +15,6 @@ import java.util.Map;
 
 /**
  * 将内部模型（NormalizedTownRoadOrder、TownRoadRenderCommand）转换为统一 DTO。
- * 这是解耦的关键层：不再把内部数据结构直接暴露给前端。
  */
 public final class RouteDtoConverter {
 
@@ -25,24 +24,22 @@ public final class RouteDtoConverter {
     // NormalizedTownRoadOrder → RenderRouteDTO
     // ---------------------------------------------------------------
 
-    /**
-     * 将内部标准化订单转为渲染 DTO。
-     * scope: 通过 provincePaths 长度判断（≤3 = town，>3 = road）。
-     */
     public static RenderRouteDTO fromNormalizedOrder(NormalizedTownRoadOrder order) {
         if (order == null) return null;
 
-        ExternalOrderRecord.Location from = order.from();
-        ExternalOrderRecord.Location to = order.to();
+        ExternalOrderRecord.Location fromLoc = order.from();
+        ExternalOrderRecord.Location toLoc = order.to();
         ExternalOrderRecord.Vehicle vehicle = order.vehicle();
 
-        boolean isShortHaul = isShortHaul(order);
-        String scope = isShortHaul ? "town" : "road";
+        boolean isShortHaul = order.provincePaths() != null && !order.provincePaths().isEmpty()
+                && order.provincePaths().get(0).size() <= 3;
+        String scope = isShortHaul ? "rm2" : "rm1";
 
         String cargo = buildCargo(vehicle);
-        String pathKey = buildPathKey(from, to, order.routeCoordinates());
+        String fromAdcode = fromLoc != null ? safe(fromLoc.adcode()) : "000000";
+        String toAdcode = toLoc != null ? safe(toLoc.adcode()) : "000000";
+        String pathKey = RenderRouteDTO.buildStablePathKey(scope, fromAdcode, toAdcode, order.routeCoordinates());
 
-        // 计算预计行程时长
         Long travelDurationMs = null;
         if (order.routeLengthKm() != null && order.routeLengthKm() > 0
                 && order.speedKmh() != null && order.speedKmh() > 0) {
@@ -50,14 +47,14 @@ public final class RouteDtoConverter {
         }
 
         return new RenderRouteDTO(
-                order.instanceId(),           // lineId
+                order.instanceId(),
                 order.orderId(),
                 vehicle != null ? vehicle.plate() : null,
                 vehicle != null ? vehicle.carId() : null,
-                from != null ? from.name() : null,
-                to != null ? to.name() : null,
-                from != null ? from.coords() : null,
-                to != null ? to.coords() : null,
+                fromLoc != null ? fromLoc.name() : null,
+                toLoc != null ? toLoc.name() : null,
+                fromLoc != null ? fromLoc.coords() : null,
+                toLoc != null ? toLoc.coords() : null,
                 order.routeCoordinates(),
                 order.routeLengthKm(),
                 order.speedKmh(),
@@ -66,6 +63,11 @@ public final class RouteDtoConverter {
                 travelDurationMs,
                 pathKey,
                 scope,
+                order.groupId(),
+                "primary",
+                "GCJ02",
+                order.updatedAt(),
+                order.routeSignature(),  // 直接复用中间层已有的 routeSignature
                 buildMeta(order)
         );
     }
@@ -136,12 +138,9 @@ public final class RouteDtoConverter {
     }
 
     // ---------------------------------------------------------------
-    // 列表转换
+    // 批量转换
     // ---------------------------------------------------------------
 
-    /**
-     * 批量转换短途订单列表。
-     */
     public static List<RenderRouteDTO> shortHaulOrdersToRoutes(List<NormalizedTownRoadOrder> orders) {
         if (orders == null) return List.of();
         return orders.stream()
@@ -150,23 +149,21 @@ public final class RouteDtoConverter {
                 .toList();
     }
 
-    /**
-     * 批量转换长途订单列表。
-     */
     public static List<RenderRouteDTO> longHaulOrdersToRoutes(List<NormalizedTownRoadOrder> orders) {
         if (orders == null) return List.of();
         return orders.stream()
                 .map(RouteDtoConverter::fromNormalizedOrder)
-                .filter(r -> r != null)
+                .filter(r -> r != null && "rm1".equals(r.scope()))
                 .toList();
     }
 
     // ---------------------------------------------------------------
-    // 分组构建
+    // 稳定分组构建（用于 RM2 /groups 接口）
     // ---------------------------------------------------------------
 
     /**
-     * 按起始省份→目的省份稳定分组，每组最多 maxPerGroup 条。
+     * 按 fromProvinceKey + toProvinceKey + pathKey 稳定分组，每组最多 maxPerGroup 条。
+     * 使用 lineId 做第二排序保证确定性。
      */
     public static List<RenderRouteGroupDTO> buildStableGroups(
             List<RenderRouteDTO> routes,
@@ -174,10 +171,12 @@ public final class RouteDtoConverter {
     ) {
         if (routes == null || routes.isEmpty()) return List.of();
 
-        // 按 scope + fromName + toName 分组
+        // 按 fromProvince -> toProvince -> pathKey 桶分组
         Map<String, List<RenderRouteDTO>> buckets = new LinkedHashMap<>();
         for (RenderRouteDTO route : routes) {
-            String key = route.scope() + ":" + safe(route.fromName()) + ":" + safe(route.toName());
+            String fromProv = provinceFromMeta(route.meta(), "fromProvinceKey");
+            String toProv = provinceFromMeta(route.meta(), "toProvinceKey");
+            String key = safe(fromProv) + ":" + safe(toProv) + ":" + safe(route.pathKey());
             buckets.computeIfAbsent(key, k -> new ArrayList<>()).add(route);
         }
 
@@ -185,9 +184,15 @@ public final class RouteDtoConverter {
         int globalIndex = 0;
 
         for (Map.Entry<String, List<RenderRouteDTO>> entry : buckets.entrySet()) {
+            String[] parts = entry.getKey().split(":", 3);
+            String fromProv = parts.length > 0 ? parts[0] : "";
+            String toProv = parts.length > 1 ? parts[1] : "";
+
             List<RenderRouteDTO> bucketRoutes = entry.getValue();
-            // 按 pathKey 排序以保持稳定
-            bucketRoutes.sort(Comparator.comparing(r -> safe(r.pathKey())));
+            // 稳定排序：pathKey + lineId
+            bucketRoutes.sort(Comparator
+                    .comparing(RenderRouteDTO::pathKey, Comparator.nullsLast(String::compareTo))
+                    .thenComparing(RenderRouteDTO::lineId, Comparator.nullsLast(String::compareTo)));
 
             int total = bucketRoutes.size();
             int pageCount = (int) Math.ceil((double) total / maxPerGroup);
@@ -202,22 +207,30 @@ public final class RouteDtoConverter {
                         .toList();
 
                 RenderRouteDTO first = pageRoutes.get(0);
-                String groupId = first.scope() + ":"
-                        + safe(first.fromName()) + ":"
-                        + safe(first.toName()) + ":page-" + (page + 1);
+                String pathHash = first.pathKey() != null && first.pathKey().contains(":")
+                        ? first.pathKey().substring(first.pathKey().lastIndexOf(':') + 1)
+                        : "0000000000000000";
+
+                String groupId = "rm2:" + fromProv + ":" + toProv + ":" + pathHash + ":page-" + (page + 1);
+
+                String groupLabel = provinceLabel(fromProv) + " → " + provinceLabel(toProv);
+                String groupName = pageCount > 1
+                        ? groupLabel + " (" + (page + 1) + "/" + pageCount + ")"
+                        : groupLabel;
+
+                String scenario = fromProv.equals(toProv) ? "same_province" : "cross_province";
 
                 groups.add(new RenderRouteGroupDTO(
                         groupId,
-                        safe(first.fromName()) + " → " + safe(first.toName())
-                                + (pageCount > 1 ? " (" + (page + 1) + "/" + pageCount + ")" : ""),
+                        groupName,
                         globalIndex++,
                         page + 1,
                         lineIds.size(),
                         lineIds,
-                        "cross_province",
+                        scenario,
                         pageCount > 1 ? "分页 " + (page + 1) + "/" + pageCount : null,
                         "primary",
-                        safe(first.fromName()) + "→" + safe(first.toName()),
+                        groupLabel,
                         null
                 ));
             }
@@ -232,7 +245,8 @@ public final class RouteDtoConverter {
     public static RouteGroupListDTO buildGroupList(
             List<RenderRouteDTO> routes,
             int maxPerGroup,
-            String strategy
+            String strategy,
+            String displayMode
     ) {
         List<RenderRouteGroupDTO> groups = buildStableGroups(routes, maxPerGroup);
         return new RouteGroupListDTO(
@@ -240,7 +254,7 @@ public final class RouteDtoConverter {
                 routes != null ? routes.size() : 0,
                 maxPerGroup,
                 strategy,
-                null,
+                displayMode,
                 null
         );
     }
@@ -249,30 +263,11 @@ public final class RouteDtoConverter {
     // 内部辅助
     // ---------------------------------------------------------------
 
-    private static boolean isShortHaul(NormalizedTownRoadOrder order) {
-        if (order.provincePaths() == null || order.provincePaths().isEmpty()) return false;
-        List<String> shortestPath = order.provincePaths().get(0);
-        return shortestPath.size() <= 3;
-    }
-
     private static String buildCargo(ExternalOrderRecord.Vehicle vehicle) {
         if (vehicle == null) return null;
         if (vehicle.cargoWeight() == null) return null;
         String unit = vehicle.cargoUnit() != null ? vehicle.cargoUnit() : "吨";
         return vehicle.cargoWeight() + unit;
-    }
-
-    private static String buildPathKey(
-            ExternalOrderRecord.Location from,
-            ExternalOrderRecord.Location to,
-            List<double[]> coordinates
-    ) {
-        if (from == null || to == null) return "";
-        String key = safe(from.name()) + "->" + safe(to.name());
-        if (coordinates != null && !coordinates.isEmpty()) {
-            key += "-" + Integer.toHexString(coordinates.hashCode());
-        }
-        return key;
     }
 
     private static Map<String, Object> buildMeta(NormalizedTownRoadOrder order) {
@@ -289,29 +284,52 @@ public final class RouteDtoConverter {
         return meta;
     }
 
+    private static String provinceFromMeta(Map<String, Object> meta, String key) {
+        if (meta == null) return "000000";
+        Object value = meta.get(key);
+        return value != null ? value.toString() : "000000";
+    }
+
+    private static String provinceLabel(String adcode) {
+        if (adcode == null || adcode.isBlank() || "000000".equals(adcode)) return "未知";
+        // 简单映射，后续可接入 ProvinceCodeResolver
+        return adcode;
+    }
+
     private static RenderRouteDTO fromTownRoadOrder(TownRoadOrder order) {
         if (order == null) return null;
-        ExternalOrderRecord.Location from = order.from();
-        ExternalOrderRecord.Location to = order.to();
+        ExternalOrderRecord.Location fromLoc = order.from();
+        ExternalOrderRecord.Location toLoc = order.to();
         ExternalOrderRecord.Vehicle vehicle = order.vehicle();
 
-        return RenderRouteDTO.builder()
-                .lineId(order.lineId())
-                .orderId(order.orderId())
-                .plate(vehicle != null ? vehicle.plate() : null)
-                .carId(vehicle != null ? vehicle.carId() : null)
-                .fromName(from != null ? from.name() : null)
-                .toName(to != null ? to.name() : null)
-                .fromCoords(from != null ? from.coords() : null)
-                .toCoords(to != null ? to.coords() : null)
-                .coordinates(order.coordinates())
-                .routeLengthKm(order.routeLengthKm())
-                .speedKmh(order.speedKmh())
-                .status(order.status())
-                .cargo(buildCargo(vehicle))
-                .pathKey(order.lineId())
-                .scope("town")
-                .build();
+        String fromAdcode = fromLoc != null ? safe(fromLoc.adcode()) : "000000";
+        String toAdcode = toLoc != null ? safe(toLoc.adcode()) : "000000";
+        String pathKey = RenderRouteDTO.buildStablePathKey("rm2", fromAdcode, toAdcode, order.coordinates());
+
+        return new RenderRouteDTO(
+                order.lineId(),
+                order.orderId(),
+                vehicle != null ? vehicle.plate() : null,
+                vehicle != null ? vehicle.carId() : null,
+                fromLoc != null ? fromLoc.name() : null,
+                toLoc != null ? toLoc.name() : null,
+                fromLoc != null ? fromLoc.coords() : null,
+                toLoc != null ? toLoc.coords() : null,
+                order.coordinates(),
+                order.routeLengthKm(),
+                order.speedKmh(),
+                order.status(),
+                buildCargo(vehicle),
+                null,
+                pathKey,
+                "rm2",
+                null,
+                "primary",
+                "GCJ02",
+                order.updatedAt(),
+                RenderRouteDTO.hashCoordinates(order.coordinates()),
+                Map.of()
+        );
     }
 
     private static String safe(String value) {

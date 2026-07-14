@@ -1,5 +1,7 @@
 package com.jushen.digitaltwin.townroad;
 
+import com.jushen.digitaltwin.dto.RenderRouteDTO;
+import com.jushen.digitaltwin.dto.RenderRouteGroupDTO;
 import com.jushen.digitaltwin.dto.RouteDtoConverter;
 import com.jushen.digitaltwin.dto.RouteSnapshotDTO;
 import com.jushen.digitaltwin.service.RoutePushService;
@@ -24,6 +26,16 @@ public class TownRoadRenderService {
     private final TownRoadCoordinateResolver coordinateResolver;
     private final RoutePushService routePushService;
     private Map<String, Object> lastResult = Map.of();
+    /** 最近一次 RM2 快照：路线列表 */
+    private volatile List<RenderRouteDTO> latestRm2Routes = List.of();
+    /** 最近一次 RM2 快照：分组列表 */
+    private volatile List<RenderRouteGroupDTO> latestRm2Groups = List.of();
+    /** 快照版本号 */
+    private volatile String latestSnapshotVersion = "0";
+
+    public List<RenderRouteDTO> getLatestRm2Routes() { return latestRm2Routes; }
+    public List<RenderRouteGroupDTO> getLatestRm2Groups() { return latestRm2Groups; }
+    public String getLatestSnapshotVersion() { return latestSnapshotVersion; }
 
     public Map<String, Object> latestResult() {
         return lastResult;
@@ -105,6 +117,7 @@ public class TownRoadRenderService {
         response.put("commandCount", result.commands().size());
         response.put("displayMode", result.commands().size() > 1 ? "multi_source_rotation" : "single_source");
         response.put("diff", result.diff().toMap());
+        response.put("snapshotVersion", latestSnapshotVersion);
 
         // 完整数据流水账
         int skippedByStatus = normalizedCount - shortHaulCount - skippedNotRenderable - skippedLongHaul;
@@ -124,7 +137,15 @@ public class TownRoadRenderService {
                 + (normalizedCount == skippedNotRenderable + skippedLongHaul + skippedByStatus + shortHaulCount ? " ✅" : " ❌ 对不上!"));
         response.put("accounting", accounting);
 
-        response.put("commands", result.commands());
+        // 原子保存 RM2 快照（供 /api/road/rm2/groups 等接口读取）
+        List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(result.shortHaulOrders());
+        List<RenderRouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
+        this.latestRm2Routes = rm2Routes;
+        this.latestRm2Groups = rm2Groups;
+        this.latestSnapshotVersion = "snapshot-" + System.currentTimeMillis();
+        response.put("snapshotVersion", latestSnapshotVersion);
+        response.put("rm2Routes", rm2Routes.size());
+        response.put("rm2Groups", rm2Groups.size());
 
         // 打印统计
         log.info(coordinateResolver.getStatsAndReset());

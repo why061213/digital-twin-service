@@ -7,6 +7,7 @@ public record ExternalOrderSnapshotResult(
         int normalizedCount,
         int shortHaulCount,
         int longHaulCount,
+        List<NormalizedTownRoadOrder> shortHaulOrders,
         List<NormalizedTownRoadOrder> longHaulOrders,
         List<TownRoadRenderCommand> commands,
         OrderSnapshotDiff diff

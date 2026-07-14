@@ -1,12 +1,15 @@
 package com.jushen.digitaltwin.dto;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.Map;
+import java.util.HexFormat;
 
 /**
  * 统一路线渲染 DTO。
- * RM1（长途 RoadMap）和未来的 RM2 均使用此结构，
- * 后端数据模型与前端动画模型完全解耦。
+ * scope: "rm1" = 长途 RoadMap, "rm2" = 短途。
  */
 public record RenderRouteDTO(
         /** 唯一线路标识（instanceId） */
@@ -15,18 +18,20 @@ public record RenderRouteDTO(
         String orderId,
         /** 车牌 */
         String plate,
-        /** 车辆ID（外部接口的 vehicle_id） */
-        String carId,
+        /** 真实供应商车辆ID */
+        String vehicleId,
+
         /** 起点名称 */
-        String fromName,
+        String from,
         /** 终点名称 */
-        String toName,
+        String to,
         /** 起点坐标 [lng, lat] */
         double[] fromCoords,
         /** 终点坐标 [lng, lat] */
         double[] toCoords,
         /** 路线途经坐标点序列 */
         List<double[]> coordinates,
+
         /** 路线长度（公里） */
         Double routeLengthKm,
         /** 速度（km/h） */
@@ -37,10 +42,22 @@ public record RenderRouteDTO(
         String cargo,
         /** 预计运输时长（毫秒） */
         Long travelDurationMs,
-        /** 路径标识（坐标归一化后用于合并重复路径） */
+
+        /** 稳定路径标识 */
         String pathKey,
-        /** 路线类型：road（长途）或 town（短途） */
+        /** rm1 或 rm2 */
         String scope,
+        /** 所属分组ID */
+        String groupId,
+        /** primary 或 along */
+        String role,
+
+        /** 坐标系，如 GCJ02 / WGS84 */
+        String coordinateSystem,
+        /** 最后更新时间 */
+        String updatedAt,
+        /** 路线签名（坐标+路径的稳定hash） */
+        String routeSignature,
         /** 附加元数据 */
         Map<String, Object> meta
 ) {
@@ -48,53 +65,53 @@ public record RenderRouteDTO(
         if (lineId == null || lineId.isBlank()) throw new IllegalArgumentException("lineId is required");
         if (coordinates == null) coordinates = List.of();
         if (meta == null) meta = Map.of();
+        if (role == null || role.isBlank()) role = "primary";
+        if (coordinateSystem == null || coordinateSystem.isBlank()) coordinateSystem = "GCJ02";
     }
 
-    public static Builder builder() {
-        return new Builder();
+    // ---------------------------------------------------------------
+    // 稳定 pathKey 生成
+    // ---------------------------------------------------------------
+
+    /**
+     * 根据坐标序列生成稳定的 pathKey。
+     * 格式：{scope}:{fromAdcode}:{toAdcode}:{hash前16位}
+     */
+    public static String buildStablePathKey(
+            String scope,
+            String fromAdcode,
+            String toAdcode,
+            List<double[]> coordinates
+    ) {
+        String prefix = (scope != null ? scope : "rm2")
+                + ":" + safeAdcode(fromAdcode)
+                + ":" + safeAdcode(toAdcode);
+        String hash = hashCoordinates(coordinates);
+        return prefix + ":" + hash;
     }
 
-    public static final class Builder {
-        private String lineId;
-        private String orderId;
-        private String plate;
-        private String carId;
-        private String fromName;
-        private String toName;
-        private double[] fromCoords;
-        private double[] toCoords;
-        private List<double[]> coordinates = List.of();
-        private Double routeLengthKm;
-        private Double speedKmh;
-        private String status;
-        private String cargo;
-        private Long travelDurationMs;
-        private String pathKey;
-        private String scope = "road";
-        private Map<String, Object> meta = Map.of();
-
-        public Builder lineId(String v) { lineId = v; return this; }
-        public Builder orderId(String v) { orderId = v; return this; }
-        public Builder plate(String v) { plate = v; return this; }
-        public Builder carId(String v) { carId = v; return this; }
-        public Builder fromName(String v) { fromName = v; return this; }
-        public Builder toName(String v) { toName = v; return this; }
-        public Builder fromCoords(double[] v) { fromCoords = v; return this; }
-        public Builder toCoords(double[] v) { toCoords = v; return this; }
-        public Builder coordinates(List<double[]> v) { coordinates = v != null ? v : List.of(); return this; }
-        public Builder routeLengthKm(Double v) { routeLengthKm = v; return this; }
-        public Builder speedKmh(Double v) { speedKmh = v; return this; }
-        public Builder status(String v) { status = v; return this; }
-        public Builder cargo(String v) { cargo = v; return this; }
-        public Builder travelDurationMs(Long v) { travelDurationMs = v; return this; }
-        public Builder pathKey(String v) { pathKey = v; return this; }
-        public Builder scope(String v) { scope = v; return this; }
-        public Builder meta(Map<String, Object> v) { meta = v != null ? v : Map.of(); return this; }
-
-        public RenderRouteDTO build() {
-            return new RenderRouteDTO(lineId, orderId, plate, carId, fromName, toName,
-                    fromCoords, toCoords, coordinates, routeLengthKm, speedKmh,
-                    status, cargo, travelDurationMs, pathKey, scope, meta);
+    /**
+     * 坐标序列 → SHA-256 前 16 位 hex。
+     * 坐标保留 5 位小数，相同坐标序列在不同 JVM 实例中产生相同 hash。
+     */
+    public static String hashCoordinates(List<double[]> coords) {
+        if (coords == null || coords.isEmpty()) return "0000000000000000";
+        StringBuilder sb = new StringBuilder();
+        for (double[] c : coords) {
+            if (c == null || c.length < 2) continue;
+            sb.append(String.format("%.5f,%.5f;", c[0], c[1]));
         }
+        if (sb.isEmpty()) return "0000000000000000";
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(sb.toString().getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest).substring(0, 16);
+        } catch (NoSuchAlgorithmException e) {
+            return Integer.toHexString(sb.toString().hashCode());
+        }
+    }
+
+    private static String safeAdcode(String adcode) {
+        return adcode != null && !adcode.isBlank() ? adcode.trim() : "000000";
     }
 }
