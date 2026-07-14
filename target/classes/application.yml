@@ -39,7 +39,8 @@ dashboard:
       full-snapshot: true
 
       # 是否同步后主动通过 WebSocket 推给前端
-      broadcast-diff: true
+      # 旧 ExternalOrderSyncService 不参与 Road/Town 分流，禁止它广播 road_path。
+      broadcast-diff: false
 
       # 定时同步开关。先建议 false，手动调接口测试稳定后再开
       scheduled-sync-enabled: false
