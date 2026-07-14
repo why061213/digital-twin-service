@@ -85,32 +85,56 @@ public class TownRoadRenderService {
             pipeline.put("middleLayer", middleLayerSummary(result, middleLayerFinishedAt - middleLayerStartedAt));
         }
 
-        // B-D2: 先构造并保存 RM2 快照，再广播，保证前端 REST 读到最新数据
+        // 构造 RM2 快照：用稳定分组的 orderLineIds 建立索引，替换路线 groupId
         List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(result.shortHaulOrders());
         List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
+
+        Map<String, RenderRouteDTO> routeByLineId = new LinkedHashMap<>();
+        for (RenderRouteDTO r : rm2Routes) routeByLineId.put(r.lineId(), r);
+
         Map<String, List<RenderRouteDTO>> routesByGroupId = new LinkedHashMap<>();
         Map<String, String> groupIdByLineId = new LinkedHashMap<>();
-        for (RenderRouteDTO route : rm2Routes) {
-            if (route.groupId() != null) {
-                routesByGroupId.computeIfAbsent(route.groupId(), k -> new java.util.ArrayList<>()).add(route);
-                groupIdByLineId.put(route.lineId(), route.groupId());
+        for (Rm2RouteGroupDTO group : rm2Groups) {
+            List<RenderRouteDTO> groupRoutes = new ArrayList<>();
+            for (String lineId : group.orderLineIds()) {
+                RenderRouteDTO route = routeByLineId.get(lineId);
+                if (route == null) continue;
+                // 替换为正式展示 groupId
+                RenderRouteDTO withGroupId = new RenderRouteDTO(
+                        route.lineId(), route.orderId(), route.plate(), route.vehicleId(),
+                        route.from(), route.to(), route.fromCoords(), route.toCoords(),
+                        route.coordinates(), route.routeLengthKm(), route.speedKmh(),
+                        route.status(), route.cargo(), route.travelDurationMs(),
+                        route.pathKey(), route.scope(), group.groupId(), route.role(),
+                        route.coordinateSystem(), route.updatedAt(), route.routeSignature(),
+                        route.meta()
+                );
+                groupRoutes.add(withGroupId);
+                groupIdByLineId.put(lineId, group.groupId());
             }
+            routesByGroupId.put(group.groupId(), List.copyOf(groupRoutes));
         }
-        String version = "snapshot-" + System.currentTimeMillis();
-        this.latestRm2Snapshot = new Rm2Snapshot(version, Instant.now(), rm2Routes, rm2Groups, routesByGroupId, groupIdByLineId);
+        Map<String, List<RenderRouteDTO>> immutableRoutesByGroupId = Map.copyOf(routesByGroupId);
+        Map<String, String> immutableGroupIdByLineId = Map.copyOf(groupIdByLineId);
 
-        // 只广播一条快照变化事件，不逐个广播 RouteSnapshotDTO
+        String version = "snapshot-" + System.currentTimeMillis();
+        this.latestRm2Snapshot = new Rm2Snapshot(version, Instant.now(),
+                List.copyOf(rm2Routes), List.copyOf(rm2Groups),
+                immutableRoutesByGroupId, immutableGroupIdByLineId);
+
+        // 检测是否有实质变化：订单 diff 非空 或 groupId 集合变化
+        boolean hasOrderChanges = result.diff().added() > 0 || result.diff().updated() > 0
+                || result.diff().deleted() > 0 || result.diff().routeChanged() > 0;
         long broadcastStartedAt = System.currentTimeMillis();
-        Set<String> currentGroupIds = rm2Groups.stream()
-                .map(Rm2RouteGroupDTO::groupId)
-                .collect(java.util.stream.Collectors.toSet());
+        Set<String> currentGroupIds = new LinkedHashSet<>();
+        for (Rm2RouteGroupDTO g : rm2Groups) currentGroupIds.add(g.groupId());
         Set<String> changedGroupIds = new LinkedHashSet<>(currentGroupIds);
         changedGroupIds.removeAll(previousRm2GroupIds);
         Set<String> removedGroupIds = new LinkedHashSet<>(previousRm2GroupIds);
         removedGroupIds.removeAll(currentGroupIds);
         this.previousRm2GroupIds = currentGroupIds;
 
-        if (!changedGroupIds.isEmpty() || !removedGroupIds.isEmpty()) {
+        if (hasOrderChanges || !changedGroupIds.isEmpty() || !removedGroupIds.isEmpty()) {
             Map<String, Object> event = new LinkedHashMap<>();
             event.put("type", "route_snapshot_changed");
             event.put("scope", "rm2");
