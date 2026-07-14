@@ -140,9 +140,15 @@ public class TownRoadRenderService {
                 routePushService.dispatchTownRoute(
                         order.lineId(), order.orderId() != null ? order.orderId() : order.lineId(),
                         order.from().name(), order.to().name(),
-                        fc[0], fc[1], tc[0], tc[1],
-                        order.vehicle() != null ? order.vehicle().plate() : null,
-                        order.vehicle() != null ? order.vehicle().carId() : null
+                        fc,
+                        tc,
+                        order.coordinates(),
+                        order.vehicle() == null ? null : order.vehicle().currentCoords(),
+                        order.vehicle() == null ? null : order.vehicle().plate(),
+                        order.vehicle() == null ? null : order.vehicle().carId(),
+                        order.vehicle() == null ? order.speedKmh() : order.vehicle().speedKmh(),
+                        order.updatedAt(),
+                        order.status()
                 );
                 townRouteDispatchCount++;
             }

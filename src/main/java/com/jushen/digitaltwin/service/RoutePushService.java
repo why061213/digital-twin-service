@@ -1382,64 +1382,92 @@ public class RoutePushService {
     }
 
     /**
-     * TownRoad 专用：指定起终点 + 直线路线 + 中途随机起点 + real 速度。
-     * 共享 RoadMap 的 activeRoutes 和 pushPassiveTruckPositions 定时推送。
+     * TownRoad 专用：短途订单也注册进 RoadMap 同一套 activeRoutes。
+     * 后续 /position 查询与被动 WebSocket 推送都会先尝试真实定位，失败后回落到模拟位置。
      */
     public synchronized void dispatchTownRoute(
-            String lineId, String orderId, String from, String to,
-            double fromLng, double fromLat, double toLng, double toLat,
-            String plate, String carId
+            String lineId,
+            String orderId,
+            String from,
+            String to,
+            double[] fromCoords,
+            double[] toCoords,
+            List<double[]> routeCoordinates,
+            double[] currentCoords,
+            String plate,
+            String carId,
+            Double speedKmh,
+            String updatedAt,
+            String status
     ) {
         if (!passivePositionPushEnabled) return;
-        cleanupExpiredRoutes(System.currentTimeMillis());
+        if (lineId == null || lineId.isBlank() || fromCoords == null || toCoords == null
+                || fromCoords.length < 2 || toCoords.length < 2) {
+            log.warn("[TownRoad] dispatch skipped: invalid order coords, lineId={}", lineId);
+            return;
+        }
 
-        // 登记车牌/车辆ID（供真实GPS接口查询）
-        if (plate != null && !plate.isBlank()) lineIdPlateMap.put(lineId, plate);
-        if (carId != null && !carId.isBlank()) lineIdCarIdMap.put(lineId, carId);
+        long now = System.currentTimeMillis();
+        cleanupExpiredRoutes(now);
 
-        // 直线：只有起终点两个坐标
-        List<double[]> coordinates = List.of(
-                new double[]{fromLng, fromLat},
-                new double[]{toLng, toLat}
-        );
+        if (plate != null && !plate.isBlank()) {
+            lineIdPlateMap.put(lineId, plate);
+        }
+        if (carId != null && !carId.isBlank()) {
+            lineIdCarIdMap.put(lineId, carId);
+        }
+
+        List<double[]> coordinates = sanitizeRouteCoordinates(fromCoords, toCoords, routeCoordinates);
         String pathKey = pathKey(from, to, coordinates);
         double routeLengthKm = pathLengthKm(coordinates);
-        double speedKmh = realSimulationSpeedKmh;
-        long travelDurationMs = Math.max(60_000L, Math.round(routeLengthKm / speedKmh * 3_600_000));
 
-        // 先尝试从外部接口拿真实位置（校准初始进度）
-        double initialProgress;
-        long startTime;
-        ProviderPosition realPos = null;
-        if (plate != null && !plate.isBlank() && externalPositionConfigured()) {
-            log.debug("[TownRoad] fetching real position for plate={}", plate);
-            realPos = fetchPositionByPlate(plate);
-        }
-        if (realPos == null && carId != null && !carId.isBlank() && externalPositionConfigured()) {
-            realPos = fetchPositionByCarId(carId);
-        }
-        if (realPos != null) {
-            // 用真实位置反算进度
-            initialProgress = progressAtCoordinate(coordinates, realPos.position());
-            startTime = System.currentTimeMillis() - Math.round(initialProgress * travelDurationMs);
-            log.info("[TownRoad] real position for lineId={}: lng={}, lat={}, progress={}%",
-                    lineId, realPos.position()[0], realPos.position()[1], Math.round(initialProgress * 100));
-        } else {
-            // 中途随机起点
-            initialProgress = ThreadLocalRandom.current().nextDouble(0.1, 0.9);
-            startTime = System.currentTimeMillis() - Math.round(initialProgress * travelDurationMs);
-        }
+        ProviderPosition initialExternalPosition = fetchExternalVehiclePosition(lineId);
+        String progressSource = initialProgressSource(initialExternalPosition, currentCoords, status);
+        double[] resolvedCurrentCoords = initialExternalPosition != null
+                ? initialExternalPosition.position()
+                : currentCoords;
+        Double resolvedSpeedKmh = initialExternalPosition != null && initialExternalPosition.speedKmh() > 0
+                ? initialExternalPosition.speedKmh()
+                : speedKmh;
+        double effectiveSpeedKmh = resolvedSpeedKmh != null && resolvedSpeedKmh > 0
+                ? resolvedSpeedKmh
+                : Math.max(1, realSimulationSpeedKmh);
+        String resolvedUpdatedAt = initialExternalPosition != null
+                ? Instant.ofEpochMilli(now).toString()
+                : updatedAt;
+        double progress = initialProgressForExternalOrder(
+                coordinates,
+                resolvedCurrentCoords,
+                routeLengthKm,
+                effectiveSpeedKmh,
+                resolvedUpdatedAt,
+                status
+        );
+        long travelDurationMs = Math.max(60_000L, Math.round(routeLengthKm / effectiveSpeedKmh * 3_600_000));
+        long startTime = "已完成".equals(status)
+                ? now - travelDurationMs
+                : now - Math.round(progress * travelDurationMs);
 
         ScheduledRoute route = new ScheduledRoute(
-                lineId, orderId, orderId, "短途运输",
-                0, 1, from, to, coordinates, pathKey,
-                startTime, routeLengthKm, speedKmh, travelDurationMs
+                lineId,
+                orderId == null || orderId.isBlank() ? lineId : orderId,
+                orderId == null || orderId.isBlank() ? lineId : orderId,
+                "短途运输",
+                0,
+                1,
+                from,
+                to,
+                coordinates,
+                pathKey,
+                startTime,
+                routeLengthKm,
+                effectiveSpeedKmh,
+                travelDurationMs
         );
         activeRoutes.put(lineId, route);
-        log.info("[TownRoad] dispatched town route: {} -> {}, lineId={}, progress={}%, progressSource=simulated-random",
-                from, to, lineId, Math.round(initialProgress * 100));
+        log.info("[TownRoad] dispatched town route: {} -> {}, lineId={}, orderId={}, routePoints={}, progress={}%, progressSource={}",
+                from, to, lineId, route.orderId(), coordinates.size(), Math.round(progress * 100), progressSource);
     }
-
     @PreDestroy
     public void shutdownBulkDispatchExecutor() {
         bulkDispatchExecutor.shutdownNow();
