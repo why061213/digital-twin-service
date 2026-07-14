@@ -51,7 +51,16 @@ dashboard:
     group-size: 12
     truck-position-push-rate-ms: 1200000
     low-speed-threshold-kmh: 50
-    default-group-strategy: business-priority
+    default-group-strategy: province-path
+
+    # 位置批量刷新配置（替代逐车穿透外部接口）
+    position-refresh:
+      enabled: true
+      fixed-delay-ms: 30000
+      batch-size: 50
+      max-concurrency: 2
+      request-timeout-ms: 10000
+      stale-after-ms: 180000
 
     # 以下为外部车辆位置模块的公开默认值；真实地址、账号、测试车辆请放到 application-private.yml。
     auth-enabled: false
@@ -61,6 +70,8 @@ dashboard:
     external-position-url: ""
     external-position-token: ""
     external-position-batch-size: 50
+    # 车辆字典 vehicle_name -> vehicle_id。0 表示进程启动后仅加载一次；正数才定时刷新。
+    vehicle-dictionary-refresh-ms: 0
     test-plate: ""
     test-car-id: ""
     test-on-startup: false
