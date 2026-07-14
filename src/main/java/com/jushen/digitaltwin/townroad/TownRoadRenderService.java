@@ -144,16 +144,18 @@ public class TownRoadRenderService {
             this.previousRm2GroupIds = currentGroupIds;
             this.previousGroupIdByLineId = immutableGroupIdByLineId;
 
-            if (!changedGroupIds.isEmpty() || !removedGroupIds.isEmpty()) {
-                Map<String, Object> event = new LinkedHashMap<>();
-                event.put("type", "route_snapshot_changed");
-                event.put("scope", "rm2");
-                event.put("snapshotVersion", version);
-                event.put("changedGroupIds", new ArrayList<>(changedGroupIds));
-                event.put("removedGroupIds", new ArrayList<>(removedGroupIds));
-                event.put("serverTime", Instant.now().toString());
-                realtimeWebSocketHandler.broadcast(event);
+            // 快照变了就必须广播：changedGroupIds 为空时兜底为全部 currentGroupIds
+            if (changedGroupIds.isEmpty() && removedGroupIds.isEmpty()) {
+                changedGroupIds = new LinkedHashSet<>(currentGroupIds);
             }
+            Map<String, Object> event = new LinkedHashMap<>();
+            event.put("type", "route_snapshot_changed");
+            event.put("scope", "rm2");
+            event.put("snapshotVersion", version);
+            event.put("changedGroupIds", new ArrayList<>(changedGroupIds));
+            event.put("removedGroupIds", new ArrayList<>(removedGroupIds));
+            event.put("serverTime", Instant.now().toString());
+            realtimeWebSocketHandler.broadcast(event);
         }
 
         // RM1 长途 + 短途车辆注册（不受 RM2 不变影响）

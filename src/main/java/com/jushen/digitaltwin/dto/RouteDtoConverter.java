@@ -171,8 +171,8 @@ public final class RouteDtoConverter {
     ) {
         if (routes == null || routes.isEmpty()) return List.of();
 
-        // 展示分组只按 OD 省份，不按 pathKey
-        Map<String, List<RenderRouteDTO>> buckets = new LinkedHashMap<>();
+        // 展示分组只按 OD 省份，TreeMap 保证 key 排序稳定
+        Map<String, List<RenderRouteDTO>> buckets = new java.util.TreeMap<>();
         for (RenderRouteDTO route : routes) {
             String fromProv = provinceFromMeta(route.meta(), "fromProvinceKey");
             String toProv = provinceFromMeta(route.meta(), "toProvinceKey");
