@@ -16,7 +16,7 @@ public record Rm2RouteGroupDTO(
         /** 该组路线数量 */
         int count,
         /** 该组包含的 lineId 列表 */
-        List<String> lineIds,
+        List<String> orderLineIds,
         /** 地图 key = fromProvinceKey */
         String mapKey,
         /** 分组场景：same_province / cross_province */
@@ -25,6 +25,6 @@ public record Rm2RouteGroupDTO(
         String pathKey
 ) {
     public Rm2RouteGroupDTO {
-        if (lineIds == null) lineIds = List.of();
+        if (orderLineIds == null) orderLineIds = List.of();
     }
 }

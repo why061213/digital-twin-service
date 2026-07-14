@@ -253,7 +253,7 @@ public final class RouteDtoConverter {
         for (Rm2RouteGroupDTO g : rm2Groups) {
             result.add(new RenderRouteGroupDTO(
                     g.groupId(), g.groupName(), g.index(), 1, g.count(),
-                    g.lineIds(), g.groupScenario(), null, "primary",
+                    g.orderLineIds(), g.groupScenario(), null, "primary",
                     g.groupName(), g.pathKey()
             ));
         }
