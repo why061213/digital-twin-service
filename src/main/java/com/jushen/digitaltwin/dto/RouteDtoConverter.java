@@ -162,8 +162,8 @@ public final class RouteDtoConverter {
     // ---------------------------------------------------------------
 
     /**
-     * 按 fromProvinceKey + toProvinceKey + pathKey 稳定分组，每组最多 maxPerGroup 条。
-     * 使用 lineId 做第二排序保证确定性。
+     * 展示分组 = fromProvince + toProvince，每 maxPerGroup 条一页。
+     * 道路复用 key = pathKey（保留在每条路线中，前端用它合并 Mesh）。
      */
     public static List<Rm2RouteGroupDTO> buildStableGroups(
             List<RenderRouteDTO> routes,
@@ -171,11 +171,12 @@ public final class RouteDtoConverter {
     ) {
         if (routes == null || routes.isEmpty()) return List.of();
 
+        // 展示分组只按 OD 省份，不按 pathKey
         Map<String, List<RenderRouteDTO>> buckets = new LinkedHashMap<>();
         for (RenderRouteDTO route : routes) {
             String fromProv = provinceFromMeta(route.meta(), "fromProvinceKey");
             String toProv = provinceFromMeta(route.meta(), "toProvinceKey");
-            String key = safe(fromProv) + ":" + safe(toProv) + ":" + safe(route.pathKey());
+            String key = safe(fromProv) + ":" + safe(toProv);
             buckets.computeIfAbsent(key, k -> new ArrayList<>()).add(route);
         }
 
@@ -183,7 +184,7 @@ public final class RouteDtoConverter {
         int globalIndex = 0;
 
         for (Map.Entry<String, List<RenderRouteDTO>> entry : buckets.entrySet()) {
-            String[] parts = entry.getKey().split(":", 3);
+            String[] parts = entry.getKey().split(":", 2);
             String fromProv = parts.length > 0 ? parts[0] : "000000";
             String toProv = parts.length > 1 ? parts[1] : "000000";
 
@@ -204,13 +205,9 @@ public final class RouteDtoConverter {
                         .map(RenderRouteDTO::lineId)
                         .toList();
 
-                RenderRouteDTO first = pageRoutes.get(0);
-                String pathHash = first.pathKey() != null && first.pathKey().contains(":")
-                        ? first.pathKey().substring(first.pathKey().lastIndexOf(':') + 1)
-                        : "0000000000000000";
-
-                String groupId = "rm2:" + fromProv + ":" + toProv + ":" + pathHash + ":page-" + (page + 1);
-                String pathKey = first.pathKey();
+                // groupId = OD + page + 内容 hash
+                String contentHash = Integer.toHexString(lineIds.hashCode());
+                String groupId = "rm2:" + fromProv + ":" + toProv + ":page-" + (page + 1) + ":" + contentHash;
 
                 String groupLabel = provinceLabel(fromProv) + " → " + provinceLabel(toProv);
                 String groupName = pageCount > 1
@@ -219,20 +216,29 @@ public final class RouteDtoConverter {
 
                 String scenario = fromProv.equals(toProv) ? "same_province" : "cross_province";
 
+                // 组的 pathKey 用多条路线共同前缀（展示用，前端仍用每条路线自己的 pathKey 合并 Mesh）
+                String pathKeyHint = pageRoutes.stream()
+                        .map(RenderRouteDTO::pathKey)
+                        .filter(k -> k != null)
+                        .reduce((a, b) -> commonPrefix(a, b))
+                        .orElse(null);
+
                 groups.add(new Rm2RouteGroupDTO(
-                        groupId,
-                        groupName,
-                        globalIndex++,
-                        lineIds.size(),
-                        lineIds,
-                        fromProv,  // mapKey = fromProvinceKey
-                        scenario,
-                        pathKey
+                        groupId, groupName, globalIndex++, lineIds.size(),
+                        lineIds, fromProv, scenario, pathKeyHint
                 ));
             }
         }
 
         return groups;
+    }
+
+    private static String commonPrefix(String a, String b) {
+        if (a == null || b == null) return a != null ? a : b;
+        int len = Math.min(a.length(), b.length());
+        int i = 0;
+        while (i < len && a.charAt(i) == b.charAt(i)) i++;
+        return a.substring(0, i);
     }
 
     /**
