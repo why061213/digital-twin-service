@@ -70,6 +70,7 @@ com\jushen\digitaltwin\DigitalTwinBackendApplication.class
 com\jushen\digitaltwin\grouping\TimeWindowGroupingStrategy.class
 com\jushen\digitaltwin\townroad\TownRoadModels$TownRoadRenderState.class
 com\jushen\digitaltwin\townroad\NormalizedTownRoadOrder.class
+com\jushen\digitaltwin\dto\Rm2RouteGroupDTO.class
 com\jushen\digitaltwin\townroad\TownRoadModels$Vehicle.class
 com\jushen\digitaltwin\townroad\TownRoadRenderCommand$TownRoadRouteGroup.class
 com\jushen\digitaltwin\townroad\TownRoadMiddleLayer.class

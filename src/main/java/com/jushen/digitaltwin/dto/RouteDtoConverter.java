@@ -165,13 +165,12 @@ public final class RouteDtoConverter {
      * 按 fromProvinceKey + toProvinceKey + pathKey 稳定分组，每组最多 maxPerGroup 条。
      * 使用 lineId 做第二排序保证确定性。
      */
-    public static List<RenderRouteGroupDTO> buildStableGroups(
+    public static List<Rm2RouteGroupDTO> buildStableGroups(
             List<RenderRouteDTO> routes,
             int maxPerGroup
     ) {
         if (routes == null || routes.isEmpty()) return List.of();
 
-        // 按 fromProvince -> toProvince -> pathKey 桶分组
         Map<String, List<RenderRouteDTO>> buckets = new LinkedHashMap<>();
         for (RenderRouteDTO route : routes) {
             String fromProv = provinceFromMeta(route.meta(), "fromProvinceKey");
@@ -180,16 +179,15 @@ public final class RouteDtoConverter {
             buckets.computeIfAbsent(key, k -> new ArrayList<>()).add(route);
         }
 
-        List<RenderRouteGroupDTO> groups = new ArrayList<>();
+        List<Rm2RouteGroupDTO> groups = new ArrayList<>();
         int globalIndex = 0;
 
         for (Map.Entry<String, List<RenderRouteDTO>> entry : buckets.entrySet()) {
             String[] parts = entry.getKey().split(":", 3);
-            String fromProv = parts.length > 0 ? parts[0] : "";
-            String toProv = parts.length > 1 ? parts[1] : "";
+            String fromProv = parts.length > 0 ? parts[0] : "000000";
+            String toProv = parts.length > 1 ? parts[1] : "000000";
 
             List<RenderRouteDTO> bucketRoutes = entry.getValue();
-            // 稳定排序：pathKey + lineId
             bucketRoutes.sort(Comparator
                     .comparing(RenderRouteDTO::pathKey, Comparator.nullsLast(String::compareTo))
                     .thenComparing(RenderRouteDTO::lineId, Comparator.nullsLast(String::compareTo)));
@@ -212,6 +210,7 @@ public final class RouteDtoConverter {
                         : "0000000000000000";
 
                 String groupId = "rm2:" + fromProv + ":" + toProv + ":" + pathHash + ":page-" + (page + 1);
+                String pathKey = first.pathKey();
 
                 String groupLabel = provinceLabel(fromProv) + " → " + provinceLabel(toProv);
                 String groupName = pageCount > 1
@@ -220,18 +219,15 @@ public final class RouteDtoConverter {
 
                 String scenario = fromProv.equals(toProv) ? "same_province" : "cross_province";
 
-                groups.add(new RenderRouteGroupDTO(
+                groups.add(new Rm2RouteGroupDTO(
                         groupId,
                         groupName,
                         globalIndex++,
-                        page + 1,
                         lineIds.size(),
                         lineIds,
+                        fromProv,  // mapKey = fromProvinceKey
                         scenario,
-                        pageCount > 1 ? "分页 " + (page + 1) + "/" + pageCount : null,
-                        "primary",
-                        groupLabel,
-                        null
+                        pathKey
                 ));
             }
         }
@@ -240,23 +236,22 @@ public final class RouteDtoConverter {
     }
 
     /**
-     * 生成 RouteGroupListDTO。
+     * 兼容旧调用：返回 RenderRouteGroupDTO 版本。
      */
-    public static RouteGroupListDTO buildGroupList(
+    public static List<RenderRouteGroupDTO> buildStableRenderGroups(
             List<RenderRouteDTO> routes,
-            int maxPerGroup,
-            String strategy,
-            String displayMode
+            int maxPerGroup
     ) {
-        List<RenderRouteGroupDTO> groups = buildStableGroups(routes, maxPerGroup);
-        return new RouteGroupListDTO(
-                groups,
-                routes != null ? routes.size() : 0,
-                maxPerGroup,
-                strategy,
-                displayMode,
-                null
-        );
+        List<Rm2RouteGroupDTO> rm2Groups = buildStableGroups(routes, maxPerGroup);
+        List<RenderRouteGroupDTO> result = new ArrayList<>();
+        for (Rm2RouteGroupDTO g : rm2Groups) {
+            result.add(new RenderRouteGroupDTO(
+                    g.groupId(), g.groupName(), g.index(), 1, g.count(),
+                    g.lineIds(), g.groupScenario(), null, "primary",
+                    g.groupName(), g.pathKey()
+            ));
+        }
+        return result;
     }
 
     // ---------------------------------------------------------------

@@ -1,7 +1,7 @@
 package com.jushen.digitaltwin.townroad;
 
 import com.jushen.digitaltwin.dto.RenderRouteDTO;
-import com.jushen.digitaltwin.dto.RenderRouteGroupDTO;
+import com.jushen.digitaltwin.dto.Rm2RouteGroupDTO;
 import com.jushen.digitaltwin.dto.RouteDtoConverter;
 import com.jushen.digitaltwin.dto.RouteSnapshotDTO;
 import com.jushen.digitaltwin.service.RoutePushService;
@@ -29,12 +29,12 @@ public class TownRoadRenderService {
     /** 最近一次 RM2 快照：路线列表 */
     private volatile List<RenderRouteDTO> latestRm2Routes = List.of();
     /** 最近一次 RM2 快照：分组列表 */
-    private volatile List<RenderRouteGroupDTO> latestRm2Groups = List.of();
+    private volatile List<Rm2RouteGroupDTO> latestRm2Groups = List.of();
     /** 快照版本号 */
     private volatile String latestSnapshotVersion = "0";
 
     public List<RenderRouteDTO> getLatestRm2Routes() { return latestRm2Routes; }
-    public List<RenderRouteGroupDTO> getLatestRm2Groups() { return latestRm2Groups; }
+    public List<Rm2RouteGroupDTO> getLatestRm2Groups() { return latestRm2Groups; }
     public String getLatestSnapshotVersion() { return latestSnapshotVersion; }
 
     public Map<String, Object> latestResult() {
@@ -139,7 +139,7 @@ public class TownRoadRenderService {
 
         // 原子保存 RM2 快照（供 /api/road/rm2/groups 等接口读取）
         List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(result.shortHaulOrders());
-        List<RenderRouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
+        List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
         this.latestRm2Routes = rm2Routes;
         this.latestRm2Groups = rm2Groups;
         this.latestSnapshotVersion = "snapshot-" + System.currentTimeMillis();
