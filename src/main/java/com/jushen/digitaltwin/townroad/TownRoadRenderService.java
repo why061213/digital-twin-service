@@ -2,6 +2,7 @@ package com.jushen.digitaltwin.townroad;
 
 import com.jushen.digitaltwin.dto.RenderRouteDTO;
 import com.jushen.digitaltwin.dto.Rm2RouteGroupDTO;
+import com.jushen.digitaltwin.dto.Rm2Snapshot;
 import com.jushen.digitaltwin.dto.RouteDtoConverter;
 import com.jushen.digitaltwin.dto.RouteSnapshotDTO;
 import com.jushen.digitaltwin.service.RoutePushService;
@@ -10,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,16 +28,10 @@ public class TownRoadRenderService {
     private final TownRoadCoordinateResolver coordinateResolver;
     private final RoutePushService routePushService;
     private Map<String, Object> lastResult = Map.of();
-    /** 最近一次 RM2 快照：路线列表 */
-    private volatile List<RenderRouteDTO> latestRm2Routes = List.of();
-    /** 最近一次 RM2 快照：分组列表 */
-    private volatile List<Rm2RouteGroupDTO> latestRm2Groups = List.of();
-    /** 快照版本号 */
-    private volatile String latestSnapshotVersion = "0";
+    /** RM2 原子快照 */
+    private volatile Rm2Snapshot latestRm2Snapshot = new Rm2Snapshot("0", Instant.now(), List.of(), List.of(), Map.of(), Map.of());
 
-    public List<RenderRouteDTO> getLatestRm2Routes() { return latestRm2Routes; }
-    public List<Rm2RouteGroupDTO> getLatestRm2Groups() { return latestRm2Groups; }
-    public String getLatestSnapshotVersion() { return latestSnapshotVersion; }
+    public Rm2Snapshot getLatestRm2Snapshot() { return latestRm2Snapshot; }
 
     public Map<String, Object> latestResult() {
         return lastResult;
@@ -87,7 +83,6 @@ public class TownRoadRenderService {
 
         long broadcastStartedAt = System.currentTimeMillis();
         for (TownRoadRenderCommand command : result.commands()) {
-            // 转为统一 DTO 再广播，不再直接暴露内部命令对象
             RouteSnapshotDTO snapshot = RouteDtoConverter.fromRenderCommand(command);
             realtimeWebSocketHandler.broadcast(snapshot);
         }
@@ -105,6 +100,20 @@ public class TownRoadRenderService {
         int roadMapRouteCount = dispatchLongHaulRoutesToRoadMap(result.longHaulOrders());
         long roadMapFinishedAt = System.currentTimeMillis();
 
+        // 构造原子 RM2 快照
+        List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(result.shortHaulOrders());
+        List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
+        Map<String, List<RenderRouteDTO>> routesByGroupId = new LinkedHashMap<>();
+        Map<String, String> groupIdByLineId = new LinkedHashMap<>();
+        for (RenderRouteDTO route : rm2Routes) {
+            if (route.groupId() != null) {
+                routesByGroupId.computeIfAbsent(route.groupId(), k -> new java.util.ArrayList<>()).add(route);
+                groupIdByLineId.put(route.lineId(), route.groupId());
+            }
+        }
+        String version = "snapshot-" + System.currentTimeMillis();
+        this.latestRm2Snapshot = new Rm2Snapshot(version, Instant.now(), rm2Routes, rm2Groups, routesByGroupId, groupIdByLineId);
+
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("ok", true);
         response.put("type","town_road_render");
@@ -117,9 +126,10 @@ public class TownRoadRenderService {
         response.put("commandCount", result.commands().size());
         response.put("displayMode", result.commands().size() > 1 ? "multi_source_rotation" : "single_source");
         response.put("diff", result.diff().toMap());
-        response.put("snapshotVersion", latestSnapshotVersion);
+        response.put("snapshotVersion", version);
+        response.put("rm2Routes", rm2Routes.size());
+        response.put("rm2Groups", rm2Groups.size());
 
-        // 完整数据流水账
         int skippedByStatus = normalizedCount - shortHaulCount - skippedNotRenderable - skippedLongHaul;
         Map<String, Object> accounting = new LinkedHashMap<>();
         accounting.put("rawCount", rawCount);
@@ -137,21 +147,9 @@ public class TownRoadRenderService {
                 + (normalizedCount == skippedNotRenderable + skippedLongHaul + skippedByStatus + shortHaulCount ? " ✅" : " ❌ 对不上!"));
         response.put("accounting", accounting);
 
-        // 原子保存 RM2 快照（供 /api/road/rm2/groups 等接口读取）
-        List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(result.shortHaulOrders());
-        List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
-        this.latestRm2Routes = rm2Routes;
-        this.latestRm2Groups = rm2Groups;
-        this.latestSnapshotVersion = "snapshot-" + System.currentTimeMillis();
-        response.put("snapshotVersion", latestSnapshotVersion);
-        response.put("rm2Routes", rm2Routes.size());
-        response.put("rm2Groups", rm2Groups.size());
-
-        // 打印统计
         log.info(coordinateResolver.getStatsAndReset());
         log.info(amapGeocodeClient.getStatsAndReset());
 
-        // 自动启动模拟：对"运输中"的订单启动车辆位置模拟（异步）
         long townRouteStartedAt = System.currentTimeMillis();
         int townRouteDispatchCount = 0;
         for (TownRoadRenderCommand command : result.commands()) {
@@ -165,15 +163,12 @@ public class TownRoadRenderService {
                 routePushService.dispatchTownRoute(
                         order.lineId(), order.orderId() != null ? order.orderId() : order.lineId(),
                         order.from().name(), order.to().name(),
-                        fc,
-                        tc,
-                        order.coordinates(),
+                        fc, tc, order.coordinates(),
                         order.vehicle() == null ? null : order.vehicle().currentCoords(),
                         order.vehicle() == null ? null : order.vehicle().plate(),
                         order.vehicle() == null ? null : order.vehicle().carId(),
                         order.vehicle() == null ? order.speedKmh() : order.vehicle().speedKmh(),
-                        order.updatedAt(),
-                        order.status()
+                        order.updatedAt(), order.status()
                 );
                 townRouteDispatchCount++;
             }
@@ -194,10 +189,10 @@ public class TownRoadRenderService {
         }
 
         this.lastResult = response;
-
         return response;
     }
 
+    // ... (helper methods unchanged)
     private Map<String, Object> inputSummary(List<ExternalOrderRecord> rawOrders) {
         List<ExternalOrderRecord> safeRawOrders = rawOrders == null ? List.of() : rawOrders;
         Map<String, Object> summary = new LinkedHashMap<>();
@@ -208,10 +203,7 @@ public class TownRoadRenderService {
 
     private Map<String, Object> rawOrderSample(ExternalOrderRecord order) {
         Map<String, Object> sample = new LinkedHashMap<>();
-        if (order == null) {
-            sample.put("null", true);
-            return sample;
-        }
+        if (order == null) { sample.put("null", true); return sample; }
         sample.put("orderId", order.orderId());
         sample.put("lineId", order.lineId());
         sample.put("status", order.status());
@@ -224,10 +216,7 @@ public class TownRoadRenderService {
 
     private Map<String, Object> locationSample(ExternalOrderRecord.Location location) {
         Map<String, Object> sample = new LinkedHashMap<>();
-        if (location == null) {
-            sample.put("null", true);
-            return sample;
-        }
+        if (location == null) { sample.put("null", true); return sample; }
         sample.put("name", location.name());
         sample.put("province", location.province());
         sample.put("city", location.city());
@@ -239,10 +228,7 @@ public class TownRoadRenderService {
 
     private Map<String, Object> vehicleSample(ExternalOrderRecord.Vehicle vehicle) {
         Map<String, Object> sample = new LinkedHashMap<>();
-        if (vehicle == null) {
-            sample.put("null", true);
-            return sample;
-        }
+        if (vehicle == null) { sample.put("null", true); return sample; }
         sample.put("plate", vehicle.plate());
         sample.put("carId", vehicle.carId());
         sample.put("hasCurrentCoords", vehicle.currentCoords() != null && vehicle.currentCoords().length >= 2);
@@ -258,18 +244,14 @@ public class TownRoadRenderService {
         summary.put("shortHaulCount", result.shortHaulCount());
         summary.put("longHaulCount", result.longHaulCount());
         summary.put("diff", result.diff().toMap());
-        summary.put("longHaulSamples", result.longHaulOrders() == null
-                ? List.of()
+        summary.put("longHaulSamples", result.longHaulOrders() == null ? List.of()
                 : result.longHaulOrders().stream().limit(5).map(this::normalizedOrderSample).toList());
         return summary;
     }
 
     private Map<String, Object> normalizedOrderSample(NormalizedTownRoadOrder order) {
         Map<String, Object> sample = new LinkedHashMap<>();
-        if (order == null) {
-            sample.put("null", true);
-            return sample;
-        }
+        if (order == null) { sample.put("null", true); return sample; }
         sample.put("instanceId", order.instanceId());
         sample.put("orderId", order.orderId());
         sample.put("lineId", order.lineId());
@@ -284,11 +266,7 @@ public class TownRoadRenderService {
         return sample;
     }
 
-    private Map<String, Object> outputSummary(
-            ExternalOrderSnapshotResult result,
-            int roadMapRouteCount,
-            int townRouteDispatchCount
-    ) {
+    private Map<String, Object> outputSummary(ExternalOrderSnapshotResult result, int roadMapRouteCount, int townRouteDispatchCount) {
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("broadcastCommandCount", result.commands().size());
         summary.put("roadMapRouteCount", roadMapRouteCount);
@@ -306,8 +284,7 @@ public class TownRoadRenderService {
         sample.put("displayRouteGroupCount", command.displayRouteGroups() == null ? 0 : command.displayRouteGroups().size());
         sample.put("provinceEdgeCount", command.provinceEdges() == null ? 0 : command.provinceEdges().size());
         sample.put("orderCount", command.orders() == null ? 0 : command.orders().size());
-        sample.put("routeGroups", command.routeGroups() == null
-                ? List.of()
+        sample.put("routeGroups", command.routeGroups() == null ? List.of()
                 : command.routeGroups().stream().limit(5).map(this::routeGroupSample).toList());
         return sample;
     }
@@ -320,8 +297,7 @@ public class TownRoadRenderService {
         sample.put("primaryOrderLineIds", group.primaryOrderLineIds());
         sample.put("alongOrderLineIds", group.alongOrderLineIds());
         sample.put("candidatePathCount", group.candidatePaths() == null ? 0 : group.candidatePaths().size());
-        sample.put("candidatePaths", group.candidatePaths() == null
-                ? List.of()
+        sample.put("candidatePaths", group.candidatePaths() == null ? List.of()
                 : group.candidatePaths().stream().limit(3).map(this::candidatePathSample).toList());
         return sample;
     }
@@ -339,39 +315,29 @@ public class TownRoadRenderService {
 
     private int dispatchLongHaulRoutesToRoadMap(List<NormalizedTownRoadOrder> longHaulOrders) {
         if (longHaulOrders == null || longHaulOrders.isEmpty()) return 0;
-
         int dispatched = 0;
         for (NormalizedTownRoadOrder order : longHaulOrders) {
             if (order == null || order.from() == null || order.to() == null) continue;
             double[] fc = order.from().coords();
             double[] tc = order.to().coords();
             if (fc == null || tc == null || fc.length < 2 || tc.length < 2) continue;
-
             ExternalOrderRecord.Vehicle vehicle = order.vehicle();
             Double cargoWeight = vehicle == null ? null : vehicle.cargoWeight();
             Integer orderTotalTons = cargoWeight == null ? null : Math.max(0, (int) Math.round(cargoWeight));
             routePushService.dispatchExternalOrderRoute(
-                    order.instanceId(),
-                    order.orderId() != null ? order.orderId() : order.instanceId(),
-                    order.groupName(),
-                    orderTotalTons,
-                    order.from().name(),
-                    order.to().name(),
-                    order.from().province(),
-                    order.to().province(),
-                    fc,
-                    tc,
-                    order.routeCoordinates(),
+                    order.instanceId(), order.orderId() != null ? order.orderId() : order.instanceId(),
+                    order.groupName(), orderTotalTons,
+                    order.from().name(), order.to().name(),
+                    order.from().province(), order.to().province(),
+                    fc, tc, order.routeCoordinates(),
                     vehicle == null ? null : vehicle.currentCoords(),
                     vehicle == null ? null : vehicle.plate(),
                     vehicle == null ? null : vehicle.carId(),
                     vehicle == null ? null : vehicle.speedKmh(),
-                    order.updatedAt(),
-                    order.status()
+                    order.updatedAt(), order.status()
             );
             dispatched++;
         }
-
         return dispatched;
     }
 
