@@ -7,6 +7,7 @@ import com.jushen.digitaltwin.grouping.GroupSummary;
 import com.jushen.digitaltwin.grouping.GroupingContext;
 import com.jushen.digitaltwin.grouping.OrderAwareRouteInfo;
 import com.jushen.digitaltwin.grouping.PathAwareRouteInfo;
+import com.jushen.digitaltwin.grouping.ProvinceAwareRouteInfo;
 import com.jushen.digitaltwin.grouping.RouteInfo;
 import com.jushen.digitaltwin.grouping.RouteGroupingEngine;
 import com.jushen.digitaltwin.grouping.RouteGroupingResult;
@@ -293,6 +294,8 @@ public class RoutePushService {
                 1,
                 from.name(),
                 to.name(),
+                from.name(),
+                to.name(),
                 coordinates,
                 pathKey(from.name(), to.name(), coordinates),
                 System.currentTimeMillis(),
@@ -415,6 +418,8 @@ public class RoutePushService {
                 orderName,
                 totalTons,
                 vehicleCount,
+                from,
+                to,
                 from,
                 to,
                 coordinates,
@@ -1260,6 +1265,8 @@ public class RoutePushService {
             Integer orderTotalTons,
             String from,
             String to,
+            String fromProvince,
+            String toProvince,
             double[] fromCoords,
             double[] toCoords,
             List<double[]> routeCoordinates,
@@ -1321,6 +1328,8 @@ public class RoutePushService {
                 1,
                 from,
                 to,
+                fromProvince,
+                toProvince,
                 coordinates,
                 pathKey(from, to, coordinates),
                 startTime,
@@ -1531,6 +1540,8 @@ public class RoutePushService {
                 1,
                 from,
                 to,
+                from,
+                to,
                 coordinates,
                 pathKey,
                 startTime,
@@ -1557,6 +1568,8 @@ public class RoutePushService {
             int orderVehicleCount,
             String from,
             String to,
+            String startProvince,
+            String endProvince,
             List<double[]> coordinates,
             String pathKey,
             long startTime,
@@ -1564,7 +1577,7 @@ public class RoutePushService {
             double speedKmh,
             long travelDurationMs,
             RouteScope scope
-    ) implements RouteInfo, OrderAwareRouteInfo, PathAwareRouteInfo {
+    ) implements RouteInfo, OrderAwareRouteInfo, PathAwareRouteInfo, ProvinceAwareRouteInfo {
         @Override
         public String getLineId() { return lineId; }
         @Override
@@ -1575,6 +1588,10 @@ public class RoutePushService {
         public String getFrom() { return from; }
         @Override
         public String getTo() { return to; }
+        @Override
+        public String getStartProvince() { return startProvince; }
+        @Override
+        public String getEndProvince() { return endProvince; }
         @Override
         public double[] getFromCoords() { return coordinates.get(0); }
         @Override

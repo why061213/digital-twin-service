@@ -51,7 +51,7 @@ dashboard:
     group-size: 12
     truck-position-push-rate-ms: 1200000
     low-speed-threshold-kmh: 50
-    default-group-strategy: business-priority
+    default-group-strategy: province-path
 
     # 位置批量刷新配置（替代逐车穿透外部接口）
     position-refresh:

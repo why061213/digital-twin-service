@@ -2,6 +2,9 @@ package com.jushen.digitaltwin.grouping;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -22,7 +25,8 @@ final class GroupingUtils {
     static List<RouteInfo> sortedCopy(List<? extends RouteInfo> routes) {
         return routes.stream()
                 .map(RouteInfo.class::cast)
-                .sorted(Comparator.comparingLong(RouteInfo::getStartTime))
+                .sorted(Comparator.comparingLong(RouteInfo::getStartTime)
+                        .thenComparing(RouteInfo::getLineId))
                 .toList();
     }
 
@@ -110,6 +114,20 @@ final class GroupingUtils {
                 .replaceAll("[^\\p{IsAlphabetic}\\p{IsDigit}_-]+", "-")
                 .replaceAll("-+", "-")
                 .replaceAll("^-|-$", "");
+    }
+
+    static String stableHash(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(safeText(value, "unknown").getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(12);
+            for (int i = 0; i < 6; i++) {
+                result.append(String.format("%02x", digest[i]));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is required for stable route grouping", exception);
+        }
     }
 
     static Map<String, List<RouteInfo>> groupBy(

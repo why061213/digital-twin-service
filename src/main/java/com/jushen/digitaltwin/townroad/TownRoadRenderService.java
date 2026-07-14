@@ -332,6 +332,8 @@ public class TownRoadRenderService {
                     orderTotalTons,
                     order.from().name(),
                     order.to().name(),
+                    order.from().province(),
+                    order.to().province(),
                     fc,
                     tc,
                     order.routeCoordinates(),
