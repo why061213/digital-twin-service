@@ -34,6 +34,8 @@ public class TownRoadRenderService {
     private volatile Rm2Snapshot latestRm2Snapshot = new Rm2Snapshot("0", Instant.now(), List.of(), List.of(), Map.of(), Map.of());
     /** 上一版 groupId 集合，用于计算 changed/removed */
     private volatile Set<String> previousRm2GroupIds = Set.of();
+    /** 上一版快照内容指纹，用于跳过无变化处理 */
+    private volatile String previousFingerprint = "";
 
     public Rm2Snapshot getLatestRm2Snapshot() { return latestRm2Snapshot; }
 
@@ -117,9 +119,40 @@ public class TownRoadRenderService {
         Map<String, List<RenderRouteDTO>> immutableRoutesByGroupId = Map.copyOf(routesByGroupId);
         Map<String, String> immutableGroupIdByLineId = Map.copyOf(groupIdByLineId);
 
-        String version = "snapshot-" + System.currentTimeMillis();
+        // 计算快照指纹（按稳定顺序拼接 groupId + lineId + routeSignature + status + updatedAt）
+        StringBuilder fingerprintInput = new StringBuilder();
+        for (Rm2RouteGroupDTO g : rm2Groups) {
+            fingerprintInput.append(g.groupId()).append('|');
+            for (String lineId : g.orderLineIds()) {
+                RenderRouteDTO r = routeByLineId.get(lineId);
+                if (r != null) {
+                    fingerprintInput.append(r.lineId()).append('|')
+                            .append(r.routeSignature()).append('|')
+                            .append(r.status()).append('|')
+                            .append(r.updatedAt()).append('|');
+                }
+            }
+        }
+        String version = "rm2-" + Integer.toHexString(fingerprintInput.toString().hashCode());
+
+        // 内容未变 → 不更新快照，不广播
+        if (version.equals(previousFingerprint)) {
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("ok", true);
+            resp.put("snapshotVersion", version);
+            resp.put("message", "snapshot unchanged");
+            resp.put("rm2Routes", rm2Routes.size());
+            resp.put("rm2Groups", rm2Groups.size());
+            this.lastResult = resp;
+            return resp;
+        }
+        this.previousFingerprint = version;
+
+        // 构造不可变快照（assignedRoutes 使用正式展示 groupId）
+        List<RenderRouteDTO> assignedRoutes = routesByGroupId.values().stream()
+                .flatMap(List::stream).toList();
         this.latestRm2Snapshot = new Rm2Snapshot(version, Instant.now(),
-                List.copyOf(rm2Routes), List.copyOf(rm2Groups),
+                List.copyOf(assignedRoutes), List.copyOf(rm2Groups),
                 immutableRoutesByGroupId, immutableGroupIdByLineId);
 
         // 检测是否有实质变化：订单 diff 非空 或 groupId 集合变化
