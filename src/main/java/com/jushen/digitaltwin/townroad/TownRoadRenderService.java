@@ -81,6 +81,21 @@ public class TownRoadRenderService {
             pipeline.put("middleLayer", middleLayerSummary(result, middleLayerFinishedAt - middleLayerStartedAt));
         }
 
+        // B-D2: 先构造并保存 RM2 快照，再广播，保证前端 REST 读到最新数据
+        List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(result.shortHaulOrders());
+        List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
+        Map<String, List<RenderRouteDTO>> routesByGroupId = new LinkedHashMap<>();
+        Map<String, String> groupIdByLineId = new LinkedHashMap<>();
+        for (RenderRouteDTO route : rm2Routes) {
+            if (route.groupId() != null) {
+                routesByGroupId.computeIfAbsent(route.groupId(), k -> new java.util.ArrayList<>()).add(route);
+                groupIdByLineId.put(route.lineId(), route.groupId());
+            }
+        }
+        String version = "snapshot-" + System.currentTimeMillis();
+        this.latestRm2Snapshot = new Rm2Snapshot(version, Instant.now(), rm2Routes, rm2Groups, routesByGroupId, groupIdByLineId);
+
+        // 快照保存完成后才广播 WebSocket
         long broadcastStartedAt = System.currentTimeMillis();
         for (TownRoadRenderCommand command : result.commands()) {
             RouteSnapshotDTO snapshot = RouteDtoConverter.fromRenderCommand(command);
@@ -99,20 +114,6 @@ public class TownRoadRenderService {
         long roadMapStartedAt = System.currentTimeMillis();
         int roadMapRouteCount = dispatchLongHaulRoutesToRoadMap(result.longHaulOrders());
         long roadMapFinishedAt = System.currentTimeMillis();
-
-        // 构造原子 RM2 快照
-        List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(result.shortHaulOrders());
-        List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
-        Map<String, List<RenderRouteDTO>> routesByGroupId = new LinkedHashMap<>();
-        Map<String, String> groupIdByLineId = new LinkedHashMap<>();
-        for (RenderRouteDTO route : rm2Routes) {
-            if (route.groupId() != null) {
-                routesByGroupId.computeIfAbsent(route.groupId(), k -> new java.util.ArrayList<>()).add(route);
-                groupIdByLineId.put(route.lineId(), route.groupId());
-            }
-        }
-        String version = "snapshot-" + System.currentTimeMillis();
-        this.latestRm2Snapshot = new Rm2Snapshot(version, Instant.now(), rm2Routes, rm2Groups, routesByGroupId, groupIdByLineId);
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("ok", true);
