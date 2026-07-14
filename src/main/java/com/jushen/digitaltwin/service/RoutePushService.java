@@ -956,6 +956,36 @@ public class RoutePushService {
         return null;
     }
 
+    /**
+     * 外部订单的 carId 字段并不可靠：有些来源会把车牌填在此字段。
+     * 位置接口的 car_ids 只接收车辆列表返回的 vehicle_id，因此车牌值必须由
+     * fetchPositionByPlate 通过车辆列表字典反查，不能直接作为 carId 请求参数。
+     */
+    private void rememberProviderVehicleId(String lineId, String plate, String candidateCarId) {
+        lineIdCarIdMap.remove(lineId);
+        if (candidateCarId == null || candidateCarId.isBlank()) {
+            return;
+        }
+
+        String carId = candidateCarId.trim();
+        String normalizedPlate = normalizePlate(plate);
+        if (containsChineseCharacter(carId)
+                || (!normalizedPlate.isBlank() && normalizedPlate.equals(normalizePlate(carId)))) {
+            log.warn("Ignoring plate-like carId from external order: lineId={}, plate={}, candidateCarId={}",
+                    lineId, plate, candidateCarId);
+            return;
+        }
+        lineIdCarIdMap.put(lineId, carId);
+    }
+
+    private String normalizePlate(String value) {
+        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT).replace(" ", "");
+    }
+
+    private boolean containsChineseCharacter(String value) {
+        return value != null && value.codePoints().anyMatch(codePoint -> codePoint >= 0x4E00 && codePoint <= 0x9FFF);
+    }
+
     @PostConstruct
     public void testExternalPositionAPI() {
         log.info("[RoutePush] externalPositionUrl={}, passivePositionPushEnabled={}",
@@ -1210,9 +1240,7 @@ public class RoutePushService {
         if (plate != null && !plate.isBlank()) {
             lineIdPlateMap.put(lineId, plate);
         }
-        if (carId != null && !carId.isBlank()) {
-            lineIdCarIdMap.put(lineId, carId);
-        }
+        rememberProviderVehicleId(lineId, plate, carId);
 
         ProviderPosition initialExternalPosition = fetchExternalVehiclePosition(lineId);
         String progressSource = initialProgressSource(initialExternalPosition, currentCoords, status);
@@ -1413,9 +1441,7 @@ public class RoutePushService {
         if (plate != null && !plate.isBlank()) {
             lineIdPlateMap.put(lineId, plate);
         }
-        if (carId != null && !carId.isBlank()) {
-            lineIdCarIdMap.put(lineId, carId);
-        }
+        rememberProviderVehicleId(lineId, plate, carId);
 
         List<double[]> coordinates = sanitizeRouteCoordinates(fromCoords, toCoords, routeCoordinates);
         String pathKey = pathKey(from, to, coordinates);
