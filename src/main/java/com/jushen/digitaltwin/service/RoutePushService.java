@@ -288,7 +288,8 @@ public class RoutePushService {
                 System.currentTimeMillis(),
                 routeLengthKm,
                 speedKmh,
-                travelDurationMs
+                travelDurationMs,
+                RouteScope.ROAD
         );
         // 随机车牌（用于测试）
         String plate = dataFactory.randomPlate();
@@ -411,7 +412,8 @@ public class RoutePushService {
                 System.currentTimeMillis(),
                 routeLengthKm,
                 speedKmh,
-                travelDurationMs
+                travelDurationMs,
+                RouteScope.ROAD
         );
         lineIdPlateMap.put(lineId, dataFactory.randomPlate());
         activeRoutes.put(lineId, route);
@@ -1250,7 +1252,8 @@ public class RoutePushService {
                 startTime,
                 routeLengthKm,
                 effectiveSpeedKmh,
-                travelDurationMs
+                travelDurationMs,
+                RouteScope.ROAD
         );
 
         activeRoutes.put(lineId, route);
@@ -1459,7 +1462,8 @@ public class RoutePushService {
                 startTime,
                 routeLengthKm,
                 effectiveSpeedKmh,
-                travelDurationMs
+                travelDurationMs,
+                RouteScope.TOWN
         );
         activeRoutes.put(lineId, route);
         log.info("[TownRoad] dispatched town route: {} -> {}, lineId={}, orderId={}, routePoints={}, progress={}%, progressSource={}",
@@ -1484,7 +1488,8 @@ public class RoutePushService {
             long startTime,
             double routeLengthKm,
             double speedKmh,
-            long travelDurationMs
+            long travelDurationMs,
+            RouteScope scope
     ) implements RouteInfo, OrderAwareRouteInfo, PathAwareRouteInfo {
         @Override
         public String getLineId() { return lineId; }
@@ -1520,6 +1525,11 @@ public class RoutePushService {
             String vehicleId,
             String vehicleName
     ) {
+    }
+
+    private enum RouteScope {
+        ROAD,
+        TOWN
     }
 
     private record VehicleRef(
@@ -1586,6 +1596,7 @@ public class RoutePushService {
 
     private List<RouteInfo> activeRouteInfos() {
         return sortedActiveRoutes().stream()
+                .filter(route -> route.scope() == RouteScope.ROAD)
                 .map(RouteInfo.class::cast)
                 .toList();
     }
