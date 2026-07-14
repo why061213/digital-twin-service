@@ -509,73 +509,20 @@ public class RoutePushService {
         }
 
         VehicleRef vehicleRef = resolveVehicleByPlate(plate);
-        if (vehicleRef != null) {
-            ProviderPosition position = fetchPositionByCarId(vehicleRef.vehicleId());
-            if (position != null) {
-                log.info("Plate mapped to vehicleId: queryPlate={}, providerVehicleId={}, providerVehicleName={}",
-                        plate, vehicleRef.vehicleId(), vehicleRef.vehicleName());
-                return position;
-            }
-            log.warn("Plate mapped to vehicleId but carId position failed: queryPlate={}, providerVehicleId={}, providerVehicleName={}",
+        if (vehicleRef == null) {
+            log.warn("Vehicle dictionary has no vehicleId for plate={}; using simulated position", plate);
+            return null;
+        }
+
+        ProviderPosition position = fetchPositionByCarId(vehicleRef.vehicleId());
+        if (position != null) {
+            log.info("Plate mapped to vehicleId: queryPlate={}, providerVehicleId={}, providerVehicleName={}",
                     plate, vehicleRef.vehicleId(), vehicleRef.vehicleName());
+            return position;
         }
-
-        try {
-            String token = getAccessToken();
-            String url = externalPositionUrl + "/video/webapi/location/get-location-use-plates";
-            for (Map<String, Object> body : plateQueryBodies(plate)) {
-                String requestMode = body.containsKey("time") ? "with-time-zero" : "without-time";
-                String json = objectMapper.writeValueAsString(body);
-
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(url))
-                        .header("Content-Type", "application/json")
-                        .header("Authorization", token)
-                        .POST(HttpRequest.BodyPublishers.ofString(json))
-                        .build();
-
-                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-                if (response.statusCode() != 200) {
-                    log.warn("Plate API returned status {}, plate={}, requestMode={}",
-                            response.statusCode(), plate, requestMode);
-                    return null;
-                }
-
-                Map<String, Object> result = objectMapper.readValue(response.body(), new TypeReference<>() {});
-                if (!(result.get("code") instanceof Number code) || code.intValue() != 200) {
-                    log.warn("Plate API code not 200: plate={}, requestMode={}, result={}", plate, requestMode, result);
-                    return null;
-                }
-
-                Map<String, Object> dataBlock = (Map<String, Object>) result.get("data");
-                List<Map<String, Object>> vehicleList = dataBlock == null
-                        ? List.of()
-                        : (List<Map<String, Object>>) dataBlock.get("data");
-                if (vehicleList == null || vehicleList.isEmpty()) {
-                    log.info("Plate API returned empty data for plate={}, requestMode={}, requestBody={}, message={}, dataTime={}",
-                            plate, requestMode, body, result.get("message"), dataBlock == null ? null : dataBlock.get("time"));
-                    continue;
-                }
-
-                Map<String, Object> vehicle = vehicleList.get(0);
-                double lng = Double.parseDouble(String.valueOf(vehicle.get("lng")));
-                double lat = Double.parseDouble(String.valueOf(vehicle.get("lat")));
-                double speed = 0;
-                try {
-                    speed = Double.parseDouble(String.valueOf(vehicle.get("speed")));
-                } catch (NumberFormatException ignored) {}
-
-                ProviderPosition position = providerPosition(vehicle, lng, lat, speed);
-                log.info("Plate API matched plate={}, requestMode={}, providerVehicleId={}, providerVehicleName={}",
-                        plate, requestMode, position.vehicleId(), position.vehicleName());
-                return position;
-            }
-            return null;
-
-        } catch (Exception e) {
-            log.warn("Failed to fetch position by plate", e);
-            return null;
-        }
+        log.warn("VehicleId position lookup failed: queryPlate={}, providerVehicleId={}, providerVehicleName={}",
+                plate, vehicleRef.vehicleId(), vehicleRef.vehicleName());
+        return null;
     }
 
     private VehicleRef resolveVehicleByPlate(String plate) {
@@ -583,7 +530,12 @@ public class RoutePushService {
         if (vehicleByNormalizedPlate.isEmpty()) {
             refreshVehicleDictionary();
         }
-        return vehicleByNormalizedPlate.get(normalizePlateKey(plate));
+        VehicleRef vehicleRef = vehicleByNormalizedPlate.get(normalizePlateKey(plate));
+        if (vehicleRef == null) {
+            refreshVehicleDictionary();
+            vehicleRef = vehicleByNormalizedPlate.get(normalizePlateKey(plate));
+        }
+        return vehicleRef;
     }
 
     private synchronized void refreshVehicleDictionary() {
@@ -592,7 +544,7 @@ public class RoutePushService {
         try {
             String token = getAccessToken();
             String url = externalPositionUrl + "/video/webapi/vehicle/list";
-            int size = Math.max(10_000, externalPositionBatchSize);
+            int size = Math.max(100_000, externalPositionBatchSize);
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("page", 1);
             body.put("size", size);
@@ -621,6 +573,9 @@ public class RoutePushService {
             List<Map<String, Object>> pageList = dataBlock == null
                     ? List.of()
                     : (List<Map<String, Object>>) dataBlock.get("pageList");
+            if (pageList == null) {
+                pageList = List.of();
+            }
             ConcurrentHashMap<String, VehicleRef> next = new ConcurrentHashMap<>();
             for (Map<String, Object> vehicle : pageList) {
                 String vehicleId = stringValue(vehicle.get("vehicle_id"));
@@ -653,17 +608,6 @@ public class RoutePushService {
         String normalized = normalizePlateKey(plate);
         int separatorIndex = normalized.indexOf('-');
         return separatorIndex > 0 ? normalized.substring(0, separatorIndex) : normalized;
-    }
-
-    private List<Map<String, Object>> plateQueryBodies(String plate) {
-        Map<String, Object> withoutTime = new LinkedHashMap<>();
-        withoutTime.put("plates", plate);
-
-        Map<String, Object> withTimeZero = new LinkedHashMap<>();
-        withTimeZero.put("plates", plate);
-        withTimeZero.put("time", 0L);
-
-        return List.of(withoutTime, withTimeZero);
     }
 
     /**
