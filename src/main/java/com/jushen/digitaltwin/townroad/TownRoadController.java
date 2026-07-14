@@ -1,5 +1,7 @@
 package com.jushen.digitaltwin.townroad;
 
+import com.jushen.digitaltwin.dto.RenderRouteDTO;
+import com.jushen.digitaltwin.dto.RouteDtoConverter;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
@@ -18,7 +20,7 @@ public class TownRoadController {
 
     /**
      * 正式入口：
-     * GET 调外部接口 -> 拿 ExternalOrderRecord[] -> 中间层处理 -> broadcast town_road_render[]
+     * GET 调外部接口 -> 拿 ExternalOrderRecord[] -> 中间层处理 -> broadcast RouteSnapshotDTO[]
      */
     @PostMapping("/provinces")
     public Map<String, Object> pushProvinceRenderCommand() {
@@ -37,7 +39,7 @@ public class TownRoadController {
     }
 
     /**
-     * 查同起点目的地订单。
+     * 查同起点目的地订单（已转为统一 DTO）。
      */
     @GetMapping("/same-od")
     public Map<String, Object> sameOd(
@@ -45,19 +47,19 @@ public class TownRoadController {
             @RequestParam String toKey
     ) {
         List<NormalizedTownRoadOrder> orders = renderService.middleLayer().findSameOd(fromKey, toKey);
+        List<RenderRouteDTO> routes = RouteDtoConverter.shortHaulOrdersToRoutes(orders);
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("ok", true);
         response.put("fromKey", fromKey);
         response.put("toKey", toKey);
-        response.put("count", orders.size());
-        response.put("orders", orders);
+        response.put("count", routes.size());
+        response.put("routes", routes);
         return response;
     }
 
     /**
-     * 查同一个省份路径下的订单。
-     * 例如：440000>350000
+     * 查同一个省份路径下的订单（已转为统一 DTO）。
      */
     @GetMapping("/province-path")
     public Map<String, Object> provincePath(
@@ -75,27 +77,30 @@ public class TownRoadController {
             orders = renderService.middleLayer().findByProvinceRoute(pathKey);
         }
 
+        List<RenderRouteDTO> routes = RouteDtoConverter.shortHaulOrdersToRoutes(orders);
+
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("ok", true);
         response.put("mode", mode);
         response.put("pathKey", pathKey);
         response.put("resolvedPathKeys", resolvedPathKeys);
-        response.put("count", orders.size());
-        response.put("orders", orders);
+        response.put("count", routes.size());
+        response.put("routes", routes);
         return response;
     }
 
     /**
-     * 当前中间层缓存里的所有订单。
+     * 当前中间层缓存里的所有订单（已转为统一 DTO）。
      */
     @GetMapping("/orders")
     public Map<String, Object> allOrders() {
         List<NormalizedTownRoadOrder> orders = renderService.middleLayer().allOrders();
+        List<RenderRouteDTO> routes = RouteDtoConverter.shortHaulOrdersToRoutes(orders);
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("ok", true);
-        response.put("count", orders.size());
-        response.put("orders", orders);
+        response.put("count", routes.size());
+        response.put("routes", routes);
         return response;
     }
 

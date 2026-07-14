@@ -1,5 +1,7 @@
 package com.jushen.digitaltwin.townroad;
 
+import com.jushen.digitaltwin.dto.RouteDtoConverter;
+import com.jushen.digitaltwin.dto.RouteSnapshotDTO;
 import com.jushen.digitaltwin.service.RoutePushService;
 import com.jushen.digitaltwin.websocket.RealtimeWebSocketHandler;
 import org.slf4j.Logger;
@@ -73,7 +75,9 @@ public class TownRoadRenderService {
 
         long broadcastStartedAt = System.currentTimeMillis();
         for (TownRoadRenderCommand command : result.commands()) {
-            realtimeWebSocketHandler.broadcast(command);
+            // 转为统一 DTO 再广播，不再直接暴露内部命令对象
+            RouteSnapshotDTO snapshot = RouteDtoConverter.fromRenderCommand(command);
+            realtimeWebSocketHandler.broadcast(snapshot);
         }
         long broadcastFinishedAt = System.currentTimeMillis();
 
