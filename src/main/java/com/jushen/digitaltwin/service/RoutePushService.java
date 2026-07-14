@@ -907,19 +907,35 @@ public class RoutePushService {
      */
     private void rememberProviderVehicleId(String lineId, String plate, String candidateCarId) {
         lineIdCarIdMap.remove(lineId);
-        if (candidateCarId == null || candidateCarId.isBlank()) {
+        String effectivePlate = normalizePlate(plate);
+        String candidate = candidateCarId == null ? "" : candidateCarId.trim();
+
+        // 外部订单可能把车牌填在 carId 字段，需要提升为车牌再经车辆列表反查 ID。
+        if (effectivePlate.isBlank() && isPlateLike(candidate)) {
+            effectivePlate = normalizePlate(candidate);
+            lineIdPlateMap.put(lineId, effectivePlate);
+            log.info("Promoted plate-like carId to plate: lineId={}, candidateCarId={}, effectivePlate={}",
+                    lineId, candidateCarId, effectivePlate);
+        }
+
+        if (!effectivePlate.isBlank()) {
+            lineIdPlateMap.put(lineId, effectivePlate);
+            VehicleRef vehicleRef = resolveVehicleByPlate(effectivePlate);
+            if (vehicleRef != null) {
+                lineIdCarIdMap.put(lineId, vehicleRef.vehicleId());
+                log.info("Resolved provider vehicle: lineId={}, queryPlate={}, vehicle_name={}, vehicle_id={}",
+                        lineId, effectivePlate, vehicleRef.vehicleName(), vehicleRef.vehicleId());
+            } else {
+                log.warn("Vehicle list contains no matching vehicle_name: lineId={}, queryPlate={}, normalizedPlate={}",
+                        lineId, effectivePlate, normalizePlateKey(effectivePlate));
+            }
             return;
         }
 
-        String carId = candidateCarId.trim();
-        String normalizedPlate = normalizePlate(plate);
-        if (containsChineseCharacter(carId)
-                || (!normalizedPlate.isBlank() && normalizedPlate.equals(normalizePlate(carId)))) {
-            log.warn("Ignoring plate-like carId from external order: lineId={}, plate={}, candidateCarId={}",
-                    lineId, plate, candidateCarId);
-            return;
+        // 没有任何车牌时，candidateCarId 才被视为真实 vehicle_id 的兼容输入。
+        if (!candidate.isBlank()) {
+            lineIdCarIdMap.put(lineId, candidate);
         }
-        lineIdCarIdMap.put(lineId, carId);
     }
 
     private String normalizePlate(String value) {
@@ -928,6 +944,13 @@ public class RoutePushService {
 
     private boolean containsChineseCharacter(String value) {
         return value != null && value.codePoints().anyMatch(codePoint -> codePoint >= 0x4E00 && codePoint <= 0x9FFF);
+    }
+
+    private boolean isPlateLike(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        return containsChineseCharacter(normalizePlate(value));
     }
 
     @PostConstruct
