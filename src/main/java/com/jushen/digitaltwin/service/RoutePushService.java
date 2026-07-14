@@ -1426,8 +1426,12 @@ public class RoutePushService {
         double[] resolvedCurrentCoords = initialExternalPosition != null
                 ? initialExternalPosition.position()
                 : currentCoords;
-        Double resolvedSpeedKmh = initialExternalPosition != null && initialExternalPosition.speedKmh() > 0
+        Double externalSpeedKmh = initialExternalPosition != null
                 ? initialExternalPosition.speedKmh()
+                : null;
+
+        Double resolvedSpeedKmh = externalSpeedKmh != null && externalSpeedKmh > 0
+                ? externalSpeedKmh
                 : speedKmh;
         double effectiveSpeedKmh = resolvedSpeedKmh != null && resolvedSpeedKmh > 0
                 ? resolvedSpeedKmh
@@ -1536,7 +1540,7 @@ public class RoutePushService {
         if (externalPositionConfigured() && vehicleKey != null && !vehicleKey.isBlank()) {
             pos = fetchPositionByPlate(vehicleKey);
             if (pos == null) {
-                pos = fetchPositionByCarId(vehicleKey);
+                pos = fetchPositionByPlate(vehicleKey);
             }
         }
         if (pos == null) {
