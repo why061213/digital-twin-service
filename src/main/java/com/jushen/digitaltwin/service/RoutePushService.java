@@ -1217,6 +1217,19 @@ public class RoutePushService {
         }
     }
 
+    /**
+     * 为严格真实定位模式准备订单的 provider vehicleId。
+     * 这里只解析一次车辆字典，不查询单车位置；实际位置仍由定时批量任务统一拉取。
+     */
+    public synchronized boolean prepareProviderPositionVehicle(String lineId, String plate, String candidateCarId) {
+        if (lineId == null || lineId.isBlank() || !positionCache.isEnabled()) {
+            return false;
+        }
+        rememberProviderVehicleId(lineId, plate, candidateCarId);
+        String vehicleId = lineIdCarIdMap.get(lineId);
+        return vehicleId != null && !vehicleId.isBlank();
+    }
+
     private String normalizePlate(String value) {
         return value == null ? "" : value.trim().toUpperCase(Locale.ROOT).replace(" ", "");
     }

@@ -33,6 +33,7 @@ public class TownRoadRenderService {
     private final AmapGeocodeClient amapGeocodeClient;
     private final TownRoadCoordinateResolver coordinateResolver;
     private final RoutePushService routePushService;
+    private final TownRoadExternalOrderProperties externalOrderProperties;
     private Map<String, Object> lastResult = Map.of();
     /** RM2 原子快照 */
     private volatile Rm2Snapshot latestRm2Snapshot = new Rm2Snapshot("0", Instant.now(), List.of(), List.of(), Map.of(), Map.of());
@@ -55,7 +56,8 @@ public class TownRoadRenderService {
             RealtimeWebSocketHandler realtimeWebSocketHandler,
             AmapGeocodeClient amapGeocodeClient,
             TownRoadCoordinateResolver coordinateResolver,
-            RoutePushService routePushService
+            RoutePushService routePushService,
+            TownRoadExternalOrderProperties externalOrderProperties
     ) {
         this.townRoadExternalOrderClient = townRoadExternalOrderClient;
         this.middleLayer = middleLayer;
@@ -63,6 +65,7 @@ public class TownRoadRenderService {
         this.amapGeocodeClient = amapGeocodeClient;
         this.coordinateResolver = coordinateResolver;
         this.routePushService = routePushService;
+        this.externalOrderProperties = externalOrderProperties;
     }
 
     public Map<String, Object> fetchProcessAndBroadcast() {
@@ -101,7 +104,10 @@ public class TownRoadRenderService {
         }
 
         // 构造 RM2 分组和索引
-        List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(result.shortHaulOrders());
+        List<NormalizedTownRoadOrder> eligibleShortHaulOrders = result.shortHaulOrders().stream()
+                .filter(this::shouldIncludeOrderForRealPositionMode)
+                .toList();
+        List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(eligibleShortHaulOrders);
         List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
 
         Map<String, RenderRouteDTO> routeByLineId = new LinkedHashMap<>();
@@ -222,6 +228,7 @@ public class TownRoadRenderService {
             if (command.orders() == null) continue;
             for (TownRoadRenderCommand.TownRoadOrder order : command.orders()) {
                 if (!"运输中".equals(order.status())) continue;
+                if (!shouldIncludeOrderForRealPositionMode(order.lineId(), order.vehicle())) continue;
                 if (order.from() == null || order.to() == null) continue;
                 double[] fc = order.from().coords();
                 double[] tc = order.to().coords();
@@ -484,6 +491,7 @@ public class TownRoadRenderService {
         int dispatched = 0;
         for (NormalizedTownRoadOrder order : longHaulOrders) {
             if (order == null || order.from() == null || order.to() == null) continue;
+            if (!shouldIncludeOrderForRealPositionMode(order)) continue;
             double[] fc = order.from().coords();
             double[] tc = order.to().coords();
             if (fc == null || tc == null || fc.length < 2 || tc.length < 2) continue;
@@ -505,6 +513,26 @@ public class TownRoadRenderService {
             dispatched++;
         }
         return dispatched;
+    }
+
+    private boolean shouldIncludeOrderForRealPositionMode(NormalizedTownRoadOrder order) {
+        return order != null && shouldIncludeOrderForRealPositionMode(order.instanceId(), order.vehicle());
+    }
+
+    private boolean shouldIncludeOrderForRealPositionMode(String lineId, ExternalOrderRecord.Vehicle vehicle) {
+        if (!externalOrderProperties.isIgnoreOrdersWithoutRealPosition()) {
+            return true;
+        }
+        boolean eligible = routePushService.prepareProviderPositionVehicle(
+                lineId,
+                vehicle == null ? null : vehicle.plate(),
+                vehicle == null ? null : vehicle.carId()
+        );
+        if (!eligible) {
+            log.info("[TownRoad] ignored order without provider position capability: lineId={}, plate={}",
+                    lineId, vehicle == null ? null : vehicle.plate());
+        }
+        return eligible;
     }
 
     public TownRoadMiddleLayer middleLayer() {

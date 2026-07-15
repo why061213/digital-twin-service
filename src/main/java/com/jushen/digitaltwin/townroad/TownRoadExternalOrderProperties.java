@@ -34,6 +34,12 @@ public class TownRoadExternalOrderProperties {
     private long autoSyncInitialDelayMs = 5000;
     private long autoSyncFixedDelayMs = 60000;
 
+    /**
+     * 开启后，仅保留能由车牌解析出供应商 vehicleId 的订单。
+     * 默认关闭，保留“真实位置优先，失败时模拟”的兼容行为。
+     */
+    private boolean ignoreOrdersWithoutRealPosition = false;
+
     public String getPostUrl() {
         return postUrl;
     }
@@ -128,5 +134,13 @@ public class TownRoadExternalOrderProperties {
 
     public void setAutoSyncFixedDelayMs(long autoSyncFixedDelayMs) {
         this.autoSyncFixedDelayMs = autoSyncFixedDelayMs;
+    }
+
+    public boolean isIgnoreOrdersWithoutRealPosition() {
+        return ignoreOrdersWithoutRealPosition;
+    }
+
+    public void setIgnoreOrdersWithoutRealPosition(boolean ignoreOrdersWithoutRealPosition) {
+        this.ignoreOrdersWithoutRealPosition = ignoreOrdersWithoutRealPosition;
     }
 }

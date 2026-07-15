@@ -42,11 +42,17 @@ dashboard:
       # 旧 ExternalOrderSyncService 不参与 Road/Town 分流，禁止它广播 road_path。
       broadcast-diff: false
 
+      # RM2 正式订单链路：应用就绪后主动拉取一次，之后持续更新快照。
+      auto-sync-enabled: true
+      auto-sync-initial-delay-ms: 5000
+      auto-sync-fixed-delay-ms: 60000
+
       # 定时同步开关。先建议 false，手动调接口测试稳定后再开
       scheduled-sync-enabled: false
       sync-rate-ms: 10000
   route:
-    simulation-profile: test
+    # 正式展示使用真实时间尺度的模拟；test 档 36000km/h 仅用于快速演示。
+    simulation-profile: real
     passive-position-push-enabled: true
     group-size: 12
     truck-position-push-rate-ms: 1200000
@@ -56,6 +62,8 @@ dashboard:
     # 位置批量刷新配置（替代逐车穿透外部接口）
     position-refresh:
       enabled: true
+      # 首次订单快照完成后再开始批量校准，避免启动时空跑一次。
+      initial-delay-ms: 10000
       fixed-delay-ms: 30000
       batch-size: 50
       max-concurrency: 2

@@ -46,6 +46,8 @@ dashboard:
       auto-sync-enabled: true
       auto-sync-initial-delay-ms: 5000
       auto-sync-fixed-delay-ms: 60000
+      # true 时，仅展示能解析 supplier vehicleId、可进行真实位置批量校准的订单。
+      ignore-orders-without-real-position: false
 
       # 定时同步开关。先建议 false，手动调接口测试稳定后再开
       scheduled-sync-enabled: false
