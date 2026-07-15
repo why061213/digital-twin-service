@@ -825,11 +825,10 @@ public class RoutePushService {
                 continue;
             }
 
-            double effectiveSpeedKmh = snapshot.speedKmh() > 0 && snapshot.speedKmh() <= MAX_PROVIDER_SPEED_KMH
+            double effectiveSpeedKmh = isProviderSpeed(snapshot.speedKmh())
                     ? snapshot.speedKmh()
-                    : route.speedKmh();
-            long travelDurationMs = Math.max(60_000L,
-                    Math.round(route.routeLengthKm() / Math.max(1, effectiveSpeedKmh) * 3_600_000));
+                    : normalizedRouteSpeed(route.speedKmh());
+            long travelDurationMs = travelDurationMs(route.routeLengthKm(), effectiveSpeedKmh);
             long startTime = now - Math.round(progress * travelDurationMs);
             ScheduledRoute calibratedRoute = new ScheduledRoute(
                     route.lineId(), route.orderId(), route.orderFamilyId(), route.orderName(),
@@ -1508,12 +1507,7 @@ public class RoutePushService {
         double[] resolvedCurrentCoords = initialExternalPosition != null
                 ? initialExternalPosition.position()
                 : currentCoords;
-        Double resolvedSpeedKmh = initialExternalPosition != null && initialExternalPosition.speedKmh() > 0
-                ? initialExternalPosition.speedKmh()
-                : speedKmh;
-        double effectiveSpeedKmh = resolvedSpeedKmh != null && resolvedSpeedKmh > 0
-                ? resolvedSpeedKmh
-                : Math.max(1, realSimulationSpeedKmh);
+        double effectiveSpeedKmh = resolveExternalRouteSpeed(initialExternalPosition, speedKmh);
         String resolvedUpdatedAt = initialExternalPosition != null
                 ? Instant.ofEpochMilli(now).toString()
                 : updatedAt;
@@ -1525,7 +1519,7 @@ public class RoutePushService {
                 resolvedUpdatedAt,
                 status
         );
-        long travelDurationMs = Math.max(60_000L, Math.round(routeLengthKm / effectiveSpeedKmh * 3_600_000));
+        long travelDurationMs = travelDurationMs(routeLengthKm, effectiveSpeedKmh);
         long startTime = "已完成".equals(status)
                 ? now - travelDurationMs
                 : now - Math.round(progress * travelDurationMs);
@@ -1725,16 +1719,7 @@ public class RoutePushService {
         double[] resolvedCurrentCoords = initialExternalPosition != null
                 ? initialExternalPosition.position()
                 : currentCoords;
-        Double externalSpeedKmh = initialExternalPosition != null
-                ? initialExternalPosition.speedKmh()
-                : null;
-
-        Double resolvedSpeedKmh = externalSpeedKmh != null && externalSpeedKmh > 0
-                ? externalSpeedKmh
-                : speedKmh;
-        double effectiveSpeedKmh = resolvedSpeedKmh != null && resolvedSpeedKmh > 0
-                ? resolvedSpeedKmh
-                : Math.max(1, realSimulationSpeedKmh);
+        double effectiveSpeedKmh = resolveExternalRouteSpeed(initialExternalPosition, speedKmh);
         String resolvedUpdatedAt = initialExternalPosition != null
                 ? Instant.ofEpochMilli(now).toString()
                 : updatedAt;
@@ -1746,7 +1731,7 @@ public class RoutePushService {
                 resolvedUpdatedAt,
                 status
         );
-        long travelDurationMs = Math.max(60_000L, Math.round(routeLengthKm / effectiveSpeedKmh * 3_600_000));
+        long travelDurationMs = travelDurationMs(routeLengthKm, effectiveSpeedKmh);
         long startTime = "已完成".equals(status)
                 ? now - travelDurationMs
                 : now - Math.round(progress * travelDurationMs);
@@ -1780,6 +1765,33 @@ public class RoutePushService {
                 && route.scope() == RouteScope.TOWN
                 && safeRouteText(route.from()).equals(safeRouteText(from))
                 && safeRouteText(route.to()).equals(safeRouteText(to));
+    }
+
+    /** 真实速度优先，0 表示停车；订单速度只作已校验的兜底。 */
+    private double resolveExternalRouteSpeed(ProviderPosition providerPosition, Double orderSpeedKmh) {
+        if (providerPosition != null && isProviderSpeed(providerPosition.speedKmh())) {
+            return providerPosition.speedKmh();
+        }
+        if (orderSpeedKmh != null && Double.isFinite(orderSpeedKmh)
+                && orderSpeedKmh > 0 && orderSpeedKmh <= MAX_PROVIDER_SPEED_KMH) {
+            return orderSpeedKmh;
+        }
+        return Math.max(1, Math.min(MAX_PROVIDER_SPEED_KMH, realSimulationSpeedKmh));
+    }
+
+    private boolean isProviderSpeed(double speedKmh) {
+        return Double.isFinite(speedKmh) && speedKmh >= 0 && speedKmh <= MAX_PROVIDER_SPEED_KMH;
+    }
+
+    private double normalizedRouteSpeed(double speedKmh) {
+        return isProviderSpeed(speedKmh)
+                ? speedKmh
+                : Math.max(1, Math.min(MAX_PROVIDER_SPEED_KMH, realSimulationSpeedKmh));
+    }
+
+    private long travelDurationMs(double routeLengthKm, double speedKmh) {
+        // 静止车辆保留真实 speed=0，但按 1km/h 计算兜底时长，防止模拟高速前进。
+        return Math.max(60_000L, Math.round(routeLengthKm / Math.max(1, speedKmh) * 3_600_000));
     }
     @PreDestroy
     public void shutdownBulkDispatchExecutor() {

@@ -18,6 +18,9 @@ import java.util.Map;
  */
 public final class RouteDtoConverter {
 
+    private static final double MAX_ROUTE_SPEED_KMH = 140.0;
+    private static final double DEFAULT_SIMULATION_SPEED_KMH = 80.0;
+
     private RouteDtoConverter() {}
 
     // ---------------------------------------------------------------
@@ -40,11 +43,8 @@ public final class RouteDtoConverter {
         String toAdcode = toLoc != null ? safe(toLoc.adcode()) : "000000";
         String pathKey = RenderRouteDTO.buildStablePathKey(scope, fromAdcode, toAdcode, order.routeCoordinates());
 
-        Long travelDurationMs = null;
-        if (order.routeLengthKm() != null && order.routeLengthKm() > 0
-                && order.speedKmh() != null && order.speedKmh() > 0) {
-            travelDurationMs = Math.round(order.routeLengthKm() / order.speedKmh() * 3_600_000);
-        }
+        Double speedKmh = normalizedRouteSpeed(order.speedKmh());
+        Long travelDurationMs = travelDurationMs(order.routeLengthKm(), speedKmh);
 
         return new RenderRouteDTO(
                 order.instanceId(),
@@ -57,7 +57,7 @@ public final class RouteDtoConverter {
                 toLoc != null ? toLoc.coords() : null,
                 order.routeCoordinates(),
                 order.routeLengthKm(),
-                order.speedKmh(),
+                speedKmh,
                 order.status(),
                 cargo,
                 travelDurationMs,
@@ -306,6 +306,7 @@ public final class RouteDtoConverter {
         String fromAdcode = fromLoc != null ? safe(fromLoc.adcode()) : "000000";
         String toAdcode = toLoc != null ? safe(toLoc.adcode()) : "000000";
         String pathKey = RenderRouteDTO.buildStablePathKey("rm2", fromAdcode, toAdcode, order.coordinates());
+        Double speedKmh = normalizedRouteSpeed(order.speedKmh());
 
         return new RenderRouteDTO(
                 order.lineId(),
@@ -318,10 +319,10 @@ public final class RouteDtoConverter {
                 toLoc != null ? toLoc.coords() : null,
                 order.coordinates(),
                 order.routeLengthKm(),
-                order.speedKmh(),
+                speedKmh,
                 order.status(),
                 buildCargo(vehicle),
-                null,
+                travelDurationMs(order.routeLengthKm(), speedKmh),
                 pathKey,
                 "rm2",
                 null,
@@ -335,5 +336,20 @@ public final class RouteDtoConverter {
 
     private static String safe(String value) {
         return value == null || value.isBlank() ? "" : value.trim();
+    }
+
+    private static Double normalizedRouteSpeed(Double speedKmh) {
+        if (speedKmh == null || !Double.isFinite(speedKmh) || speedKmh < 0) {
+            return null;
+        }
+        return speedKmh <= MAX_ROUTE_SPEED_KMH ? speedKmh : DEFAULT_SIMULATION_SPEED_KMH;
+    }
+
+    private static Long travelDurationMs(Double routeLengthKm, Double speedKmh) {
+        if (routeLengthKm == null || routeLengthKm <= 0 || speedKmh == null) {
+            return null;
+        }
+        return Math.max(60_000L,
+                Math.round(routeLengthKm / Math.max(1, speedKmh) * 3_600_000));
     }
 }
