@@ -1649,6 +1649,15 @@ public class RoutePushService {
         String pathKey = pathKey(from, to, coordinates);
         double routeLengthKm = pathLengthKm(coordinates);
 
+        // 外部订单快照会反复抵达。相同 lineId 的短途任务必须沿用第一次注册的
+        // startTime，否则模拟进度会被重新随机并回跳到路线起点附近。
+        ScheduledRoute existingRoute = activeRoutes.get(lineId);
+        if (isSameTownRoute(existingRoute, from, to)) {
+            log.debug("[TownRoad] retained active simulation: lineId={}, startTime={}, speedKmh={}",
+                    lineId, existingRoute.startTime(), existingRoute.speedKmh());
+            return;
+        }
+
         ProviderPosition initialExternalPosition = fetchExternalVehiclePosition(lineId);
         String progressSource = initialProgressSource(initialExternalPosition, currentCoords, status);
         double[] resolvedCurrentCoords = initialExternalPosition != null
@@ -1702,6 +1711,13 @@ public class RoutePushService {
         activeRoutes.put(lineId, route);
         log.info("[TownRoad] dispatched town route: {} -> {}, lineId={}, orderId={}, routePoints={}, progress={}%, progressSource={}",
                 from, to, lineId, route.orderId(), coordinates.size(), Math.round(progress * 100), progressSource);
+    }
+
+    private boolean isSameTownRoute(ScheduledRoute route, String from, String to) {
+        return route != null
+                && route.scope() == RouteScope.TOWN
+                && safeRouteText(route.from()).equals(safeRouteText(from))
+                && safeRouteText(route.to()).equals(safeRouteText(to));
     }
     @PreDestroy
     public void shutdownBulkDispatchExecutor() {
@@ -2051,6 +2067,18 @@ public class RoutePushService {
     }
 
     private String pathKey(String from, String to, List<double[]> coordinates) {
-        return from + "->" + to + "-" + Integer.toHexString(coordinates.hashCode());
+        int hash = 1;
+        for (double[] coordinate : coordinates) {
+            if (coordinate == null || coordinate.length < 2) {
+                continue;
+            }
+            hash = 31 * hash + Double.hashCode(roundCoordinate(coordinate[0]));
+            hash = 31 * hash + Double.hashCode(roundCoordinate(coordinate[1]));
+        }
+        return from + "->" + to + "-" + Integer.toHexString(hash);
+    }
+
+    private double roundCoordinate(double value) {
+        return Math.round(value * 1_000_000d) / 1_000_000d;
     }
 }
