@@ -135,6 +135,7 @@ public class TownRoadRenderService {
             this.latestRm2Snapshot = new Rm2Snapshot(version, Instant.now(),
                     List.copyOf(assignedRoutes), List.copyOf(rm2Groups),
                     immutableRoutesByGroupId, immutableGroupIdByLineId);
+            routePushService.syncRm2PositionGroups(immutableGroupIdByLineId, version);
 
             Set<String> currentGroupIds = new LinkedHashSet<>();
             for (Rm2RouteGroupDTO g : rm2Groups) currentGroupIds.add(g.groupId());

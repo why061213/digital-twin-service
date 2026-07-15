@@ -39,6 +39,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
 import jakarta.annotation.PreDestroy;
@@ -68,6 +69,14 @@ public class RoutePushService {
     private final Map<String, ScheduledRoute> activeRoutes = new ConcurrentHashMap<>();
     private final Map<String, DisplayGroupLock> displayGroupLocks = new ConcurrentHashMap<>();
     private final Map<String, PositionSample> lastPositionSamples = new ConcurrentHashMap<>();
+    private final Map<String, BroadcastPositionState> lastBroadcastPositions = new ConcurrentHashMap<>();
+    private final Map<String, String> rm2GroupIdByLineId = new ConcurrentHashMap<>();
+    private final AtomicLong positionSequence = new AtomicLong();
+    private volatile String rm2SnapshotVersion = "0";
+    private static final double MAX_PROVIDER_SPEED_KMH = 140.0;
+    private static final double MAX_CALCULATED_SPEED_KMH = 160.0;
+    private static final double POSITION_CHANGE_THRESHOLD_METERS = 35.0;
+    private static final long POSITION_MAX_SILENCE_MS = 120_000L;
     private final boolean passivePositionPushEnabled;
     private final String simulationProfile;
     private final String externalPositionUrl;
@@ -744,9 +753,9 @@ public class RoutePushService {
         Map<String, Set<String>> vehicleToLineIds = collectActiveTransportVehicleMap();
         Map<String, Object> summary = positionCache.runBatchRefresh(this::getAccessTokenForExternalSafe, vehicleToLineIds);
 
-        // 刷新完成后推送变化的位置
+        // 每个 scope 一轮最多一个位置帧，避免逐车 WebSocket 广播风暴。
         if (passivePositionPushEnabled) {
-            activeRoutes.values().forEach((route) -> webSocketHandler.broadcast(positionMessage(route, now)));
+            broadcastChangedPositionFrames(now);
         }
     }
 
@@ -766,6 +775,13 @@ public class RoutePushService {
             result.computeIfAbsent(vehicleId, k -> new LinkedHashSet<>()).add(lineId);
         }
         return result;
+    }
+
+    /** RM2 快照发布时同步稳定的 lineId → groupId 索引，供位置帧补齐展示身份。 */
+    public void syncRm2PositionGroups(Map<String, String> groupIdByLineId, String snapshotVersion) {
+        rm2GroupIdByLineId.clear();
+        if (groupIdByLineId != null) rm2GroupIdByLineId.putAll(groupIdByLineId);
+        rm2SnapshotVersion = snapshotVersion == null || snapshotVersion.isBlank() ? "0" : snapshotVersion;
     }
 
     private String getAccessTokenForExternalSafe() {
@@ -906,9 +922,26 @@ public class RoutePushService {
     private Map<String, Object> positionMessage(ScheduledRoute route, long now) {
         ProviderPosition providerPosition = fetchVehiclePosition(route, now);
         boolean waitingDeparture = now < route.startTime();
-        double speedKmh = waitingDeparture ? 0 : providerPosition.speedKmh();
-        if (speedKmh <= 0) {
-            speedKmh = waitingDeparture ? 0 : calculateSpeedKmh(route.lineId(), providerPosition.position(), now, route.speedKmh());
+        PositionSnapshot cached = positionCache.getPosition(route.lineId());
+        double providerSpeed = providerPosition.speedKmh();
+        String speedQuality = "fallback";
+        double speedKmh;
+        if (waitingDeparture) {
+            speedKmh = 0;
+            speedQuality = "fallback";
+        } else if (providerSpeed > 0 && providerSpeed <= MAX_PROVIDER_SPEED_KMH) {
+            speedKmh = providerSpeed;
+            speedQuality = "provider";
+        } else {
+            double calculated = calculateSpeedKmh(route.lineId(), providerPosition.position(), now, route.speedKmh());
+            if (calculated > 0 && calculated <= MAX_CALCULATED_SPEED_KMH) {
+                speedKmh = calculated;
+                speedQuality = "calculated";
+            } else {
+                speedKmh = Math.max(0, route.speedKmh());
+                speedQuality = providerSpeed > MAX_PROVIDER_SPEED_KMH || calculated > MAX_CALCULATED_SPEED_KMH
+                        ? "rejected" : "fallback";
+            }
         }
 
         long elapsed = Math.max(0, now - route.startTime());
@@ -918,12 +951,71 @@ public class RoutePushService {
         Map<String, Object> message = new LinkedHashMap<>();
         message.put("type", "truck_position");
         message.put("lineId", route.lineId());
+        message.put("scope", scopeName(route.scope()));
+        message.put("groupId", positionGroupId(route));
         message.put("position", providerPosition.position());
         message.put("velocity", velocity);
         message.put("speedKmh", speedKmh);
         message.put("progress", progress);
         message.put("status", progress >= 1.0 ? "finished" : "running");
+        message.put("source", cached == null ? "simulated" : cached.source());
+        message.put("stale", cached != null && cached.stale());
+        message.put("fetchedAt", cached == null ? Instant.ofEpochMilli(now).toString() : cached.fetchedAt().toString());
+        message.put("vehicleId", providerPosition.vehicleId() == null ? lineIdCarIdMap.get(route.lineId()) : providerPosition.vehicleId());
+        message.put("plate", lineIdPlateMap.get(route.lineId()));
+        message.put("speedQuality", speedQuality);
+        message.put("sequence", positionSequence.incrementAndGet());
         return message;
+    }
+
+    private void broadcastChangedPositionFrames(long now) {
+        Map<RouteScope, List<Map<String, Object>>> positionsByScope = new LinkedHashMap<>();
+        for (ScheduledRoute route : activeRoutes.values()) {
+            Map<String, Object> position = positionMessage(route, now);
+            if (!shouldBroadcastPosition(position, now)) continue;
+            positionsByScope.computeIfAbsent(route.scope(), ignored -> new ArrayList<>()).add(position);
+        }
+        positionsByScope.forEach((scope, positions) -> {
+            if (positions.isEmpty()) return;
+            Map<String, Object> frame = new LinkedHashMap<>();
+            frame.put("type", "vehicle_positions");
+            frame.put("scope", scopeName(scope));
+            frame.put("serverTime", Instant.ofEpochMilli(now).toString());
+            frame.put("snapshotVersion", scope == RouteScope.TOWN ? rm2SnapshotVersion : "");
+            frame.put("positions", positions);
+            webSocketHandler.broadcast(frame);
+        });
+    }
+
+    private boolean shouldBroadcastPosition(Map<String, Object> position, long now) {
+        String lineId = String.valueOf(position.get("lineId"));
+        double[] coordinate = (double[]) position.get("position");
+        double speed = ((Number) position.get("speedKmh")).doubleValue();
+        String status = String.valueOf(position.get("status"));
+        boolean stale = Boolean.TRUE.equals(position.get("stale"));
+        BroadcastPositionState previous = lastBroadcastPositions.get(lineId);
+        BroadcastPositionState current = new BroadcastPositionState(coordinate, speed, status, stale, now);
+        if (previous == null
+                || distanceKm(previous.position(), coordinate) * 1_000 >= POSITION_CHANGE_THRESHOLD_METERS
+                || Math.abs(previous.speedKmh() - speed) >= 3.0
+                || !previous.status().equals(status)
+                || previous.stale() != stale
+                || now - previous.sentAt() >= POSITION_MAX_SILENCE_MS) {
+            lastBroadcastPositions.put(lineId, current);
+            return true;
+        }
+        return false;
+    }
+
+    private String scopeName(RouteScope scope) {
+        return scope == RouteScope.TOWN ? "rm2" : "rm1";
+    }
+
+    private String positionGroupId(ScheduledRoute route) {
+        if (route.scope() == RouteScope.TOWN) {
+            return rm2GroupIdByLineId.getOrDefault(route.lineId(), route.pathKey());
+        }
+        return groupIdFor(route.lineId());
     }
 
     private void cleanupExpiredRoutes(long now) {
@@ -931,6 +1023,8 @@ public class RoutePushService {
             boolean expired = now - entry.getValue().startTime() > entry.getValue().travelDurationMs();
             if (expired) {
                 lastPositionSamples.remove(entry.getKey());
+                lastBroadcastPositions.remove(entry.getKey());
+                rm2GroupIdByLineId.remove(entry.getKey());
             }
             return expired;
         });
@@ -1692,6 +1786,15 @@ public class RoutePushService {
     private record PositionSample(
             double[] position,
             long time
+    ) {
+    }
+
+    private record BroadcastPositionState(
+            double[] position,
+            double speedKmh,
+            String status,
+            boolean stale,
+            long sentAt
     ) {
     }
 
