@@ -107,7 +107,11 @@ public class TownRoadRenderService {
         List<NormalizedTownRoadOrder> eligibleShortHaulOrders = result.shortHaulOrders().stream()
                 .filter(this::shouldIncludeOrderForRealPositionMode)
                 .toList();
-        List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(eligibleShortHaulOrders);
+        // 先注册运行路线，后续 routes 快照直接使用同一运行池计算出的速度、距离和时长。
+        int townRouteDispatchCount = registerShortHaulRoutesForPositions(eligibleShortHaulOrders);
+        List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(eligibleShortHaulOrders).stream()
+                .map(this::withRuntimeMetrics)
+                .toList();
         List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
 
         Map<String, RenderRouteDTO> routeByLineId = new LinkedHashMap<>();
@@ -173,7 +177,8 @@ public class TownRoadRenderService {
             realtimeWebSocketHandler.broadcast(event);
         }
 
-        // RM1 长途 + 短途车辆注册（不受 RM2 不变影响）
+        // RM1 长途 + RM2 短途车辆注册。RM2 必须从与 REST groups/routes
+        // 完全相同的 eligibleShortHaulOrders 来源注册，保证 lineId 可被位置接口查到。
         int deletedOrCancelled = result.diff().deletedOrCancelled();
         int rawCount = result.rawCount();
         int normalizedCount = result.normalizedCount();
@@ -223,29 +228,7 @@ public class TownRoadRenderService {
         log.info(coordinateResolver.getStatsAndReset());
         log.info(amapGeocodeClient.getStatsAndReset());
 
-        int townRouteDispatchCount = 0;
-        for (TownRoadRenderCommand command : result.commands()) {
-            if (command.orders() == null) continue;
-            for (TownRoadRenderCommand.TownRoadOrder order : command.orders()) {
-                if (!"运输中".equals(order.status())) continue;
-                if (!shouldIncludeOrderForRealPositionMode(order.lineId(), order.vehicle())) continue;
-                if (order.from() == null || order.to() == null) continue;
-                double[] fc = order.from().coords();
-                double[] tc = order.to().coords();
-                if (fc == null || tc == null || fc.length < 2 || tc.length < 2) continue;
-                routePushService.dispatchTownRoute(
-                        order.lineId(), order.orderId() != null ? order.orderId() : order.lineId(),
-                        order.from().name(), order.to().name(),
-                        fc, tc, order.coordinates(),
-                        order.vehicle() == null ? null : order.vehicle().currentCoords(),
-                        order.vehicle() == null ? null : order.vehicle().plate(),
-                        order.vehicle() == null ? null : order.vehicle().carId(),
-                        order.vehicle() == null ? order.speedKmh() : order.vehicle().speedKmh(),
-                        order.updatedAt(), order.status()
-                );
-                townRouteDispatchCount++;
-            }
-        }
+        response.put("rm2PositionRouteCount", townRouteDispatchCount);
 
         if (traceEnabled) {
             pipeline.put("output", outputSummary(result, roadMapRouteCount, townRouteDispatchCount));
@@ -513,6 +496,48 @@ public class TownRoadRenderService {
             dispatched++;
         }
         return dispatched;
+    }
+
+    private RenderRouteDTO withRuntimeMetrics(RenderRouteDTO route) {
+        RoutePushService.RouteRuntimeMetrics metrics = routePushService.routeRuntimeMetrics(route.lineId());
+        if (metrics == null) return route;
+        return new RenderRouteDTO(
+                route.lineId(), route.orderId(), route.plate(), route.vehicleId(),
+                route.from(), route.to(), route.fromCoords(), route.toCoords(), route.coordinates(),
+                metrics.routeLengthKm(), metrics.speedKmh(), route.status(), route.cargo(),
+                metrics.travelDurationMs(), route.pathKey(), route.scope(), route.groupId(), route.role(),
+                route.coordinateSystem(), route.updatedAt(), route.routeSignature(), route.meta()
+        );
+    }
+
+    /**
+     * RM2 groups/routes 与位置运行池使用同一批短途订单和同一个 instanceId。
+     * 不能再从 render commands 二次取数，否则两套 lineId 可能产生分叉。
+     */
+    private int registerShortHaulRoutesForPositions(List<NormalizedTownRoadOrder> shortHaulOrders) {
+        if (shortHaulOrders == null || shortHaulOrders.isEmpty()) return 0;
+        int registered = 0;
+        for (NormalizedTownRoadOrder order : shortHaulOrders) {
+            if (order == null || !"运输中".equals(order.status()) || order.from() == null || order.to() == null) continue;
+            double[] fromCoords = order.from().coords();
+            double[] toCoords = order.to().coords();
+            if (fromCoords == null || toCoords == null || fromCoords.length < 2 || toCoords.length < 2) continue;
+
+            ExternalOrderRecord.Vehicle vehicle = order.vehicle();
+            routePushService.dispatchTownRoute(
+                    order.instanceId(),
+                    order.orderId() != null ? order.orderId() : order.instanceId(),
+                    order.from().name(), order.to().name(),
+                    fromCoords, toCoords, order.routeCoordinates(),
+                    vehicle == null ? null : vehicle.currentCoords(),
+                    vehicle == null ? null : vehicle.plate(),
+                    vehicle == null ? null : vehicle.carId(),
+                    vehicle == null ? order.speedKmh() : vehicle.speedKmh(),
+                    order.updatedAt(), order.status()
+            );
+            registered++;
+        }
+        return registered;
     }
 
     private boolean shouldIncludeOrderForRealPositionMode(NormalizedTownRoadOrder order) {

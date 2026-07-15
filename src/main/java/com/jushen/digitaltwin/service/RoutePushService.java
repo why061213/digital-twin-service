@@ -779,6 +779,13 @@ public class RoutePushService {
         return rm2SnapshotVersion;
     }
 
+    /** 供 RM2 快照复用运行池已经确定的速度、距离和预测时长。 */
+    public RouteRuntimeMetrics routeRuntimeMetrics(String lineId) {
+        ScheduledRoute route = activeRoutes.get(lineId);
+        if (route == null) return null;
+        return new RouteRuntimeMetrics(route.speedKmh(), route.routeLengthKm(), route.travelDurationMs());
+    }
+
     @Scheduled(
             initialDelayString = "${dashboard.route.position-refresh.initial-delay-ms:10000}",
             fixedDelayString = "${dashboard.route.position-refresh.fixed-delay-ms:30000}"
@@ -1686,7 +1693,6 @@ public class RoutePushService {
             String updatedAt,
             String status
     ) {
-        if (!passivePositionPushEnabled) return;
         if (lineId == null || lineId.isBlank() || fromCoords == null || toCoords == null
                 || fromCoords.length < 2 || toCoords.length < 2) {
             log.warn("[TownRoad] dispatch skipped: invalid order coords, lineId={}", lineId);
@@ -1848,6 +1854,12 @@ public class RoutePushService {
         @Override
         public String getPathKey() { return pathKey; }
     }
+
+    public record RouteRuntimeMetrics(
+            double speedKmh,
+            double routeLengthKm,
+            long travelDurationMs
+    ) {}
 
     private record ProviderPosition(
             double[] position,

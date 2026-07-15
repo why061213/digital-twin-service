@@ -340,7 +340,9 @@ public final class RouteDtoConverter {
 
     private static Double normalizedRouteSpeed(Double speedKmh) {
         if (speedKmh == null || !Double.isFinite(speedKmh) || speedKmh < 0) {
-            return null;
+            // 与 RoutePushService 的运行模型一致：缺少外部速度时仍要给前端
+            // 一个可预测的默认模拟速度和对应时长，不能把 null 传进运动层。
+            return DEFAULT_SIMULATION_SPEED_KMH;
         }
         return speedKmh <= MAX_ROUTE_SPEED_KMH ? speedKmh : DEFAULT_SIMULATION_SPEED_KMH;
     }
