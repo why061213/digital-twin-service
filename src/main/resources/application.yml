@@ -20,8 +20,7 @@ dashboard:
     allowed-origin-patterns:
       - "*"
     external-order:
-      enabled: true
-        # 这里之后填对方真实 POST 地址
+      # 外部订单 GET 地址；为空时使用 TownRoadExternalOrderClient 内置正式地址。
       post-url: ""
 
       # true：如果目的地没有 coords，不进入 town_road_render
@@ -34,31 +33,17 @@ dashboard:
       candidate-tolerance-ratio: 0.30
       candidate-absolute-slack: 250
 
-      # true 表示对方每次返回全量快照
-      # 本次没出现但本地存在的 lineId，会被认为已删除
-      full-snapshot: true
-
-      # 是否同步后主动通过 WebSocket 推给前端
-      # 旧 ExternalOrderSyncService 不参与 Road/Town 分流，禁止它广播 road_path。
-      broadcast-diff: false
-
       # RM2 正式订单链路：应用就绪后主动拉取一次，之后持续更新快照。
       auto-sync-enabled: true
       auto-sync-initial-delay-ms: 5000
       auto-sync-fixed-delay-ms: 60000
       # true 时，仅展示能解析 supplier vehicleId、可进行真实位置批量校准的订单。
-      ignore-orders-without-real-position: false
-
-      # 定时同步开关。先建议 false，手动调接口测试稳定后再开
-      scheduled-sync-enabled: false
-      sync-rate-ms: 10000
+      ignore-orders-without-real-position: true
   route:
     # 正式展示使用真实时间尺度的模拟；test 档 36000km/h 仅用于快速演示。
     simulation-profile: real
     passive-position-push-enabled: true
     group-size: 12
-    truck-position-push-rate-ms: 1200000
-    low-speed-threshold-kmh: 50
     default-group-strategy: province-path
 
     # 位置批量刷新配置（替代逐车穿透外部接口）
@@ -68,7 +53,6 @@ dashboard:
       initial-delay-ms: 10000
       fixed-delay-ms: 30000
       batch-size: 50
-      max-concurrency: 2
       request-timeout-ms: 10000
       stale-after-ms: 180000
 
@@ -90,12 +74,8 @@ dashboard:
 
     test:
       simulation-speed-kmh: 15000
-      position-query-interval-ms: 60000
-      slow-position-query-interval-ms: 15000
     real:
       simulation-speed-kmh: 80
-      position-query-interval-ms: 1800000
-      slow-position-query-interval-ms: 300000
 
   # ===== 本地坐标库 + 高德地图地理编码 =====
   coord-db:
