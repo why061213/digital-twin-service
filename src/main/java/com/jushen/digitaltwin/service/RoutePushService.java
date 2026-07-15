@@ -743,6 +743,41 @@ public class RoutePushService {
         return positionMessage(route, now);
     }
 
+    /**
+     * 批量 REST 校准专用：只读位置缓存；未命中时给出模拟坐标，绝不逐车穿透外部接口。
+     */
+    public Map<String, Object> getCachedOrSimulatedPosition(String lineId) {
+        long now = System.currentTimeMillis();
+        ScheduledRoute route = activeRoutes.get(lineId);
+        if (route == null) return Map.of("type", "truck_position", "lineId", lineId, "status", "finished");
+
+        PositionSnapshot cached = positionCache.getPosition(lineId);
+        ProviderPosition position = cached == null
+                ? simulatedPosition(route, now)
+                : new ProviderPosition(cached.position(), cached.speedKmh(), cached.vehicleId(), cached.vehicleName());
+        Map<String, Object> message = new LinkedHashMap<>();
+        message.put("type", "truck_position");
+        message.put("lineId", lineId);
+        message.put("scope", scopeName(route.scope()));
+        message.put("groupId", positionGroupId(route));
+        message.put("snapshotVersion", route.scope() == RouteScope.TOWN ? rm2SnapshotVersion : "");
+        message.put("position", position.position());
+        message.put("speedKmh", Math.max(0, position.speedKmh()));
+        message.put("status", now - route.startTime() >= route.travelDurationMs() ? "finished" : "running");
+        message.put("source", cached == null ? "simulated" : cached.source());
+        message.put("stale", cached != null && cached.stale());
+        message.put("fetchedAt", cached == null ? Instant.ofEpochMilli(now).toString() : cached.fetchedAt().toString());
+        message.put("vehicleId", position.vehicleId() == null ? lineIdCarIdMap.get(lineId) : position.vehicleId());
+        message.put("plate", lineIdPlateMap.get(lineId));
+        message.put("speedQuality", cached == null ? "fallback" : "provider");
+        message.put("sequence", positionSequence.incrementAndGet());
+        return message;
+    }
+
+    public String rm2SnapshotVersion() {
+        return rm2SnapshotVersion;
+    }
+
     @Scheduled(fixedDelayString = "${dashboard.route.position-refresh.fixed-delay-ms:30000}")
     public void scheduledPositionRefresh() {
         if (!passivePositionPushEnabled || !positionCache.isEnabled()) return;

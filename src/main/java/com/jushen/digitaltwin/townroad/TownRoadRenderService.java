@@ -15,6 +15,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -85,8 +86,15 @@ public class TownRoadRenderService {
             pipeline.put("input", inputSummary(rawOrders));
         }
 
+        // 入口去重：同订单+同线路+同车牌号，保留 updatedAt 最晚的记录
+        List<ExternalOrderRecord> dedupedOrders = deduplicateOrders(rawOrders);
+        int dedupRemoved = (rawOrders != null ? rawOrders.size() : 0) - dedupedOrders.size();
+        if (dedupRemoved > 0) {
+            log.info("入口去重: 移除 {} 条重复记录（同订单+同线路+同车牌号）", dedupRemoved);
+        }
+
         long middleLayerStartedAt = System.currentTimeMillis();
-        ExternalOrderSnapshotResult result = middleLayer.processSnapshot(rawOrders);
+        ExternalOrderSnapshotResult result = middleLayer.processSnapshot(dedupedOrders);
         long middleLayerFinishedAt = System.currentTimeMillis();
         if (traceEnabled) {
             pipeline.put("middleLayer", middleLayerSummary(result, middleLayerFinishedAt - middleLayerStartedAt));
@@ -318,6 +326,33 @@ public class TownRoadRenderService {
             if (gid != null) result.add(gid);
         }
         return result;
+    }
+
+    // ---------------------------------------------------------------
+    // 入口去重
+    // ---------------------------------------------------------------
+
+    /**
+     * 同订单(orderId)+同线路(lineId)+同车牌号(vehicle.plate) → 保留 updatedAt 最晚的记录。
+     */
+    private List<ExternalOrderRecord> deduplicateOrders(List<ExternalOrderRecord> orders) {
+        if (orders == null || orders.isEmpty()) return List.of();
+
+        List<ExternalOrderRecord> sorted = new ArrayList<>(orders);
+        sorted.sort(Comparator.comparing(
+                r -> r.updatedAt() != null ? r.updatedAt() : "",
+                Comparator.reverseOrder()
+        ));
+
+        Map<String, ExternalOrderRecord> seen = new LinkedHashMap<>();
+        for (ExternalOrderRecord r : sorted) {
+            String plate = r.vehicle() != null ? r.vehicle().plate() : "";
+            String key = (r.orderId() != null ? r.orderId() : "")
+                    + "|" + (r.lineId() != null ? r.lineId() : "")
+                    + "|" + plate;
+            seen.putIfAbsent(key, r);
+        }
+        return List.copyOf(seen.values());
     }
 
     // ---------------------------------------------------------------

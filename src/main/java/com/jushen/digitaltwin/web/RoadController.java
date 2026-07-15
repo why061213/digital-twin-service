@@ -84,33 +84,15 @@ public class RoadController {
         for (String lineId : deduped) {
             if (lineId == null || lineId.isBlank()) continue;
             PositionSnapshot snapshot = positionCache.getPosition(lineId);
-            if (snapshot == null) {
-                // 缓存没有，回退到 getPosition（可能触发模拟位置）
-                Map<String, Object> pos = routePushService.getPosition(lineId);
-                if (pos != null && pos.containsKey("position")) {
-                    positions.add(pos);
-                } else {
-                    missingLineIds.add(lineId);
-                }
-            } else {
-                if (snapshot.stale()) {
-                    staleLineIds.add(lineId);
-                }
-                Map<String, Object> pos = new LinkedHashMap<>();
-                pos.put("lineId", lineId);
-                pos.put("type", "truck_position");
-                pos.put("position", snapshot.position());
-                pos.put("speedKmh", snapshot.speedKmh());
-                pos.put("source", snapshot.source());
-                pos.put("stale", snapshot.stale());
-                pos.put("fetchedAt", snapshot.fetchedAt().toString());
-                if (snapshot.vehicleId() != null) pos.put("vehicleId", snapshot.vehicleId());
-                positions.add(pos);
-            }
+            Map<String, Object> pos = routePushService.getCachedOrSimulatedPosition(lineId);
+            if (pos.containsKey("position")) positions.add(pos);
+            else missingLineIds.add(lineId);
+            if (snapshot != null && snapshot.stale()) staleLineIds.add(lineId);
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("serverTime", java.time.Instant.now().toString());
+        response.put("snapshotVersion", routePushService.rm2SnapshotVersion());
         response.put("cacheAgeMs", 0);
         response.put("positions", positions);
         response.put("missingLineIds", missingLineIds);
