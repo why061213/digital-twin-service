@@ -93,6 +93,7 @@ public class RoutePushService {
     private final ConcurrentHashMap<String, String> lineIdPlateMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> lineIdCarIdMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, VehicleRef> vehicleByNormalizedPlate = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, VehicleRef> vehicleById = new ConcurrentHashMap<>();
     private final Set<String> unresolvedVehiclePlates = ConcurrentHashMap.newKeySet();
     private volatile boolean vehicleDictionaryInitialized;
     private volatile long vehicleDictionaryLoadedAt;
@@ -621,19 +622,24 @@ public class RoutePushService {
                 pageList = List.of();
             }
             ConcurrentHashMap<String, VehicleRef> next = new ConcurrentHashMap<>();
+            ConcurrentHashMap<String, VehicleRef> nextById = new ConcurrentHashMap<>();
             for (Map<String, Object> vehicle : pageList) {
                 String vehicleId = stringValue(vehicle.get("vehicle_id"));
                 String vehicleName = stringValue(vehicle.get("vehicle_name"));
                 if (vehicleId == null || vehicleName == null) continue;
                 VehicleRef ref = new VehicleRef(vehicleId, vehicleName);
+                nextById.put(vehicleId, ref);
                 registerVehicleRef(next, normalizePlateKey(vehicleName), ref);
                 registerVehicleRef(next, normalizePlateBaseKey(vehicleName), ref);
             }
 
             vehicleByNormalizedPlate.clear();
             vehicleByNormalizedPlate.putAll(next);
-            log.info("Vehicle dictionary loaded: total={}, pageList={}, indexKeys={}, requestSize={}",
-                    dataBlock == null ? null : dataBlock.get("total"), pageList.size(), vehicleByNormalizedPlate.size(), size);
+            vehicleById.clear();
+            vehicleById.putAll(nextById);
+            log.info("Vehicle dictionary loaded: total={}, pageList={}, indexKeys={}, idKeys={}, requestSize={}",
+                    dataBlock == null ? null : dataBlock.get("total"), pageList.size(),
+                    vehicleByNormalizedPlate.size(), vehicleById.size(), size);
         } catch (Exception e) {
             log.warn("Failed to refresh vehicle dictionary", e);
         } finally {
@@ -783,7 +789,58 @@ public class RoutePushService {
     public RouteRuntimeMetrics routeRuntimeMetrics(String lineId) {
         ScheduledRoute route = activeRoutes.get(lineId);
         if (route == null) return null;
-        return new RouteRuntimeMetrics(route.speedKmh(), route.routeLengthKm(), route.travelDurationMs());
+        PositionSnapshot snapshot = positionCache.getPosition(lineId);
+        String vehicleId = lineIdCarIdMap.get(lineId);
+        String plate = lineIdPlateMap.get(lineId);
+        if (snapshot != null) {
+            if (snapshot.vehicleId() != null && !snapshot.vehicleId().isBlank()) {
+                vehicleId = snapshot.vehicleId();
+            }
+            if (snapshot.plate() != null && !snapshot.plate().isBlank()) {
+                plate = normalizePlateDisplay(snapshot.plate());
+            } else if (snapshot.vehicleName() != null && !snapshot.vehicleName().isBlank()) {
+                plate = normalizePlateDisplay(snapshot.vehicleName());
+            }
+        }
+        double effectiveSpeedKmh = snapshot != null && isProviderSpeed(snapshot.speedKmh())
+                ? snapshot.speedKmh()
+                : route.speedKmh();
+        long effectiveTravelDurationMs = travelDurationMs(route.routeLengthKm(), effectiveSpeedKmh);
+        return new RouteRuntimeMetrics(
+                effectiveSpeedKmh,
+                route.routeLengthKm(),
+                effectiveTravelDurationMs,
+                vehicleId,
+                plate,
+                snapshot != null && !snapshot.stale(),
+                snapshot == null ? null : snapshot.source()
+        );
+    }
+
+    public boolean hasFreshProviderPosition(String lineId) {
+        PositionSnapshot snapshot = positionCache.getPosition(lineId);
+        return snapshot != null && !snapshot.stale()
+                && snapshot.position() != null && snapshot.position().length >= 2
+                && "real".equals(snapshot.source());
+    }
+
+    public boolean hasProviderVehicleId(String lineId) {
+        String vehicleId = lineIdCarIdMap.get(lineId);
+        return vehicleId != null && !vehicleId.isBlank();
+    }
+
+    public Map<String, Object> warmPositionCacheForLineIds(Set<String> lineIds) {
+        if (lineIds == null || lineIds.isEmpty() || !positionCache.isEnabled()) {
+            return Map.of("skipped", true, "reason", "disabled-or-empty");
+        }
+        Map<String, Set<String>> vehicleToLineIds = new LinkedHashMap<>();
+        for (String lineId : lineIds) {
+            if (lineId == null || lineId.isBlank()) continue;
+            String vehicleId = lineIdCarIdMap.get(lineId);
+            if (vehicleId == null || vehicleId.isBlank()) continue;
+            vehicleToLineIds.computeIfAbsent(vehicleId, ignored -> new LinkedHashSet<>()).add(lineId);
+        }
+        return positionCache.runBatchRefresh(this::getAccessTokenForExternalSafe, vehicleToLineIds);
     }
 
     @Scheduled(
@@ -1197,13 +1254,14 @@ public class RoutePushService {
 
         // 外部订单可能把车牌填在 carId 字段，需要提升为车牌再经车辆列表反查 ID。
         if (effectivePlate.isBlank() && isPlateLike(candidate)) {
-            effectivePlate = normalizePlate(candidate);
+            effectivePlate = normalizePlateDisplay(candidate);
             lineIdPlateMap.put(lineId, effectivePlate);
             log.info("Promoted plate-like carId to plate: lineId={}, candidateCarId={}, effectivePlate={}",
                     lineId, candidateCarId, effectivePlate);
         }
 
         if (!effectivePlate.isBlank()) {
+            effectivePlate = normalizePlateDisplay(effectivePlate);
             lineIdPlateMap.put(lineId, effectivePlate);
             VehicleRef vehicleRef = resolveVehicleByPlate(effectivePlate);
             if (vehicleRef != null) {
@@ -1219,7 +1277,12 @@ public class RoutePushService {
 
         // 没有任何车牌时，candidateCarId 才被视为真实 vehicle_id 的兼容输入。
         if (!candidate.isBlank()) {
+            ensureVehicleDictionary();
+            VehicleRef vehicleRef = vehicleById.get(candidate);
             lineIdCarIdMap.put(lineId, candidate);
+            if (vehicleRef != null && vehicleRef.vehicleName() != null) {
+                lineIdPlateMap.put(lineId, normalizePlateDisplay(vehicleRef.vehicleName()));
+            }
         }
     }
 
@@ -1237,7 +1300,11 @@ public class RoutePushService {
     }
 
     private String normalizePlate(String value) {
-        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT).replace(" ", "");
+        return normalizePlateKey(value);
+    }
+
+    private String normalizePlateDisplay(String value) {
+        return normalizePlateBaseKey(value);
     }
 
     private boolean containsChineseCharacter(String value) {
@@ -1858,7 +1925,11 @@ public class RoutePushService {
     public record RouteRuntimeMetrics(
             double speedKmh,
             double routeLengthKm,
-            long travelDurationMs
+            long travelDurationMs,
+            String vehicleId,
+            String plate,
+            boolean hasFreshProviderPosition,
+            String positionSource
     ) {}
 
     private record ProviderPosition(

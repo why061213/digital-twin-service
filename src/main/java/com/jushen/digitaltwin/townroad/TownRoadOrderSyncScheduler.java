@@ -33,7 +33,7 @@ public class TownRoadOrderSyncScheduler {
 
     @Scheduled(
             initialDelayString = "${dashboard.websocket.external-order.auto-sync-initial-delay-ms:5000}",
-            fixedDelayString = "${dashboard.websocket.external-order.auto-sync-fixed-delay-ms:60000}"
+            fixedDelayString = "${dashboard.websocket.external-order.auto-sync-fixed-delay-ms:900000}"
     )
     public void syncSnapshot() {
         if (!properties.isAutoSyncEnabled()) {

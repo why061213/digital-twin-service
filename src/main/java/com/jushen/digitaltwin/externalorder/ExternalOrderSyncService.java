@@ -51,7 +51,7 @@ public class ExternalOrderSyncService {
         return result;
     }
 
-    @Scheduled(fixedRateString = "${dashboard.external-order.sync-rate-ms:10000}")
+    @Scheduled(fixedRateString = "${dashboard.external-order.sync-rate-ms:900000}")
     public void scheduledSync() {
         if (!properties.isScheduledSyncEnabled()) {
             return;

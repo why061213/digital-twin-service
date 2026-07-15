@@ -90,10 +90,15 @@ public class TownRoadRenderService {
         }
 
         // 入口去重：同订单+同线路+同车牌号，保留 updatedAt 最晚的记录
-        List<ExternalOrderRecord> dedupedOrders = deduplicateOrders(rawOrders);
-        int dedupRemoved = (rawOrders != null ? rawOrders.size() : 0) - dedupedOrders.size();
-        if (dedupRemoved > 0) {
-            log.info("入口去重: 移除 {} 条重复记录（同订单+同线路+同车牌号）", dedupRemoved);
+        DeduplicationResult deduplication = deduplicateOrders(rawOrders);
+        List<ExternalOrderRecord> dedupedOrders = deduplication.orders();
+        if (deduplication.removedCount() > 0) {
+            log.info("入口去重: input={}, unique={}, removed={}, duplicateKeys={}, samples={}",
+                    deduplication.inputCount(), dedupedOrders.size(), deduplication.removedCount(),
+                    deduplication.duplicateKeyCount(), deduplication.sampleDuplicateKeys());
+        }
+        if (traceEnabled) {
+            pipeline.put("deduplication", deduplication.toMap());
         }
 
         long middleLayerStartedAt = System.currentTimeMillis();
@@ -109,8 +114,15 @@ public class TownRoadRenderService {
                 .toList();
         // 先注册运行路线，后续 routes 快照直接使用同一运行池计算出的速度、距离和时长。
         int townRouteDispatchCount = registerShortHaulRoutesForPositions(eligibleShortHaulOrders);
+        Set<String> eligibleShortHaulLineIds = eligibleShortHaulOrders.stream()
+                .map(NormalizedTownRoadOrder::instanceId)
+                .filter(lineId -> lineId != null && !lineId.isBlank())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        Map<String, Object> positionWarmup = routePushService.warmPositionCacheForLineIds(eligibleShortHaulLineIds);
         List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(eligibleShortHaulOrders).stream()
                 .map(this::withRuntimeMetrics)
+                .filter(route -> route != null)
+                .filter(this::isPublishableRm2Route)
                 .toList();
         List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
 
@@ -207,6 +219,8 @@ public class TownRoadRenderService {
         response.put("rm2SnapshotChanged", rm2SnapshotChanged);
         response.put("rm2Routes", rm2Routes.size());
         response.put("rm2Groups", rm2Groups.size());
+        response.put("deduplication", deduplication.toMap());
+        response.put("rm2PositionWarmup", positionWarmup);
 
         int skippedByStatus = normalizedCount - shortHaulCount - skippedNotRenderable - skippedLongHaul;
         Map<String, Object> accounting = new LinkedHashMap<>();
@@ -325,8 +339,10 @@ public class TownRoadRenderService {
     /**
      * 同订单(orderId)+同线路(lineId)+同车牌号(vehicle.plate) → 保留 updatedAt 最晚的记录。
      */
-    private List<ExternalOrderRecord> deduplicateOrders(List<ExternalOrderRecord> orders) {
-        if (orders == null || orders.isEmpty()) return List.of();
+    private DeduplicationResult deduplicateOrders(List<ExternalOrderRecord> orders) {
+        if (orders == null || orders.isEmpty()) {
+            return new DeduplicationResult(0, List.of(), 0, 0, List.of());
+        }
 
         List<ExternalOrderRecord> sorted = new ArrayList<>(orders);
         sorted.sort(Comparator.comparing(
@@ -335,14 +351,51 @@ public class TownRoadRenderService {
         ));
 
         Map<String, ExternalOrderRecord> seen = new LinkedHashMap<>();
+        Map<String, Integer> counts = new LinkedHashMap<>();
         for (ExternalOrderRecord r : sorted) {
-            String plate = r.vehicle() != null ? r.vehicle().plate() : "";
-            String key = (r.orderId() != null ? r.orderId() : "")
-                    + "|" + (r.lineId() != null ? r.lineId() : "")
-                    + "|" + plate;
+            String key = dedupeKey(r);
+            counts.merge(key, 1, Integer::sum);
             seen.putIfAbsent(key, r);
         }
-        return List.copyOf(seen.values());
+        List<String> duplicateSamples = counts.entrySet().stream()
+                .filter(entry -> entry.getValue() > 1)
+                .limit(8)
+                .map(entry -> entry.getKey() + " x" + entry.getValue())
+                .toList();
+        int duplicateKeyCount = (int) counts.values().stream().filter(count -> count > 1).count();
+        List<ExternalOrderRecord> deduped = List.copyOf(seen.values());
+        return new DeduplicationResult(
+                orders.size(),
+                deduped,
+                orders.size() - deduped.size(),
+                duplicateKeyCount,
+                duplicateSamples
+        );
+    }
+
+    private String dedupeKey(ExternalOrderRecord record) {
+        if (record == null) return "null|null|null";
+        ExternalOrderRecord.Vehicle vehicle = record.vehicle();
+        String plateCandidate = vehicle == null ? "" : firstNonBlank(vehicle.plate(), vehicle.carId());
+        return safeDedupePart(record.orderId())
+                + "|" + safeDedupePart(record.lineId())
+                + "|" + normalizePlateForDedupe(plateCandidate);
+    }
+
+    private String firstNonBlank(String first, String second) {
+        if (first != null && !first.isBlank()) return first;
+        return second == null ? "" : second;
+    }
+
+    private String safeDedupePart(String value) {
+        return value == null || value.isBlank() ? "" : value.trim();
+    }
+
+    private String normalizePlateForDedupe(String value) {
+        if (value == null || value.isBlank()) return "";
+        String normalized = value.trim().replace(" ", "").toUpperCase(java.util.Locale.ROOT);
+        int separatorIndex = normalized.indexOf('-');
+        return separatorIndex > 0 ? normalized.substring(0, separatorIndex) : normalized;
     }
 
     // ---------------------------------------------------------------
@@ -500,14 +553,41 @@ public class TownRoadRenderService {
 
     private RenderRouteDTO withRuntimeMetrics(RenderRouteDTO route) {
         RoutePushService.RouteRuntimeMetrics metrics = routePushService.routeRuntimeMetrics(route.lineId());
-        if (metrics == null) return route;
+        if (metrics == null) {
+            log.info("[TownRoad] filtered RM2 route without registered runtime: lineId={}", route.lineId());
+            return null;
+        }
         return new RenderRouteDTO(
-                route.lineId(), route.orderId(), route.plate(), route.vehicleId(),
+                route.lineId(), route.orderId(), coalesce(metrics.plate(), route.plate()), metrics.vehicleId(),
                 route.from(), route.to(), route.fromCoords(), route.toCoords(), route.coordinates(),
                 metrics.routeLengthKm(), metrics.speedKmh(), route.status(), route.cargo(),
                 metrics.travelDurationMs(), route.pathKey(), route.scope(), route.groupId(), route.role(),
                 route.coordinateSystem(), route.updatedAt(), route.routeSignature(), route.meta()
         );
+    }
+
+    private boolean isPublishableRm2Route(RenderRouteDTO route) {
+        if (route == null || !"rm2".equals(route.scope())) return false;
+        if (route.speedKmh() == null || route.travelDurationMs() == null || route.routeLengthKm() == null) {
+            log.info("[TownRoad] filtered RM2 route without runtime metrics: lineId={}", route == null ? null : route.lineId());
+            return false;
+        }
+        if (!externalOrderProperties.isIgnoreOrdersWithoutRealPosition()) {
+            return true;
+        }
+        boolean publishable = route.vehicleId() != null && !route.vehicleId().isBlank()
+                && routePushService.hasFreshProviderPosition(route.lineId());
+        if (!publishable) {
+            log.info("[TownRoad] filtered RM2 route before publish: lineId={}, plate={}, vehicleId={}, hasProviderVehicleId={}, hasFreshProviderPosition={}",
+                    route.lineId(), route.plate(), route.vehicleId(),
+                    routePushService.hasProviderVehicleId(route.lineId()),
+                    routePushService.hasFreshProviderPosition(route.lineId()));
+        }
+        return publishable;
+    }
+
+    private String coalesce(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
     }
 
     /**
@@ -562,5 +642,23 @@ public class TownRoadRenderService {
 
     public TownRoadMiddleLayer middleLayer() {
         return middleLayer;
+    }
+
+    private record DeduplicationResult(
+            int inputCount,
+            List<ExternalOrderRecord> orders,
+            int removedCount,
+            int duplicateKeyCount,
+            List<String> sampleDuplicateKeys
+    ) {
+        Map<String, Object> toMap() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("inputCount", inputCount);
+            map.put("uniqueCount", orders.size());
+            map.put("removedCount", removedCount);
+            map.put("duplicateKeyCount", duplicateKeyCount);
+            map.put("sampleDuplicateKeys", sampleDuplicateKeys);
+            return map;
+        }
     }
 }

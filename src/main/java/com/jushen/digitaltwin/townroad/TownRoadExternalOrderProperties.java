@@ -32,7 +32,7 @@ public class TownRoadExternalOrderProperties {
     /** 是否在应用启动后自动拉取 RM2 外部订单快照。 */
     private boolean autoSyncEnabled = true;
     private long autoSyncInitialDelayMs = 5000;
-    private long autoSyncFixedDelayMs = 60000;
+    private long autoSyncFixedDelayMs = 900000;
 
     /**
      * 开启后，仅保留能由车牌解析出供应商 vehicleId 的订单。
