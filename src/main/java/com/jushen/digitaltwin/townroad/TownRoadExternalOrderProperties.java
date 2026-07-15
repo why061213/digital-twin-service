@@ -29,6 +29,11 @@ public class TownRoadExternalOrderProperties {
      *  即使状态为"已完成"也推送给前端做校准；超过则过滤。 */
     private int completedRetentionMinutes = 30;
 
+    /** 是否在应用启动后自动拉取 RM2 外部订单快照。 */
+    private boolean autoSyncEnabled = true;
+    private long autoSyncInitialDelayMs = 5000;
+    private long autoSyncFixedDelayMs = 60000;
+
     public String getPostUrl() {
         return postUrl;
     }
@@ -99,5 +104,29 @@ public class TownRoadExternalOrderProperties {
 
     public void setCompletedRetentionMinutes(int completedRetentionMinutes) {
         this.completedRetentionMinutes = completedRetentionMinutes;
+    }
+
+    public boolean isAutoSyncEnabled() {
+        return autoSyncEnabled;
+    }
+
+    public void setAutoSyncEnabled(boolean autoSyncEnabled) {
+        this.autoSyncEnabled = autoSyncEnabled;
+    }
+
+    public long getAutoSyncInitialDelayMs() {
+        return autoSyncInitialDelayMs;
+    }
+
+    public void setAutoSyncInitialDelayMs(long autoSyncInitialDelayMs) {
+        this.autoSyncInitialDelayMs = autoSyncInitialDelayMs;
+    }
+
+    public long getAutoSyncFixedDelayMs() {
+        return autoSyncFixedDelayMs;
+    }
+
+    public void setAutoSyncFixedDelayMs(long autoSyncFixedDelayMs) {
+        this.autoSyncFixedDelayMs = autoSyncFixedDelayMs;
     }
 }

@@ -77,6 +77,7 @@ public class RoutePushService {
     private static final double MAX_CALCULATED_SPEED_KMH = 160.0;
     private static final double POSITION_CHANGE_THRESHOLD_METERS = 35.0;
     private static final long POSITION_MAX_SILENCE_MS = 120_000L;
+    private static final double MAX_CALIBRATION_OFF_ROUTE_KM = 5.0;
     private final boolean passivePositionPushEnabled;
     private final String simulationProfile;
     private final String externalPositionUrl;
@@ -778,7 +779,10 @@ public class RoutePushService {
         return rm2SnapshotVersion;
     }
 
-    @Scheduled(fixedDelayString = "${dashboard.route.position-refresh.fixed-delay-ms:30000}")
+    @Scheduled(
+            initialDelayString = "${dashboard.route.position-refresh.initial-delay-ms:10000}",
+            fixedDelayString = "${dashboard.route.position-refresh.fixed-delay-ms:30000}"
+    )
     public void scheduledPositionRefresh() {
         if (!passivePositionPushEnabled || !positionCache.isEnabled()) return;
 
@@ -787,11 +791,56 @@ public class RoutePushService {
 
         Map<String, Set<String>> vehicleToLineIds = collectActiveTransportVehicleMap();
         Map<String, Object> summary = positionCache.runBatchRefresh(this::getAccessTokenForExternalSafe, vehicleToLineIds);
+        int calibratedRouteCount = calibrateActiveRoutesFromCache(now);
+        if (calibratedRouteCount > 0) {
+            log.info("[PositionCache] calibrated active simulations: routeCount={}, refreshSummary={}",
+                    calibratedRouteCount, summary);
+        }
 
         // 每个 scope 一轮最多一个位置帧，避免逐车 WebSocket 广播风暴。
         if (passivePositionPushEnabled) {
             broadcastChangedPositionFrames(now);
         }
+    }
+
+    /**
+     * 用已批量拉取的真实位置修正后端模拟时间线。
+     * 缓存读取不再触发外部请求，且偏离规划路线过远的点不会污染模拟状态。
+     */
+    private int calibrateActiveRoutesFromCache(long now) {
+        int calibrated = 0;
+        for (Map.Entry<String, ScheduledRoute> entry : activeRoutes.entrySet()) {
+            String lineId = entry.getKey();
+            ScheduledRoute route = entry.getValue();
+            PositionSnapshot snapshot = positionCache.getPosition(lineId);
+            if (snapshot == null || snapshot.stale() || snapshot.position() == null || snapshot.position().length < 2) {
+                continue;
+            }
+
+            double progress = progressOnCoordinates(route.coordinates(), snapshot.position());
+            double[] projected = coordinateAtProgress(route.coordinates(), progress);
+            if (distanceKm(projected, snapshot.position()) > MAX_CALIBRATION_OFF_ROUTE_KM) {
+                log.debug("[PositionCache] ignored off-route calibration: lineId={}, distanceKm={}",
+                        lineId, distanceKm(projected, snapshot.position()));
+                continue;
+            }
+
+            double effectiveSpeedKmh = snapshot.speedKmh() > 0 && snapshot.speedKmh() <= MAX_PROVIDER_SPEED_KMH
+                    ? snapshot.speedKmh()
+                    : route.speedKmh();
+            long travelDurationMs = Math.max(60_000L,
+                    Math.round(route.routeLengthKm() / Math.max(1, effectiveSpeedKmh) * 3_600_000));
+            long startTime = now - Math.round(progress * travelDurationMs);
+            ScheduledRoute calibratedRoute = new ScheduledRoute(
+                    route.lineId(), route.orderId(), route.orderFamilyId(), route.orderName(),
+                    route.orderTotalTons(), route.orderVehicleCount(), route.from(), route.to(),
+                    route.startProvince(), route.endProvince(), route.coordinates(), route.pathKey(),
+                    startTime, route.routeLengthKm(), effectiveSpeedKmh, travelDurationMs, route.scope()
+            );
+            activeRoutes.replace(lineId, route, calibratedRoute);
+            calibrated++;
+        }
+        return calibrated;
     }
 
     /**
