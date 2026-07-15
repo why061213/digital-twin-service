@@ -53,8 +53,6 @@ dashboard:
   route:
     # 正式展示使用真实时间尺度的模拟；test 档 36000km/h 仅用于快速演示。
     simulation-profile: real
-    real:
-      simulation-speed-kmh: 80
     passive-position-push-enabled: true
     group-size: 12
     truck-position-push-rate-ms: 1200000
