@@ -239,12 +239,13 @@ public final class RouteDtoConverter {
                         .filter(k -> k != null)
                         .reduce((a, b) -> commonPrefix(a, b))
                         .orElse(null);
+                List<String> renderProvinceKeys = renderProvinceKeys(pageRoutes, fromProv, toProv);
 
                 groups.add(new Rm2RouteGroupDTO(
                         groupId, groupName, globalIndex++, orderLineIds.size(),
                         orderLineIds, vehicleLineIds, Map.copyOf(vehicleLineIdsByOrderLineId),
                         vehicleLineIds.size(), fromProv, fromProv, toProv,
-                        fromProv + ":" + toProv, page,
+                        fromProv + ":" + toProv, renderProvinceKeys, page,
                         scenario, pathKeyHint
                 ));
             }
@@ -298,7 +299,7 @@ public final class RouteDtoConverter {
                     provinceId, "province", "rm2:root", fromProvince,
                     provinceLabel(fromProvince), provinceIndex,
                     provinceIds.get((provinceIndex + 1) % provinceIds.size()),
-                    directionIds, null
+                    directionIds, null, List.of(fromProvince)
             ));
             provinceIndex++;
 
@@ -311,13 +312,18 @@ public final class RouteDtoConverter {
                                 .thenComparing(Rm2RouteGroupDTO::groupId))
                         .toList();
                 List<String> groupIds = directionGroups.stream().map(Rm2RouteGroupDTO::groupId).toList();
+                List<String> directionRenderProvinceKeys = directionGroups.stream()
+                        .flatMap(group -> group.renderProvinceKeys().stream())
+                        .distinct()
+                        .sorted()
+                        .toList();
                 nodes.add(new Rm2ChainNodeDTO(
                         directionId, "direction", provinceId,
                         fromProvince + ":" + toProvince,
                         provinceLabel(fromProvince) + " → " + provinceLabel(toProvince),
                         directionIndex,
                         directionIds.get((directionIndex + 1) % directionIds.size()),
-                        groupIds, null
+                        groupIds, null, directionRenderProvinceKeys
                 ));
                 directionIndex++;
 
@@ -327,7 +333,7 @@ public final class RouteDtoConverter {
                             group.groupId(), "group", directionId, group.groupId(),
                             group.groupName(), groupIndex,
                             groupIds.get((groupIndex + 1) % groupIds.size()),
-                            List.of(), group.groupId()
+                            List.of(), group.groupId(), group.renderProvinceKeys()
                     ));
                     leafGroupIds.add(group.groupId());
                 }
@@ -335,6 +341,28 @@ public final class RouteDtoConverter {
         }
 
         return new Rm2ChainStructureDTO(provinceIds.get(0), List.copyOf(nodes), List.copyOf(leafGroupIds));
+    }
+
+    private static List<String> renderProvinceKeys(
+            List<RenderRouteDTO> routes,
+            String fromProvince,
+            String toProvince
+    ) {
+        java.util.TreeSet<String> result = new java.util.TreeSet<>();
+        if (!safe(fromProvince).isBlank()) result.add(fromProvince);
+        if (!safe(toProvince).isBlank()) result.add(toProvince);
+        for (RenderRouteDTO route : routes) {
+            Object rawPaths = route.meta().get("provincePathKeys");
+            if (!(rawPaths instanceof List<?> paths)) continue;
+            for (Object rawPath : paths) {
+                if (!(rawPath instanceof String path)) continue;
+                for (String provinceKey : path.split(">")) {
+                    String normalized = safe(provinceKey);
+                    if (normalized.matches("\\d{6}")) result.add(normalized);
+                }
+            }
+        }
+        return List.copyOf(result);
     }
 
     private static String commonPrefix(String a, String b) {

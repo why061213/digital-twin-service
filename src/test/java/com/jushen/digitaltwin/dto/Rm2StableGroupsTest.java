@@ -35,12 +35,16 @@ class Rm2StableGroupsTest {
                 coordinates.get(0), speedKmh
         );
 
+        List<String> provincePath = "440000".equals(fromProv) && "460000".equals(toProv)
+                ? List.of("440000", "450000", "460000")
+                : List.of(fromProv, toProv);
+
         return new NormalizedTownRoadOrder(
                 orderId, instanceId, instanceId, "vk-" + instanceId,
                 fromProv, toProv, fromProv + ":" + toProv,
                 fromProv, toProv,
-                List.of(List.of(fromProv, toProv)),           // provincePaths
-                List.of(fromProv + ":" + toProv),             // provincePathKeys
+                List.of(provincePath),                        // provincePaths
+                List.of(String.join(">", provincePath)),      // provincePathKeys
                 List.of(1),                                   // provincePathCosts
                 List.of("city", "city2"),                     // cityPath
                 List.of("city", "city2"),                     // cityNames
@@ -309,6 +313,26 @@ class Rm2StableGroupsTest {
         assertEquals(3, structure.nodes().stream().filter(node -> "direction".equals(node.nodeType())).count());
         assertEquals(3, structure.nodes().stream().filter(node -> "group".equals(node.nodeType())).count());
         structure.nodes().forEach(node -> assertNotNull(node.nextNodeId()));
+    }
+
+    @Test
+    void directionCarriesAllTransitProvinceKeys() {
+        NormalizedTownRoadOrder order = makeOrder(
+                "ferry-1", "ferry-1", "运输中", "440000", "460000",
+                coords(110.1, 20.3, 110.3, 20.0), 50, 40,
+                "2026-07-14", "粤A1", 10
+        );
+        List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(
+                RouteDtoConverter.shortHaulOrdersToRoutes(List.of(order)), 3);
+        Rm2ChainStructureDTO structure = RouteDtoConverter.buildRm2ChainStructure(groups);
+
+        assertEquals(List.of("440000", "450000", "460000"), groups.get(0).renderProvinceKeys());
+        assertEquals(List.of("440000"), structure.nodes().stream()
+                .filter(node -> "province".equals(node.nodeType()))
+                .findFirst().orElseThrow().renderProvinceKeys());
+        assertEquals(List.of("440000", "450000", "460000"), structure.nodes().stream()
+                .filter(node -> "direction".equals(node.nodeType()))
+                .findFirst().orElseThrow().renderProvinceKeys());
     }
 
     @Test

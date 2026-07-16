@@ -32,6 +32,8 @@ public record Rm2RouteGroupDTO(
         String toProvinceKey,
         /** 方向环节点 key */
         String directionKey,
+        /** 该方向渲染需要的省份（始发、目的及候选路径途经省） */
+        List<String> renderProvinceKeys,
         /** 方向下的细分组页码（从 0 开始） */
         int pageIndex,
         /** 分组场景：same_province / cross_province */
@@ -43,5 +45,6 @@ public record Rm2RouteGroupDTO(
         if (orderLineIds == null) orderLineIds = List.of();
         if (vehicleLineIds == null) vehicleLineIds = List.of();
         if (vehicleLineIdsByOrderLineId == null) vehicleLineIdsByOrderLineId = Map.of();
+        if (renderProvinceKeys == null) renderProvinceKeys = List.of();
     }
 }

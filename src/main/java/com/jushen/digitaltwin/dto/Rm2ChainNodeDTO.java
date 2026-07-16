@@ -12,9 +12,11 @@ public record Rm2ChainNodeDTO(
         int index,
         String nextNodeId,
         List<String> childNodeIds,
-        String groupId
+        String groupId,
+        List<String> renderProvinceKeys
 ) {
     public Rm2ChainNodeDTO {
         if (childNodeIds == null) childNodeIds = List.of();
+        if (renderProvinceKeys == null) renderProvinceKeys = List.of();
     }
 }
