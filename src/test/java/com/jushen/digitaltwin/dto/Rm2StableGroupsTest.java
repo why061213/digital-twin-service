@@ -234,8 +234,59 @@ class Rm2StableGroupsTest {
         Rm2RouteGroupDTO g = groups.get(0);
         assertEquals(1, g.count());
         assertEquals(1, g.orderLineIds().size());
-        assertEquals("inst-1", g.orderLineIds().get(0));
+        assertEquals("o-1::inst-1", g.orderLineIds().get(0));
+        assertEquals(List.of("inst-1"), g.vehicleLineIds());
+        assertEquals(1, g.vehicleCount());
         assertEquals("440000", g.mapKey());
+    }
+
+    @Test
+    void multipleVehiclesOnSameBusinessLineUseOneRouteSlot() {
+        NormalizedTownRoadOrder firstVehicle = makeOrder(
+                "order-1::source-line-1::line-0::car-a", "order-1", "运输中",
+                "440000", "440000", coords(113, 23, 114, 24),
+                50, 60, "2026-07-14", "粤A11111", 10);
+        NormalizedTownRoadOrder secondVehicle = makeOrder(
+                "order-1::source-line-1::line-0::car-b", "order-1", "运输中",
+                "440000", "440000", coords(113, 23, 114, 24),
+                50, 55, "2026-07-14", "粤A22222", 10);
+
+        List<RenderRouteDTO> routes = RouteDtoConverter.shortHaulOrdersToRoutes(
+                List.of(firstVehicle, secondVehicle));
+        List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(routes, 3);
+
+        assertEquals(routes.get(0).businessLineId(), routes.get(1).businessLineId());
+        assertEquals(1, groups.size());
+        Rm2RouteGroupDTO group = groups.get(0);
+        assertEquals(1, group.count(), "两辆车只占一个业务线路名额");
+        assertEquals(2, group.vehicleCount());
+        assertEquals(1, group.orderLineIds().size());
+        assertEquals(2, group.vehicleLineIds().size());
+        assertEquals(group.vehicleLineIds(),
+                group.vehicleLineIdsByOrderLineId().get(group.orderLineIds().get(0)));
+    }
+
+    @Test
+    void paginationLimitCountsBusinessLinesInsteadOfVehicles() {
+        List<NormalizedTownRoadOrder> orders = new ArrayList<>();
+        for (int businessLine = 0; businessLine < 4; businessLine++) {
+            for (int vehicle = 0; vehicle < 2; vehicle++) {
+                orders.add(makeOrder(
+                        "order-" + businessLine + "::source-line-" + businessLine
+                                + "::line-0::car-" + vehicle,
+                        "order-" + businessLine, "运输中", "440000", "440000",
+                        coords(113 + businessLine * 0.1, 23, 114, 24),
+                        50, 60, "2026-07-14", "粤A" + businessLine + vehicle, 10));
+            }
+        }
+
+        List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(
+                RouteDtoConverter.shortHaulOrdersToRoutes(orders), 3);
+
+        assertEquals(2, groups.size());
+        assertEquals(List.of(3, 1), groups.stream().map(Rm2RouteGroupDTO::count).toList());
+        assertEquals(List.of(6, 2), groups.stream().map(Rm2RouteGroupDTO::vehicleCount).toList());
+        assertTrue(groups.stream().allMatch(group -> group.count() <= 3));
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.jushen.digitaltwin.dto;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * RM2 路线组 DTO。
@@ -13,10 +14,16 @@ public record Rm2RouteGroupDTO(
         String groupName,
         /** 分组序号（从 0 开始） */
         int index,
-        /** 该组路线数量 */
+        /** 该组业务线路数量，不是车辆数量 */
         int count,
-        /** 该组包含的 lineId 列表 */
+        /** 该组包含的业务线路 ID */
         List<String> orderLineIds,
+        /** 该组包含的车辆实例 lineId */
+        List<String> vehicleLineIds,
+        /** 业务线路 ID -> 车辆实例 lineId */
+        Map<String, List<String>> vehicleLineIdsByOrderLineId,
+        /** 该组车辆实例数量 */
+        int vehicleCount,
         /** 地图 key = fromProvinceKey */
         String mapKey,
         /** 省份环节点 key */
@@ -34,5 +41,7 @@ public record Rm2RouteGroupDTO(
 ) {
     public Rm2RouteGroupDTO {
         if (orderLineIds == null) orderLineIds = List.of();
+        if (vehicleLineIds == null) vehicleLineIds = List.of();
+        if (vehicleLineIdsByOrderLineId == null) vehicleLineIdsByOrderLineId = Map.of();
     }
 }

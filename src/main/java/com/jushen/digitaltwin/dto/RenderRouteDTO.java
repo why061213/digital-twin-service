@@ -16,6 +16,8 @@ public record RenderRouteDTO(
         String lineId,
         /** 订单号 */
         String orderId,
+        /** 订单内业务线路标识；同线路的多辆车共享该值 */
+        String businessLineId,
         /** 车牌 */
         String plate,
         /** 真实供应商车辆ID */

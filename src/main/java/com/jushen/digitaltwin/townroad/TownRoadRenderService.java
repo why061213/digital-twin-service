@@ -139,11 +139,11 @@ public class TownRoadRenderService {
         Map<String, String> groupIdByLineId = new LinkedHashMap<>();
         for (Rm2RouteGroupDTO group : rm2Groups) {
             List<RenderRouteDTO> groupRoutes = new ArrayList<>();
-            for (String lineId : group.orderLineIds()) {
+            for (String lineId : group.vehicleLineIds()) {
                 RenderRouteDTO route = routeByLineId.get(lineId);
                 if (route == null) continue;
                 RenderRouteDTO withGroupId = new RenderRouteDTO(
-                        route.lineId(), route.orderId(), route.plate(), route.vehicleId(),
+                        route.lineId(), route.orderId(), route.businessLineId(), route.plate(), route.vehicleId(),
                         route.from(), route.to(), route.fromCoords(), route.toCoords(),
                         route.coordinates(), route.routeLengthKm(), route.speedKmh(),
                         route.status(), route.cargo(), route.travelDurationMs(),
@@ -223,7 +223,8 @@ public class TownRoadRenderService {
         response.put("diff", result.diff().toMap());
         response.put("snapshotVersion", snapshotVersion);
         response.put("rm2SnapshotChanged", rm2SnapshotChanged);
-        response.put("rm2Routes", rm2Routes.size());
+        response.put("rm2Routes", rm2Groups.stream().mapToInt(Rm2RouteGroupDTO::count).sum());
+        response.put("rm2Vehicles", rm2Routes.size());
         response.put("rm2Groups", rm2Groups.size());
         response.put("deduplication", deduplication.toMap());
         response.put("rm2PositionWarmup", positionWarmup);
@@ -277,7 +278,7 @@ public class TownRoadRenderService {
         StringBuilder sb = new StringBuilder();
         for (Rm2RouteGroupDTO g : groups) {
             sb.append(g.groupId()).append('|');
-            for (String lineId : g.orderLineIds()) {
+            for (String lineId : g.vehicleLineIds()) {
                 RenderRouteDTO r = routeByLineId.get(lineId);
                 if (r == null) continue;
                 sb.append(r.lineId()).append('|')
@@ -564,7 +565,8 @@ public class TownRoadRenderService {
             return null;
         }
         return new RenderRouteDTO(
-                route.lineId(), route.orderId(), coalesce(metrics.plate(), route.plate()), metrics.vehicleId(),
+                route.lineId(), route.orderId(), route.businessLineId(),
+                coalesce(metrics.plate(), route.plate()), metrics.vehicleId(),
                 route.from(), route.to(), route.fromCoords(), route.toCoords(), route.coordinates(),
                 metrics.routeLengthKm(), metrics.speedKmh(), route.status(), route.cargo(),
                 metrics.travelDurationMs(), route.pathKey(), route.scope(), route.groupId(), route.role(),

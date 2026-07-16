@@ -49,6 +49,7 @@ public final class RouteDtoConverter {
         return new RenderRouteDTO(
                 order.instanceId(),
                 order.orderId(),
+                businessLineId(order.instanceId(), order.orderId(), order.lineId()),
                 vehicle != null ? vehicle.plate() : null,
                 vehicle != null ? vehicle.carId() : null,
                 fromLoc != null ? fromLoc.name() : null,
@@ -188,22 +189,39 @@ public final class RouteDtoConverter {
             String fromProv = parts.length > 0 ? parts[0] : "000000";
             String toProv = parts.length > 1 ? parts[1] : "000000";
 
-            List<RenderRouteDTO> bucketRoutes = entry.getValue();
-            bucketRoutes.sort(Comparator
+            Map<String, List<RenderRouteDTO>> routesByBusinessLine = new java.util.TreeMap<>();
+            for (RenderRouteDTO route : entry.getValue()) {
+                routesByBusinessLine
+                        .computeIfAbsent(businessLineId(route), ignored -> new ArrayList<>())
+                        .add(route);
+            }
+            routesByBusinessLine.values().forEach(lineRoutes -> lineRoutes.sort(Comparator
                     .comparing(RenderRouteDTO::pathKey, Comparator.nullsLast(String::compareTo))
-                    .thenComparing(RenderRouteDTO::lineId, Comparator.nullsLast(String::compareTo)));
+                    .thenComparing(RenderRouteDTO::lineId, Comparator.nullsLast(String::compareTo))));
 
-            int total = bucketRoutes.size();
+            List<Map.Entry<String, List<RenderRouteDTO>>> businessLines =
+                    new ArrayList<>(routesByBusinessLine.entrySet());
+            int total = businessLines.size();
             int pageCount = (int) Math.ceil((double) total / maxPerGroup);
 
             for (int page = 0; page < pageCount; page++) {
                 int fromIdx = page * maxPerGroup;
                 int toIdx = Math.min(fromIdx + maxPerGroup, total);
-                List<RenderRouteDTO> pageRoutes = bucketRoutes.subList(fromIdx, toIdx);
-
-                List<String> lineIds = pageRoutes.stream()
-                        .map(RenderRouteDTO::lineId)
+                List<Map.Entry<String, List<RenderRouteDTO>>> pageBusinessLines =
+                        businessLines.subList(fromIdx, toIdx);
+                List<String> orderLineIds = pageBusinessLines.stream()
+                        .map(Map.Entry::getKey)
                         .toList();
+                Map<String, List<String>> vehicleLineIdsByOrderLineId = new LinkedHashMap<>();
+                List<RenderRouteDTO> pageRoutes = new ArrayList<>();
+                for (Map.Entry<String, List<RenderRouteDTO>> businessLine : pageBusinessLines) {
+                    List<String> vehicleLineIds = businessLine.getValue().stream()
+                            .map(RenderRouteDTO::lineId)
+                            .toList();
+                    vehicleLineIdsByOrderLineId.put(businessLine.getKey(), vehicleLineIds);
+                    pageRoutes.addAll(businessLine.getValue());
+                }
+                List<String> vehicleLineIds = pageRoutes.stream().map(RenderRouteDTO::lineId).toList();
 
                 // 叶节点身份只由 OD + page 决定；内容变化由 snapshotVersion 表达。
                 String groupId = "rm2:" + fromProv + ":" + toProv + ":page-" + (page + 1);
@@ -223,8 +241,9 @@ public final class RouteDtoConverter {
                         .orElse(null);
 
                 groups.add(new Rm2RouteGroupDTO(
-                        groupId, groupName, globalIndex++, lineIds.size(),
-                        lineIds, fromProv, fromProv, toProv,
+                        groupId, groupName, globalIndex++, orderLineIds.size(),
+                        orderLineIds, vehicleLineIds, Map.copyOf(vehicleLineIdsByOrderLineId),
+                        vehicleLineIds.size(), fromProv, fromProv, toProv,
                         fromProv + ":" + toProv, page,
                         scenario, pathKeyHint
                 ));
@@ -232,6 +251,22 @@ public final class RouteDtoConverter {
         }
 
         return groups;
+    }
+
+    private static String businessLineId(RenderRouteDTO route) {
+        if (route.businessLineId() != null && !route.businessLineId().isBlank()) {
+            return route.businessLineId();
+        }
+        return businessLineId(route.lineId(), route.orderId(), route.lineId());
+    }
+
+    private static String businessLineId(String instanceId, String orderId, String sourceLineId) {
+        if (instanceId != null) {
+            int vehicleSeparator = instanceId.lastIndexOf("::");
+            if (vehicleSeparator > 0) return instanceId.substring(0, vehicleSeparator);
+        }
+        return firstNonBlank(orderId, "unknown-order")
+                + "::" + firstNonBlank(sourceLineId, instanceId, "unknown-line");
     }
 
     /** Builds the province -> direction -> leaf-group rings used by RM2 playback. */
@@ -380,6 +415,7 @@ public final class RouteDtoConverter {
         return new RenderRouteDTO(
                 order.lineId(),
                 order.orderId(),
+                businessLineId(order.lineId(), order.orderId(), order.lineId()),
                 vehicle != null ? vehicle.plate() : null,
                 vehicle != null ? vehicle.carId() : null,
                 fromLoc != null ? fromLoc.name() : null,
@@ -405,6 +441,13 @@ public final class RouteDtoConverter {
 
     private static String safe(String value) {
         return value == null || value.isBlank() ? "" : value.trim();
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return value.trim();
+        }
+        return "";
     }
 
     private static Double normalizedRouteSpeed(Double speedKmh) {

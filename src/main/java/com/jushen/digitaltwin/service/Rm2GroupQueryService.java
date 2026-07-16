@@ -35,7 +35,8 @@ public class Rm2GroupQueryService {
         response.put("snapshotVersion", snapshot.snapshotVersion());
         response.put("scope", "rm2");
         response.put("groupSize", TownRoadRenderService.RM2_GROUP_SIZE);
-        response.put("totalRoutes", snapshot.routes().size());
+        response.put("totalRoutes", snapshot.groups().stream().mapToInt(group -> group.count()).sum());
+        response.put("totalVehicles", snapshot.routes().size());
         if (expectedSnapshotVersion != null && !expectedSnapshotVersion.equals(snapshot.snapshotVersion())) {
             response.put("groups", List.of());
             response.put("mismatch", true);
@@ -85,6 +86,12 @@ public class Rm2GroupQueryService {
         response.put("groupId", groupId);
         response.put("coordinateSystem", "GCJ02");
         response.put("routes", routes);
+        response.put("routeCount", routes.stream()
+                .map(RenderRouteDTO::businessLineId)
+                .filter(lineId -> lineId != null && !lineId.isBlank())
+                .distinct()
+                .count());
+        response.put("vehicleCount", routes.size());
         response.put("positions", positions);
         response.put("positionCount", positions.size());
         response.put("rejected", List.of());
