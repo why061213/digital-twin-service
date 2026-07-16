@@ -237,4 +237,41 @@ class Rm2StableGroupsTest {
         assertEquals("inst-1", g.orderLineIds().get(0));
         assertEquals("440000", g.mapKey());
     }
+
+    @Test
+    void playbackStructureBuildsThreeIndependentRings() {
+        List<NormalizedTownRoadOrder> orders = List.of(
+                makeOrder("a-1", "a-1", "运输中", "440000", "360000",
+                        coords(113, 23, 114, 24), 50, 60, "2026-07-14", "粤A1", 10),
+                makeOrder("a-2", "a-2", "运输中", "440000", "330000",
+                        coords(113, 23, 120, 30), 60, 60, "2026-07-14", "粤A2", 10),
+                makeOrder("b-1", "b-1", "运输中", "360000", "360000",
+                        coords(115, 28, 116, 29), 30, 50, "2026-07-14", "赣A1", 10)
+        );
+        List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(
+                RouteDtoConverter.shortHaulOrdersToRoutes(orders), 1);
+        Rm2ChainStructureDTO structure = RouteDtoConverter.buildRm2ChainStructure(groups);
+
+        assertEquals(groups.size(), structure.leafGroupIds().size());
+        assertEquals("rm2:province:360000", structure.headNodeId());
+        assertEquals(2, structure.nodes().stream().filter(node -> "province".equals(node.nodeType())).count());
+        assertEquals(3, structure.nodes().stream().filter(node -> "direction".equals(node.nodeType())).count());
+        assertEquals(3, structure.nodes().stream().filter(node -> "group".equals(node.nodeType())).count());
+        structure.nodes().forEach(node -> assertNotNull(node.nextNodeId()));
+    }
+
+    @Test
+    void leafGroupIdStaysStableWhenPageContentChanges() {
+        NormalizedTownRoadOrder first = makeOrder("stable-a", "o-a", "运输中", "440000", "360000",
+                coords(113, 23, 114, 24), 50, 60, "2026-07-14", "粤A1", 10);
+        NormalizedTownRoadOrder replacement = makeOrder("stable-b", "o-b", "运输中", "440000", "360000",
+                coords(113.2, 23.2, 114.2, 24.2), 55, 65, "2026-07-15", "粤A2", 11);
+
+        String firstGroupId = RouteDtoConverter.buildStableGroups(
+                RouteDtoConverter.shortHaulOrdersToRoutes(List.of(first)), 3).get(0).groupId();
+        String replacementGroupId = RouteDtoConverter.buildStableGroups(
+                RouteDtoConverter.shortHaulOrdersToRoutes(List.of(replacement)), 3).get(0).groupId();
+        assertEquals(firstGroupId, replacementGroupId);
+        assertEquals("rm2:440000:360000:page-1", firstGroupId);
+    }
 }

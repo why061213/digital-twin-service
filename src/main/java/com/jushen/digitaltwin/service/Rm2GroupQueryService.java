@@ -26,13 +26,34 @@ public class Rm2GroupQueryService {
     }
 
     public Map<String, Object> listGroups() {
+        return listGroups(null);
+    }
+
+    public Map<String, Object> listGroups(String expectedSnapshotVersion) {
         Rm2Snapshot snapshot = renderService.getLatestRm2Snapshot();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("snapshotVersion", snapshot.snapshotVersion());
         response.put("scope", "rm2");
         response.put("groupSize", TownRoadRenderService.RM2_GROUP_SIZE);
         response.put("totalRoutes", snapshot.routes().size());
+        if (expectedSnapshotVersion != null && !expectedSnapshotVersion.equals(snapshot.snapshotVersion())) {
+            response.put("groups", List.of());
+            response.put("mismatch", true);
+            return response;
+        }
         response.put("groups", snapshot.groups());
+        return response;
+    }
+
+    public Map<String, Object> listStructure() {
+        Rm2Snapshot snapshot = renderService.getLatestRm2Snapshot();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("scope", "rm2");
+        response.put("snapshotVersion", snapshot.snapshotVersion());
+        response.put("headNodeId", snapshot.chainStructure().headNodeId());
+        response.put("nodes", snapshot.chainStructure().nodes());
+        response.put("leafGroupIds", snapshot.chainStructure().leafGroupIds());
+        response.put("nodeCount", snapshot.chainStructure().nodes().size());
         return response;
     }
 

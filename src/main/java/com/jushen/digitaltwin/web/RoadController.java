@@ -50,12 +50,23 @@ public class RoadController {
     @GetMapping("/groups")
     public Map<String, Object> listRouteGroups(
             @RequestParam(required = false) String strategy,
-            @RequestParam(defaultValue = "rm1") String scope
+            @RequestParam(defaultValue = "rm1") String scope,
+            @RequestParam(required = false) String snapshotVersion
     ) {
         if ("rm2".equalsIgnoreCase(scope)) {
-            return rm2GroupQueryService.listGroups();
+            return rm2GroupQueryService.listGroups(snapshotVersion);
         }
         return routePushService.listRouteGroups(strategy);
+    }
+
+    @GetMapping("/groups/structure")
+    public Map<String, Object> listRouteGroupStructure(
+            @RequestParam(defaultValue = "rm1") String scope
+    ) {
+        if (!"rm2".equalsIgnoreCase(scope)) {
+            return Map.of("scope", "rm1", "nodes", List.of(), "leafGroupIds", List.of());
+        }
+        return rm2GroupQueryService.listStructure();
     }
 
     @GetMapping("/groups/{groupId}/routes")

@@ -205,9 +205,8 @@ public final class RouteDtoConverter {
                         .map(RenderRouteDTO::lineId)
                         .toList();
 
-                // groupId = OD + page + 内容 hash
-                String contentHash = Integer.toHexString(lineIds.hashCode());
-                String groupId = "rm2:" + fromProv + ":" + toProv + ":page-" + (page + 1) + ":" + contentHash;
+                // 叶节点身份只由 OD + page 决定；内容变化由 snapshotVersion 表达。
+                String groupId = "rm2:" + fromProv + ":" + toProv + ":page-" + (page + 1);
 
                 String groupLabel = provinceLabel(fromProv) + " → " + provinceLabel(toProv);
                 String groupName = pageCount > 1
@@ -225,12 +224,82 @@ public final class RouteDtoConverter {
 
                 groups.add(new Rm2RouteGroupDTO(
                         groupId, groupName, globalIndex++, lineIds.size(),
-                        lineIds, fromProv, scenario, pathKeyHint
+                        lineIds, fromProv, fromProv, toProv,
+                        fromProv + ":" + toProv, page,
+                        scenario, pathKeyHint
                 ));
             }
         }
 
         return groups;
+    }
+
+    /** Builds the province -> direction -> leaf-group rings used by RM2 playback. */
+    public static Rm2ChainStructureDTO buildRm2ChainStructure(List<Rm2RouteGroupDTO> groups) {
+        if (groups == null || groups.isEmpty()) return Rm2ChainStructureDTO.empty();
+
+        Map<String, Map<String, List<Rm2RouteGroupDTO>>> provinces = new java.util.TreeMap<>();
+        for (Rm2RouteGroupDTO group : groups) {
+            provinces
+                    .computeIfAbsent(group.fromProvinceKey(), ignored -> new java.util.TreeMap<>())
+                    .computeIfAbsent(group.toProvinceKey(), ignored -> new ArrayList<>())
+                    .add(group);
+        }
+
+        List<String> provinceIds = provinces.keySet().stream()
+                .map(key -> "rm2:province:" + key)
+                .toList();
+        List<Rm2ChainNodeDTO> nodes = new ArrayList<>();
+        List<String> leafGroupIds = new ArrayList<>();
+        int provinceIndex = 0;
+
+        for (Map.Entry<String, Map<String, List<Rm2RouteGroupDTO>>> provinceEntry : provinces.entrySet()) {
+            String fromProvince = provinceEntry.getKey();
+            String provinceId = "rm2:province:" + fromProvince;
+            List<String> directionIds = provinceEntry.getValue().keySet().stream()
+                    .map(toProvince -> "rm2:direction:" + fromProvince + ":" + toProvince)
+                    .toList();
+            nodes.add(new Rm2ChainNodeDTO(
+                    provinceId, "province", "rm2:root", fromProvince,
+                    provinceLabel(fromProvince), provinceIndex,
+                    provinceIds.get((provinceIndex + 1) % provinceIds.size()),
+                    directionIds, null
+            ));
+            provinceIndex++;
+
+            int directionIndex = 0;
+            for (Map.Entry<String, List<Rm2RouteGroupDTO>> directionEntry : provinceEntry.getValue().entrySet()) {
+                String toProvince = directionEntry.getKey();
+                String directionId = "rm2:direction:" + fromProvince + ":" + toProvince;
+                List<Rm2RouteGroupDTO> directionGroups = directionEntry.getValue().stream()
+                        .sorted(Comparator.comparingInt(Rm2RouteGroupDTO::pageIndex)
+                                .thenComparing(Rm2RouteGroupDTO::groupId))
+                        .toList();
+                List<String> groupIds = directionGroups.stream().map(Rm2RouteGroupDTO::groupId).toList();
+                nodes.add(new Rm2ChainNodeDTO(
+                        directionId, "direction", provinceId,
+                        fromProvince + ":" + toProvince,
+                        provinceLabel(fromProvince) + " → " + provinceLabel(toProvince),
+                        directionIndex,
+                        directionIds.get((directionIndex + 1) % directionIds.size()),
+                        groupIds, null
+                ));
+                directionIndex++;
+
+                for (int groupIndex = 0; groupIndex < directionGroups.size(); groupIndex++) {
+                    Rm2RouteGroupDTO group = directionGroups.get(groupIndex);
+                    nodes.add(new Rm2ChainNodeDTO(
+                            group.groupId(), "group", directionId, group.groupId(),
+                            group.groupName(), groupIndex,
+                            groupIds.get((groupIndex + 1) % groupIds.size()),
+                            List.of(), group.groupId()
+                    ));
+                    leafGroupIds.add(group.groupId());
+                }
+            }
+        }
+
+        return new Rm2ChainStructureDTO(provinceIds.get(0), List.copyOf(nodes), List.copyOf(leafGroupIds));
     }
 
     private static String commonPrefix(String a, String b) {

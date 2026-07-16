@@ -37,7 +37,10 @@ public class TownRoadRenderService {
     private final TownRoadExternalOrderProperties externalOrderProperties;
     private Map<String, Object> lastResult = Map.of();
     /** RM2 原子快照 */
-    private volatile Rm2Snapshot latestRm2Snapshot = new Rm2Snapshot("0", Instant.now(), List.of(), List.of(), Map.of(), Map.of());
+    private volatile Rm2Snapshot latestRm2Snapshot = new Rm2Snapshot(
+            "0", Instant.now(), List.of(), List.of(),
+            com.jushen.digitaltwin.dto.Rm2ChainStructureDTO.empty(), Map.of(), Map.of()
+    );
     /** 上一版 groupId 集合，用于计算 removed */
     private volatile Set<String> previousRm2GroupIds = Set.of();
     /** 上一版 lineId→groupId 索引，用于反查 changedGroupIds */
@@ -126,6 +129,8 @@ public class TownRoadRenderService {
                 .filter(this::isPublishableRm2Route)
                 .toList();
         List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, RM2_GROUP_SIZE);
+        com.jushen.digitaltwin.dto.Rm2ChainStructureDTO rm2ChainStructure =
+                RouteDtoConverter.buildRm2ChainStructure(rm2Groups);
 
         Map<String, RenderRouteDTO> routeByLineId = new LinkedHashMap<>();
         for (RenderRouteDTO r : rm2Routes) routeByLineId.put(r.lineId(), r);
@@ -164,7 +169,7 @@ public class TownRoadRenderService {
             List<RenderRouteDTO> assignedRoutes = routesByGroupId.values().stream()
                     .flatMap(List::stream).toList();
             this.latestRm2Snapshot = new Rm2Snapshot(version, Instant.now(),
-                    List.copyOf(assignedRoutes), List.copyOf(rm2Groups),
+                    List.copyOf(assignedRoutes), List.copyOf(rm2Groups), rm2ChainStructure,
                     immutableRoutesByGroupId, immutableGroupIdByLineId);
             routePushService.syncRm2PositionGroups(immutableGroupIdByLineId, version);
 

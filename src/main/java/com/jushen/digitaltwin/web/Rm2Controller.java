@@ -16,8 +16,15 @@ public class Rm2Controller {
     }
 
     @GetMapping("/groups")
-    public Map<String, Object> listGroups() {
-        return queryService.listGroups();
+    public Map<String, Object> listGroups(
+            @RequestParam(required = false) String snapshotVersion
+    ) {
+        return queryService.listGroups(snapshotVersion);
+    }
+
+    @GetMapping("/groups/structure")
+    public Map<String, Object> listStructure() {
+        return queryService.listStructure();
     }
 
     @GetMapping("/groups/{groupId}/routes")
