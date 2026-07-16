@@ -19,6 +19,7 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 public class RealtimeWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(RealtimeWebSocketHandler.class);
+    private static final String VEHICLE_POSITION_SCOPE_ATTRIBUTE = "vehiclePositionScope";
 
     private final Set<WebSocketSession> sessions = new CopyOnWriteArraySet<>();
     private final ObjectMapper objectMapper;
@@ -66,6 +67,10 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
                         "type", "pong",
                         "serverTime", System.currentTimeMillis()
                 )));
+                return;
+            }
+            if ("vehicle_position_subscription".equals(node.path("type").asText())) {
+                handleVehiclePositionSubscription(session, node);
             }
         } catch (Exception e) {
             log.debug("Ignored non-dashboard websocket client message: {}", message.getPayload(), e);
@@ -86,8 +91,46 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    public void broadcastVehiclePositions(String scope, Object message) {
+        String payload;
+        try {
+            payload = objectMapper.writeValueAsString(message);
+        } catch (JsonProcessingException e) {
+            log.warn("Failed to serialize websocket message", e);
+            return;
+        }
+
+        for (WebSocketSession session : sessions) {
+            if (!scope.equals(session.getAttributes().get(VEHICLE_POSITION_SCOPE_ATTRIBUTE))) {
+                continue;
+            }
+            send(session, payload);
+        }
+    }
+
+    public boolean hasVehiclePositionSubscribers(String scope) {
+        for (WebSocketSession session : sessions) {
+            if (session.isOpen() && scope.equals(session.getAttributes().get(VEHICLE_POSITION_SCOPE_ATTRIBUTE))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public int onlineCount() {
         return sessions.size();
+    }
+
+    private void handleVehiclePositionSubscription(WebSocketSession session, JsonNode node) {
+        boolean active = node.path("active").asBoolean(false);
+        String scope = node.path("scope").asText("");
+        if (active && ("rm1".equals(scope) || "rm2".equals(scope))) {
+            session.getAttributes().put(VEHICLE_POSITION_SCOPE_ATTRIBUTE, scope);
+            log.debug("Dashboard websocket subscribed vehicle positions: session={}, scope={}", session.getId(), scope);
+            return;
+        }
+        session.getAttributes().remove(VEHICLE_POSITION_SCOPE_ATTRIBUTE);
+        log.debug("Dashboard websocket unsubscribed vehicle positions: session={}", session.getId());
     }
 
     private void send(WebSocketSession session, String payload) {

@@ -1118,19 +1118,24 @@ public class RoutePushService {
     private void broadcastChangedPositionFrames(long now) {
         Map<RouteScope, List<Map<String, Object>>> positionsByScope = new LinkedHashMap<>();
         for (ScheduledRoute route : activeRoutes.values()) {
+            String scopeName = scopeName(route.scope());
+            if (!webSocketHandler.hasVehiclePositionSubscribers(scopeName)) {
+                continue;
+            }
             Map<String, Object> position = positionMessage(route, now);
             if (!shouldBroadcastPosition(position, now)) continue;
             positionsByScope.computeIfAbsent(route.scope(), ignored -> new ArrayList<>()).add(position);
         }
         positionsByScope.forEach((scope, positions) -> {
             if (positions.isEmpty()) return;
+            String scopeName = scopeName(scope);
             Map<String, Object> frame = new LinkedHashMap<>();
             frame.put("type", "vehicle_positions");
-            frame.put("scope", scopeName(scope));
+            frame.put("scope", scopeName);
             frame.put("serverTime", Instant.ofEpochMilli(now).toString());
             frame.put("snapshotVersion", scope == RouteScope.TOWN ? rm2SnapshotVersion : "");
             frame.put("positions", positions);
-            webSocketHandler.broadcast(frame);
+            webSocketHandler.broadcastVehiclePositions(scopeName, frame);
         });
     }
 
