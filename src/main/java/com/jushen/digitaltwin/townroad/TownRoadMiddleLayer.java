@@ -31,6 +31,7 @@ public class TownRoadMiddleLayer {
     private final ObjectMapper objectMapper;
     private final ProvinceRoadGraph provinceRoadGraph;
     private final CityRoadGraph cityRoadGraph;
+    private final DistrictRoadGraph districtRoadGraph;
     private final ProvinceCodeResolver provinceCodeResolver;
     private final TownRoadExternalOrderProperties properties;
     private final TownRoadCoordinateResolver coordinateResolver;
@@ -62,6 +63,7 @@ public class TownRoadMiddleLayer {
             ObjectMapper objectMapper,
             ProvinceRoadGraph provinceRoadGraph,
             CityRoadGraph cityRoadGraph,
+            DistrictRoadGraph districtRoadGraph,
             ProvinceCodeResolver provinceCodeResolver,
             TownRoadExternalOrderProperties properties,
             TownRoadCoordinateResolver coordinateResolver
@@ -69,6 +71,7 @@ public class TownRoadMiddleLayer {
         this.objectMapper = objectMapper;
         this.provinceRoadGraph = provinceRoadGraph;
         this.cityRoadGraph = cityRoadGraph;
+        this.districtRoadGraph = districtRoadGraph;
         this.provinceCodeResolver = provinceCodeResolver;
         this.properties = properties;
         this.coordinateResolver = coordinateResolver;
@@ -452,7 +455,14 @@ public class TownRoadMiddleLayer {
         List<String> cityNames = cityPath.stream()
                 .map(cityRoadGraph::cityName)
                 .toList();
-        List<double[]> routeCoordinates = routeCoordinatesFor(resolvedFrom, resolvedTo, cityPath);
+        Set<String> allowedProvinceCodes = allowedProvinceCodes(provinceCandidatePaths);
+        List<String> districtPath = districtRoadGraph.constrainedPath(
+                resolvedFrom,
+                resolvedTo,
+                cityPath,
+                allowedProvinceCodes
+        );
+        List<double[]> routeCoordinates = routeCoordinatesFor(resolvedFrom, resolvedTo, cityPath, districtPath);
         double routeLengthKm = pathLengthKm(routeCoordinates);
         Double speedKmh = raw.vehicle() == null ? null : raw.vehicle().speedKmh();
 
@@ -506,6 +516,7 @@ public class TownRoadMiddleLayer {
                 "fromCoords", coordsForSignature(resolvedFrom.coords()),
                 "toCoords", coordsForSignature(resolvedTo.coords()),
                 "cityPath", cityPath,
+                "districtPath", districtPath,
                 "routeCoordinates", routeCoordinates.stream().map(this::coordsForSignature).toList(),
                 "provincePathKeys", provincePathKeys,
                 "upToDate", Boolean.TRUE.equals(raw.upToDate())
@@ -962,14 +973,31 @@ public class TownRoadMiddleLayer {
     private List<double[]> routeCoordinatesFor(
             ExternalOrderRecord.Location from,
             ExternalOrderRecord.Location to,
-            List<String> cityPath
+            List<String> cityPath,
+            List<String> districtPath
     ) {
         List<double[]> coordinates = new ArrayList<>();
         if (hasCoords(from == null ? null : from.coords())) {
             coordinates.add(new double[]{from.coords()[0], from.coords()[1]});
         }
 
-        if (cityPath != null && cityPath.size() > 2) {
+        boolean districtWaypointAdded = false;
+        if (districtPath != null && districtPath.size() > 2) {
+            for (int i = 1; i < districtPath.size() - 1; i++) {
+                DistrictRoadGraph.DistrictInfo districtInfo = districtRoadGraph.getDistrictInfo(districtPath.get(i));
+                if (districtInfo == null) continue;
+                double[] coords = coordinateResolver.resolveDistrictCenter(
+                        districtInfo.provinceName(),
+                        districtInfo.name()
+                );
+                if (hasCoords(coords)) {
+                    addDistinctCoordinate(coordinates, coords);
+                    districtWaypointAdded = true;
+                }
+            }
+        }
+
+        if (!districtWaypointAdded && cityPath != null && cityPath.size() > 2) {
             for (int i = 1; i < cityPath.size() - 1; i++) {
                 CityRoadGraph.CityInfo cityInfo = cityRoadGraph.getCityInfo(cityPath.get(i));
                 if (cityInfo == null) continue;

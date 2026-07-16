@@ -146,6 +146,14 @@ public class CityRoadGraph {
     }
 
     public boolean hasCity(String cityCode) { return graph.containsKey(cityCode); }
+    public Set<String> cityCodes() { return Set.copyOf(graph.keySet()); }
+    public List<String> neighboringCityCodes(String cityCode) {
+        return graph.getOrDefault(cityCode, List.of()).stream()
+                .map(Edge::to)
+                .distinct()
+                .sorted()
+                .toList();
+    }
     public CityInfo getCityInfo(String cityCode) { return cityInfo.get(cityCode); }
     public String cityName(String cityCode) {
         CityInfo info = cityInfo.get(cityCode);

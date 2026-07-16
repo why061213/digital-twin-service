@@ -134,6 +134,20 @@ public class TownRoadCoordinateResolver {
         return amapClient.geocode(safeProvince, safeCity, null, safeCity);
     }
 
+    public double[] resolveDistrictCenter(String province, String district) {
+        String safeProvince = trimToNull(province);
+        String safeDistrict = trimToNull(district);
+        if (safeDistrict == null) return null;
+
+        double[] resolved = localCoordDb.resolve(safeProvince, null, safeDistrict, safeDistrict);
+        if (resolved != null) return resolved;
+
+        resolved = localCoordDb.get(safeDistrict);
+        if (resolved != null) return resolved;
+
+        return amapClient.geocode(safeProvince, null, safeDistrict, safeDistrict);
+    }
+
     private double[] tryLocalDb(String p, String c, String d, String n) {
         if (p != null && n != null) {
             double[] r = localCoordDb.resolve(p, c, d, n);

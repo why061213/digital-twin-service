@@ -23,6 +23,8 @@ public class DistrictRoadGraph {
         initDistrictData();
         buildIntraCityLinks();
         buildBorderChainLinks();
+        buildMaritimeLinks();
+        buildCityTopologyFallbackLinks();
     }
 
     // ================================================================
@@ -30,13 +32,19 @@ public class DistrictRoadGraph {
     // ================================================================
 
     public List<String> shortestPath(String startCode, String targetCode) {
+        return shortestPath(startCode, targetCode, Set.of());
+    }
+
+    public List<String> shortestPath(String startCode, String targetCode, Set<String> allowedProvinceCodes) {
         if (isBlank(startCode) || isBlank(targetCode)) return List.of();
         if (startCode.equals(targetCode)) return List.of(startCode);
         if (!graph.containsKey(startCode) || !graph.containsKey(targetCode)) return List.of();
 
         Map<String, Integer> distance = new HashMap<>();
         Map<String, String> previous = new HashMap<>();
-        PriorityQueue<PathNode> queue = new PriorityQueue<>(Comparator.comparingInt(PathNode::cost));
+        PriorityQueue<PathNode> queue = new PriorityQueue<>(
+                Comparator.comparingInt(PathNode::cost).thenComparing(PathNode::code)
+        );
 
         distance.put(startCode, 0);
         queue.add(new PathNode(startCode, 0));
@@ -45,7 +53,10 @@ public class DistrictRoadGraph {
             PathNode current = queue.poll();
             if (current.cost() > distance.getOrDefault(current.code(), Integer.MAX_VALUE)) continue;
             if (current.code().equals(targetCode)) break;
-            for (Edge edge : graph.getOrDefault(current.code(), List.of())) {
+            List<Edge> neighbors = new ArrayList<>(graph.getOrDefault(current.code(), List.of()));
+            neighbors.sort(Comparator.comparing(Edge::to));
+            for (Edge edge : neighbors) {
+                if (!provinceAllowed(edge.to(), allowedProvinceCodes)) continue;
                 int nextCost = current.cost() + edge.cost();
                 if (nextCost < distance.getOrDefault(edge.to(), Integer.MAX_VALUE)) {
                     distance.put(edge.to(), nextCost);
@@ -66,6 +77,46 @@ public class DistrictRoadGraph {
     public String districtName(String code) {
         DistrictInfo info = districtInfo.get(code);
         return info == null ? code : info.name();
+    }
+
+    public String districtCodeFor(ExternalOrderRecord.Location location) {
+        if (location == null) return "";
+
+        String adcode = safe(location.adcode());
+        if (adcode.length() >= 6) {
+            String direct = adcode.substring(0, 6);
+            if (graph.containsKey(direct)) return direct;
+        }
+
+        String cityCode = cityGraph.cityCodeFor(location);
+        return representativeDistrict(cityCode);
+    }
+
+    /**
+     * 在省级候选走廊内细化城市路径。人工边境链和海运通道成本更低，
+     * 普通城市拓扑仅负责保证全国可达，不会抢占边境约束路径。
+     */
+    public List<String> constrainedPath(
+            ExternalOrderRecord.Location from,
+            ExternalOrderRecord.Location to,
+            List<String> cityPath,
+            Set<String> allowedProvinceCodes
+    ) {
+        String startCode = districtCodeFor(from);
+        String targetCode = districtCodeFor(to);
+        List<String> path = shortestPath(startCode, targetCode, allowedProvinceCodes);
+        if (!path.isEmpty()) return path;
+
+        LinkedHashSet<String> fallback = new LinkedHashSet<>();
+        if (!startCode.isBlank()) fallback.add(startCode);
+        if (cityPath != null) {
+            for (String cityCode : cityPath) {
+                String representative = representativeDistrict(cityCode);
+                if (!representative.isBlank()) fallback.add(representative);
+            }
+        }
+        if (!targetCode.isBlank()) fallback.add(targetCode);
+        return List.copyOf(fallback);
     }
 
     // ================================================================
@@ -121,6 +172,11 @@ public class DistrictRoadGraph {
         addDistricts("451400", new String[][]{{"451402","江州区"},{"451421","扶绥县"},{"451422","宁明县"},{"451423","龙州县"},{"451424","大新县"},{"451425","天等县"},{"451481","凭祥市"}});
         addDistricts("451000", new String[][]{{"451002","右江区"},{"451003","田阳区"},{"451022","田东县"},{"451024","德保县"},{"451026","那坡县"},{"451027","凌云县"},{"451028","乐业县"},{"451029","田林县"},{"451030","西林县"},{"451031","隆林各族自治县"},{"451081","靖西市"},{"451082","平果市"}});
         addDistricts("450600", new String[][]{{"450602","港口区"},{"450603","防城区"},{"450621","上思县"},{"450681","东兴市"}});
+
+        // ═══ 琼州海峡合法通道（避免从城市中心直接“凝冰渡海”） ═══
+        addDistricts("440800", new String[][]{{"440802","赤坎区"},{"440803","霞山区"},{"440804","坡头区"},{"440811","麻章区"},{"440823","遂溪县"},{"440825","徐闻县"},{"440881","廉江市"},{"440882","雷州市"},{"440883","吴川市"}});
+        addDistricts("450500", new String[][]{{"450502","海城区"},{"450503","银海区"},{"450512","铁山港区"},{"450521","合浦县"}});
+        addDistricts("460100", new String[][]{{"460105","秀英区"},{"460106","龙华区"},{"460107","琼山区"},{"460108","美兰区"}});
 
         // ═══ 兜底：其余内陆城市单节点 ═══
         fillRemainingCities();
@@ -199,6 +255,27 @@ public class DistrictRoadGraph {
         chain("451000","451400"); chain("451400","450600");
     }
 
+    /** 只允许经徐闻/北海到海口的明确海运走廊跨越琼州海峡。 */
+    private void buildMaritimeLinks() {
+        link("440825", "460105", 1);
+        link("450502", "460105", 2);
+    }
+
+    /**
+     * 将区县图接入现有城市图。高成本连接只作为可达性兜底，低成本的边境链
+     * 与海运通道会被 Dijkstra 优先选择。
+     */
+    private void buildCityTopologyFallbackLinks() {
+        for (String cityCode : cityGraph.cityCodes()) {
+            String from = representativeDistrict(cityCode);
+            if (from.isBlank()) continue;
+            for (String neighborCityCode : cityGraph.neighboringCityCodes(cityCode)) {
+                String to = representativeDistrict(neighborCityCode);
+                if (!to.isBlank()) link(from, to, 100);
+            }
+        }
+    }
+
     /** 连接两个边境城市：前城最后一个区县 ↔ 后城第一个区县 */
     private void chain(String cityA, String cityB) {
         List<String> a = cityToDistricts.get(cityA);
@@ -232,11 +309,29 @@ public class DistrictRoadGraph {
     }
 
     private void link(String a, String b, int cost) {
-        graph.computeIfAbsent(a, k -> new ArrayList<>()).add(new Edge(b, cost));
-        graph.computeIfAbsent(b, k -> new ArrayList<>()).add(new Edge(a, cost));
+        addDirectedEdge(a, b, cost);
+        addDirectedEdge(b, a, cost);
+    }
+
+    private void addDirectedEdge(String from, String to, int cost) {
+        List<Edge> edges = graph.computeIfAbsent(from, ignored -> new ArrayList<>());
+        boolean exists = edges.stream().anyMatch(edge -> edge.to().equals(to) && edge.cost() <= cost);
+        if (!exists) edges.add(new Edge(to, cost));
+    }
+
+    private String representativeDistrict(String cityCode) {
+        List<String> districts = cityToDistricts.get(cityCode);
+        return districts == null || districts.isEmpty() ? "" : districts.get(0);
+    }
+
+    private boolean provinceAllowed(String districtCode, Set<String> allowedProvinceCodes) {
+        if (allowedProvinceCodes == null || allowedProvinceCodes.isEmpty()) return true;
+        DistrictInfo info = districtInfo.get(districtCode);
+        return info != null && allowedProvinceCodes.contains(info.provinceCode());
     }
 
     private boolean isBlank(String s) { return s == null || s.isBlank(); }
+    private String safe(String s) { return s == null ? "" : s.trim(); }
 
     private record Edge(String to, int cost) {}
     private record PathNode(String code, int cost) {}
