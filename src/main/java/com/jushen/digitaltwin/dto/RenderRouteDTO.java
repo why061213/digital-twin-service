@@ -42,6 +42,10 @@ public record RenderRouteDTO(
         String status,
         /** 货物描述 */
         String cargo,
+        /** 货物重量 */
+        Double cargoWeight,
+        /** 重量单位 */
+        String cargoUnit,
         /** 预计运输时长（毫秒） */
         Long travelDurationMs,
 

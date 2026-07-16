@@ -48,11 +48,22 @@ public record ExternalOrderRecord(
     public record Vehicle(
             String plate,
             String carId,
+            String cargo,
             Double cargoWeight,
             String cargoUnit,
             double[] currentCoords,
             Double speedKmh
     ) {
+        public Vehicle(
+                String plate,
+                String carId,
+                Double cargoWeight,
+                String cargoUnit,
+                double[] currentCoords,
+                Double speedKmh
+        ) {
+            this(plate, carId, null, cargoWeight, cargoUnit, currentCoords, speedKmh);
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

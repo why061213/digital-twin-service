@@ -31,7 +31,7 @@ class Rm2StableGroupsTest {
                 coordinates.get(coordinates.size() - 1)
         );
         ExternalOrderRecord.Vehicle vehicle = new ExternalOrderRecord.Vehicle(
-                plate, "car-" + instanceId, cargoWeight, "吨",
+                plate, "car-" + instanceId, "铝锭", cargoWeight, "吨",
                 coordinates.get(0), speedKmh
         );
 
@@ -234,6 +234,9 @@ class Rm2StableGroupsTest {
         List<RenderRouteDTO> routes = RouteDtoConverter.shortHaulOrdersToRoutes(orders);
         List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(routes, 12);
 
+        assertEquals("铝锭", routes.get(0).cargo());
+        assertEquals(18.0, routes.get(0).cargoWeight());
+        assertEquals("吨", routes.get(0).cargoUnit());
         assertEquals(1, groups.size());
         Rm2RouteGroupDTO g = groups.get(0);
         assertEquals(1, g.count());

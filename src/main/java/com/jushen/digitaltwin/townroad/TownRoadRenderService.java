@@ -146,7 +146,7 @@ public class TownRoadRenderService {
                         route.lineId(), route.orderId(), route.businessLineId(), route.plate(), route.vehicleId(),
                         route.from(), route.to(), route.fromCoords(), route.toCoords(),
                         route.coordinates(), route.routeLengthKm(), route.speedKmh(),
-                        route.status(), route.cargo(), route.travelDurationMs(),
+                        route.status(), route.cargo(), route.cargoWeight(), route.cargoUnit(), route.travelDurationMs(),
                         route.pathKey(), route.scope(), group.groupId(), route.role(),
                         route.coordinateSystem(), route.updatedAt(), route.routeSignature(),
                         route.meta()
@@ -569,6 +569,7 @@ public class TownRoadRenderService {
                 coalesce(metrics.plate(), route.plate()), metrics.vehicleId(),
                 route.from(), route.to(), route.fromCoords(), route.toCoords(), route.coordinates(),
                 metrics.routeLengthKm(), metrics.speedKmh(), route.status(), route.cargo(),
+                route.cargoWeight(), route.cargoUnit(),
                 metrics.travelDurationMs(), route.pathKey(), route.scope(), route.groupId(), route.role(),
                 route.coordinateSystem(), route.updatedAt(), route.routeSignature(), route.meta()
         );

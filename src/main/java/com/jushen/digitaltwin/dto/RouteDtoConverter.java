@@ -38,7 +38,7 @@ public final class RouteDtoConverter {
                 && order.provincePaths().get(0).size() <= 3;
         String scope = isShortHaul ? "rm2" : "rm1";
 
-        String cargo = buildCargo(vehicle);
+        String cargo = vehicle != null ? safe(vehicle.cargo()) : null;
         String fromAdcode = fromLoc != null ? safe(fromLoc.adcode()) : "000000";
         String toAdcode = toLoc != null ? safe(toLoc.adcode()) : "000000";
         String pathKey = RenderRouteDTO.buildStablePathKey(scope, fromAdcode, toAdcode, order.routeCoordinates());
@@ -61,6 +61,8 @@ public final class RouteDtoConverter {
                 speedKmh,
                 order.status(),
                 cargo,
+                vehicle != null ? vehicle.cargoWeight() : null,
+                vehicle != null ? vehicle.cargoUnit() : null,
                 travelDurationMs,
                 pathKey,
                 scope,
@@ -396,13 +398,6 @@ public final class RouteDtoConverter {
     // 内部辅助
     // ---------------------------------------------------------------
 
-    private static String buildCargo(ExternalOrderRecord.Vehicle vehicle) {
-        if (vehicle == null) return null;
-        if (vehicle.cargoWeight() == null) return null;
-        String unit = vehicle.cargoUnit() != null ? vehicle.cargoUnit() : "吨";
-        return vehicle.cargoWeight() + unit;
-    }
-
     private static Map<String, Object> buildMeta(NormalizedTownRoadOrder order) {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("groupName", order.groupName());
@@ -454,7 +449,9 @@ public final class RouteDtoConverter {
                 order.routeLengthKm(),
                 speedKmh,
                 order.status(),
-                buildCargo(vehicle),
+                vehicle != null ? safe(vehicle.cargo()) : null,
+                vehicle != null ? vehicle.cargoWeight() : null,
+                vehicle != null ? vehicle.cargoUnit() : null,
                 travelDurationMs(order.routeLengthKm(), speedKmh),
                 pathKey,
                 "rm2",
