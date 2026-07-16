@@ -60,6 +60,7 @@ com\jushen\digitaltwin\service\WarehouseDataProvider.class
 com\jushen\digitaltwin\externalorder\ExternalOrderProperties.class
 com\jushen\digitaltwin\externalorder\ExternalOrderClient.class
 com\jushen\digitaltwin\web\TownRoadMockController.class
+com\jushen\digitaltwin\service\RoutePushService$RouteRuntimeMetrics.class
 com\jushen\digitaltwin\externalorder\ExternalOrderClient$3.class
 com\jushen\digitaltwin\service\RoutePushService$ProviderPosition.class
 com\jushen\digitaltwin\dto\RouteGroupListDTO.class
@@ -69,6 +70,7 @@ com\jushen\digitaltwin\config\CameraProperties.class
 com\jushen\digitaltwin\DigitalTwinBackendApplication.class
 com\jushen\digitaltwin\grouping\TimeWindowGroupingStrategy.class
 com\jushen\digitaltwin\townroad\TownRoadModels$TownRoadRenderState.class
+com\jushen\digitaltwin\dto\Rm2ChainStructureDTO.class
 com\jushen\digitaltwin\townroad\NormalizedTownRoadOrder.class
 com\jushen\digitaltwin\dto\Rm2RouteGroupDTO.class
 com\jushen\digitaltwin\townroad\TownRoadModels$Vehicle.class
@@ -81,6 +83,7 @@ com\jushen\digitaltwin\service\RoutePushService$ScheduledRoute.class
 com\jushen\digitaltwin\townroad\TownRoadDataLayer.class
 com\jushen\digitaltwin\config\WebConfig.class
 com\jushen\digitaltwin\web\HealthController.class
+com\jushen\digitaltwin\townroad\TownRoadRenderService$DeduplicationResult.class
 com\jushen\digitaltwin\config\WebSocketConfig.class
 com\jushen\digitaltwin\grouping\GroupingStrategy.class
 com\jushen\digitaltwin\config\WarehouseProperties$ColumnConfig.class
@@ -100,6 +103,7 @@ com\jushen\digitaltwin\service\RoutePushService$2.class
 com\jushen\digitaltwin\externalorder\ExternalOrderSyncService.class
 com\jushen\digitaltwin\service\RoutePushService$DisplayGroupLock.class
 com\jushen\digitaltwin\townroad\TownRoadModels$TownRoadRenderCommand.class
+com\jushen\digitaltwin\service\Rm2GroupQueryService.class
 com\jushen\digitaltwin\config\SimulationProperties$CityConfig.class
 com\jushen\digitaltwin\townroad\TownRoadModels.class
 com\jushen\digitaltwin\config\DashboardWebSocketProperties.class
@@ -124,6 +128,7 @@ com\jushen\digitaltwin\config\SchedulerConfig.class
 com\jushen\digitaltwin\grouping\AdvancedGroupingStrategy.class
 com\jushen\digitaltwin\townroad\ProvinceCodeResolver.class
 com\jushen\digitaltwin\model\EnergySnapshot.class
+com\jushen\digitaltwin\dto\Rm2ChainNodeDTO.class
 com\jushen\digitaltwin\grouping\RouteGroupingRegistry.class
 com\jushen\digitaltwin\model\City.class
 com\jushen\digitaltwin\townroad\LocalCoordDb$1.class

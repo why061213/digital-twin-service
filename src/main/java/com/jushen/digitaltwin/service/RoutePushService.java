@@ -879,12 +879,24 @@ public class RoutePushService {
             String lineId = entry.getKey();
             ScheduledRoute route = entry.getValue();
             PositionSnapshot snapshot = positionCache.getPosition(lineId);
-            if (snapshot == null || snapshot.stale() || snapshot.position() == null || snapshot.position().length < 2) {
+            if (snapshot == null || snapshot.position() == null || snapshot.position().length < 2) {
                 continue;
             }
 
-            double progress = progressOnCoordinates(route.coordinates(), snapshot.position());
-            double[] projected = coordinateAtProgress(route.coordinates(), progress);
+            // 动态校准间隔：根据路线特征调整
+            double progress = route.travelDurationMs() > 0
+                    ? (double)(now - route.startTime()) / route.travelDurationMs()
+                    : 0;
+            progress = Math.max(0, Math.min(1, progress));
+            long customIntervalMs = positionCache.calibrationIntervalMs(
+                    route.routeLengthKm(), progress, route.speedKmh());
+
+            if (positionCache.isStale(snapshot, customIntervalMs)) {
+                continue;
+            }
+
+            double pathProgress = progressOnCoordinates(route.coordinates(), snapshot.position());
+            double[] projected = coordinateAtProgress(route.coordinates(), pathProgress);
             if (distanceKm(projected, snapshot.position()) > MAX_CALIBRATION_OFF_ROUTE_KM) {
                 log.debug("[PositionCache] ignored off-route calibration: lineId={}, distanceKm={}",
                         lineId, distanceKm(projected, snapshot.position()));
@@ -895,7 +907,7 @@ public class RoutePushService {
                     ? snapshot.speedKmh()
                     : normalizedRouteSpeed(route.speedKmh());
             long travelDurationMs = travelDurationMs(route.routeLengthKm(), effectiveSpeedKmh);
-            long startTime = now - Math.round(progress * travelDurationMs);
+            long startTime = now - Math.round(pathProgress * travelDurationMs);
             ScheduledRoute calibratedRoute = new ScheduledRoute(
                     route.lineId(), route.orderId(), route.orderFamilyId(), route.orderName(),
                     route.orderTotalTons(), route.orderVehicleCount(), route.from(), route.to(),

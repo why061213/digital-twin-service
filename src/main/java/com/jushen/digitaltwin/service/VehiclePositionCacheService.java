@@ -87,7 +87,41 @@ public class VehiclePositionCacheService {
     }
 
     public boolean isStale(PositionSnapshot snapshot) {
-        return System.currentTimeMillis() - snapshot.fetchedAt().toEpochMilli() > staleAfterMs;
+        return isStale(snapshot, staleAfterMs);
+    }
+
+    /** 使用自定义过期阈值判断是否过期 */
+    public boolean isStale(PositionSnapshot snapshot, long customStaleAfterMs) {
+        return System.currentTimeMillis() - snapshot.fetchedAt().toEpochMilli() > customStaleAfterMs;
+    }
+
+    /**
+     * 根据路线特征动态计算位置校准间隔。
+     *
+     * @param routeLengthKm 路线总长度（公里）
+     * @param progress      当前运输进度 0.0~1.0
+     * @param speedKmh      当前速度（km/h）
+     * @return 建议的校准间隔（毫秒），范围 15s ~ 5min
+     */
+    public long calibrationIntervalMs(double routeLengthKm, double progress, double speedKmh) {
+        // 基础间隔：短途高频，长途低频（短途大概率城市道路）
+        long base = routeLengthKm < 50 ? 60_000      // <50km：每 60s
+                  : routeLengthKm < 200 ? 120_000    // 50~200km：每 120s
+                  : 180_000;                          // >200km：每 180s
+
+        // 起止阶段（前 25% 和后 25%）更可能在城市，加倍频率
+        if (progress < 0.25 || progress > 0.75) {
+            base = (long)(base * 0.5);
+        }
+
+        // 速度越慢越像城市路况，加倍频率
+        if (speedKmh < 30) {
+            base = (long)(base * 0.5);
+        } else if (speedKmh < 60) {
+            base = (long)(base * 0.75);
+        }
+
+        return Math.max(15_000, Math.min(base, 300_000)); // 夹钳 15s ~ 5min
     }
 
     public int size() { return cache.size(); }
