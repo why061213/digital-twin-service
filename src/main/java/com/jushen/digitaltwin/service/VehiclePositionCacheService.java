@@ -121,7 +121,7 @@ public class VehiclePositionCacheService {
             base = (long)(base * 0.75);
         }
 
-        return Math.max(15_000, Math.min(base, 300_000)); // 夹钳 15s ~ 5min
+        return Math.max(6_000, Math.min(base, 300_000)); // 夹钳 6s ~ 5min
     }
 
     public int size() { return cache.size(); }

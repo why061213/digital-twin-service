@@ -69,6 +69,8 @@ public class RoutePushService {
     private final Map<String, ScheduledRoute> activeRoutes = new ConcurrentHashMap<>();
     private final Map<String, DisplayGroupLock> displayGroupLocks = new ConcurrentHashMap<>();
     private final Map<String, PositionSample> lastPositionSamples = new ConcurrentHashMap<>();
+    /** 连续零速计数器：key=lineId, value=连续次数 */
+    private final Map<String, Integer> zeroSpeedCounters = new ConcurrentHashMap<>();
     private final Map<String, BroadcastPositionState> lastBroadcastPositions = new ConcurrentHashMap<>();
     private final Map<String, String> rm2GroupIdByLineId = new ConcurrentHashMap<>();
     private final AtomicLong positionSequence = new AtomicLong();
@@ -883,13 +885,24 @@ public class RoutePushService {
                 continue;
             }
 
-            // 动态校准间隔：根据路线特征调整
+            // 动态校准间隔
             double progress = route.travelDurationMs() > 0
                     ? (double)(now - route.startTime()) / route.travelDurationMs()
                     : 0;
             progress = Math.max(0, Math.min(1, progress));
             long customIntervalMs = positionCache.calibrationIntervalMs(
                     route.routeLengthKm(), progress, route.speedKmh());
+
+            // 连续两次速度为0 → 停车状态，降低到30s
+            double snapshotSpeed = snapshot.speedKmh();
+            if (snapshotSpeed <= 0) {
+                int zeroCount = zeroSpeedCounters.merge(lineId, 1, Integer::sum);
+                if (zeroCount >= 2) {
+                    customIntervalMs = Math.max(customIntervalMs, 30_000);
+                }
+            } else {
+                zeroSpeedCounters.remove(lineId);
+            }
 
             if (positionCache.isStale(snapshot, customIntervalMs)) {
                 continue;
