@@ -30,7 +30,7 @@ public class Rm2Controller {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("snapshotVersion", s.snapshotVersion());
         response.put("scope", "rm2");
-        response.put("groupSize", 12);
+        response.put("groupSize", TownRoadRenderService.RM2_GROUP_SIZE);
         response.put("totalRoutes", s.routes().size());
         response.put("groups", s.groups());
         return response;

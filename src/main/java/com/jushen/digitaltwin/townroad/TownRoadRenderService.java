@@ -26,6 +26,7 @@ import java.util.Set;
 public class TownRoadRenderService {
 
     private static final Logger log = LoggerFactory.getLogger(TownRoadRenderService.class);
+    public static final int RM2_GROUP_SIZE = 3;
 
     private final TownRoadExternalOrderClient townRoadExternalOrderClient;
     private final TownRoadMiddleLayer middleLayer;
@@ -124,7 +125,7 @@ public class TownRoadRenderService {
                 .filter(route -> route != null)
                 .filter(this::isPublishableRm2Route)
                 .toList();
-        List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, 12);
+        List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, RM2_GROUP_SIZE);
 
         Map<String, RenderRouteDTO> routeByLineId = new LinkedHashMap<>();
         for (RenderRouteDTO r : rm2Routes) routeByLineId.put(r.lineId(), r);
