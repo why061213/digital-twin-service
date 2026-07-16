@@ -504,6 +504,7 @@ public class RoutePushService {
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
+        response.put("scope", "rm1");
         response.put("groupSize", groupSize);
         response.put("strategy", strategy);
         response.put("totalRoutes", routes.size());
@@ -528,6 +529,7 @@ public class RoutePushService {
                 .toList();
 
         Map<String, Object> response = new LinkedHashMap<>();
+        response.put("scope", "rm1");
         response.put("groupId", groupId);
         response.put("groupSize", groupSize);
         response.put("strategy", strategy);

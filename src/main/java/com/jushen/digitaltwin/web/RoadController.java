@@ -2,6 +2,7 @@ package com.jushen.digitaltwin.web;
 
 import com.jushen.digitaltwin.service.SimulationDataFactory;
 import com.jushen.digitaltwin.service.RoutePushService;
+import com.jushen.digitaltwin.service.Rm2GroupQueryService;
 import com.jushen.digitaltwin.service.VehiclePositionCacheService;
 import com.jushen.digitaltwin.service.PositionSnapshot;
 import com.jushen.digitaltwin.websocket.RealtimeWebSocketHandler;
@@ -21,15 +22,18 @@ public class RoadController {
     private final RoutePushService routePushService;
     private final VehiclePositionCacheService positionCache;
     private final RealtimeWebSocketHandler webSocketHandler;
+    private final Rm2GroupQueryService rm2GroupQueryService;
 
     public RoadController(SimulationDataFactory dataFactory,
                           RoutePushService routePushService,
                           VehiclePositionCacheService positionCache,
-                          RealtimeWebSocketHandler webSocketHandler) {
+                          RealtimeWebSocketHandler webSocketHandler,
+                          Rm2GroupQueryService rm2GroupQueryService) {
         this.dataFactory = dataFactory;
         this.routePushService = routePushService;
         this.positionCache = positionCache;
         this.webSocketHandler = webSocketHandler;
+        this.rm2GroupQueryService = rm2GroupQueryService;
     }
     @PostMapping("/dispatch")
     public Map<String, Object> dispatchRoute() {
@@ -44,15 +48,26 @@ public class RoadController {
     }
 
     @GetMapping("/groups")
-    public Map<String, Object> listRouteGroups(@RequestParam(required = false) String strategy) {
+    public Map<String, Object> listRouteGroups(
+            @RequestParam(required = false) String strategy,
+            @RequestParam(defaultValue = "rm1") String scope
+    ) {
+        if ("rm2".equalsIgnoreCase(scope)) {
+            return rm2GroupQueryService.listGroups();
+        }
         return routePushService.listRouteGroups(strategy);
     }
 
     @GetMapping("/groups/{groupId}/routes")
     public Map<String, Object> listRoutesByGroup(
             @PathVariable String groupId,
-            @RequestParam(required = false) String strategy
+            @RequestParam(required = false) String strategy,
+            @RequestParam(defaultValue = "rm1") String scope,
+            @RequestParam(required = false) String snapshotVersion
     ) {
+        if ("rm2".equalsIgnoreCase(scope)) {
+            return rm2GroupQueryService.listGroupRoutes(groupId, snapshotVersion);
+        }
         return routePushService.listRoutesByGroup(groupId, strategy);
     }
 
