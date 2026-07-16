@@ -116,7 +116,7 @@ public class VehiclePositionCacheService {
 
         // 速度越慢越像城市路况，加倍频率
         if (speedKmh < 30) {
-            base = (long)(base * 0.5);
+            base = (long)(base * 0.2);
         } else if (speedKmh < 60) {
             base = (long)(base * 0.75);
         }
