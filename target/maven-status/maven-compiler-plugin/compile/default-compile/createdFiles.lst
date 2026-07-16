@@ -16,6 +16,7 @@ com\jushen\digitaltwin\externalorder\ExternalOrderRecord$Location.class
 com\jushen\digitaltwin\web\RoadController.class
 com\jushen\digitaltwin\townroad\TownRoadController.class
 com\jushen\digitaltwin\townroad\TownRoadExternalOrderProperties.class
+com\jushen\digitaltwin\townroad\DistrictRoadGraph$Edge.class
 com\jushen\digitaltwin\model\KpiSnapshot.class
 com\jushen\digitaltwin\config\WarehouseProperties$FocusPanelsConfig.class
 com\jushen\digitaltwin\townroad\TownRoadModels$TownRoadDiff.class
@@ -102,12 +103,15 @@ com\jushen\digitaltwin\web\Rm2Controller.class
 com\jushen\digitaltwin\service\RoutePushService$2.class
 com\jushen\digitaltwin\externalorder\ExternalOrderSyncService.class
 com\jushen\digitaltwin\service\RoutePushService$DisplayGroupLock.class
+com\jushen\digitaltwin\townroad\DistrictRoadGraph.class
 com\jushen\digitaltwin\townroad\TownRoadModels$TownRoadRenderCommand.class
 com\jushen\digitaltwin\service\Rm2GroupQueryService.class
 com\jushen\digitaltwin\config\SimulationProperties$CityConfig.class
 com\jushen\digitaltwin\townroad\TownRoadModels.class
 com\jushen\digitaltwin\config\DashboardWebSocketProperties.class
+com\jushen\digitaltwin\townroad\DistrictRoadGraph$PathNode.class
 com\jushen\digitaltwin\grouping\RouteGroupingEngine.class
+com\jushen\digitaltwin\townroad\DistrictRoadGraph$DistrictInfo.class
 com\jushen\digitaltwin\townroad\TownRoadModels$LocationNode.class
 com\jushen\digitaltwin\config\WarehouseProperties.class
 com\jushen\digitaltwin\service\WarehousePushService.class

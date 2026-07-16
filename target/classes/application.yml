@@ -38,7 +38,7 @@ dashboard:
       auto-sync-initial-delay-ms: 5000
       auto-sync-fixed-delay-ms: 900000
       # true 时，仅展示能解析 supplier vehicleId、可进行真实位置批量校准的订单。
-      ignore-orders-without-real-position: true
+      ignore-orders-without-real-position: false
   route:
     # 正式展示使用真实时间尺度的模拟；test 档 36000km/h 仅用于快速演示。
     simulation-profile: real
