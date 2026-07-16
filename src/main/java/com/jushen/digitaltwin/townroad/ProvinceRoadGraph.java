@@ -68,6 +68,17 @@ public class ProvinceRoadGraph {
         return graph.containsKey(provinceKey);
     }
 
+    /**
+     * 短途分类只看起终点是否位于同省或两个直接相邻的省份。
+     * 实际候选路径仍可经过第三省，不用渲染路径长度反推业务分类。
+     */
+    public boolean isSameOrAdjacent(String start, String target) {
+        if (isBlank(start) || isBlank(target)) return false;
+        if (start.equals(target)) return true;
+        return graph.getOrDefault(start, Collections.emptyList()).stream()
+                .anyMatch(edge -> target.equals(edge.to()));
+    }
+
     public List<String> edgeKeys(List<String> provincePath) {
         if (provincePath == null || provincePath.size() < 2) return List.of();
 

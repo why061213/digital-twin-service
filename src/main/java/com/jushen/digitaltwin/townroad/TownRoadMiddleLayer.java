@@ -24,12 +24,6 @@ import java.util.concurrent.ConcurrentHashMap;
 public class TownRoadMiddleLayer {
 
     /**
-     * 短途阈值：省份路径中最多允许出现 3 个省。
-     * 例如广东->福建->浙江是 3 个省，算短途。
-     */
-    private static final int MAX_SHORT_HAUL_PROVINCE_COUNT = 3;
-
-    /**
      * 两点之间最多保留多少条等长最短路径，避免某些节点组合出现过多等价路径。
      */
     private static final int MAX_CANDIDATE_PATHS_PER_PAIR = 12;
@@ -1008,10 +1002,10 @@ public class TownRoadMiddleLayer {
     }
 
     private boolean isShortHaul(NormalizedTownRoadOrder order) {
-        if (order.provincePaths() == null || order.provincePaths().isEmpty()) return false;
-        // 最短路径的省份数不能超过阈值（深度控制）
-        List<String> shortestPath = order.provincePaths().get(0);
-        return shortestPath.size() <= MAX_SHORT_HAUL_PROVINCE_COUNT;
+        return provinceRoadGraph.isSameOrAdjacent(
+                order.fromProvinceKey(),
+                order.toProvinceKey()
+        );
     }
 
     /** 已完成订单是否超过保留时间窗口（默认30分钟） */
