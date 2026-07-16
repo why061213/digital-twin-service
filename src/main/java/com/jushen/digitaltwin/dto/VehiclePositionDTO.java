@@ -28,6 +28,16 @@ public record VehiclePositionDTO(
         String plate,
         /** 速度质量：provider / calculated / fallback / rejected */
         String speedQuality,
+        /** 驾驶员名称（供应商 driverNameIC） */
+        String driverName,
+        /** 最新定位地址（供应商 adree） */
+        String address,
+        /** 车辆状态说明（供应商 state_str） */
+        String stateStr,
+        /** 方位角，0 为正北，顺时针 */
+        Integer directionDeg,
+        /** 供应商方向文本（dir_str） */
+        String directionLabel,
         /** 单调递增的位置帧序列 */
         long sequence,
         /** 进度 0~1 */

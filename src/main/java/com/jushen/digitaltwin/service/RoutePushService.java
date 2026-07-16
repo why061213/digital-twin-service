@@ -781,6 +781,7 @@ public class RoutePushService {
         message.put("vehicleId", position.vehicleId() == null ? lineIdCarIdMap.get(lineId) : position.vehicleId());
         message.put("plate", lineIdPlateMap.get(lineId));
         message.put("speedQuality", cached == null ? "fallback" : "provider");
+        addProviderPositionDetails(message, cached);
         message.put("sequence", positionSequence.incrementAndGet());
         return message;
     }
@@ -1138,8 +1139,18 @@ public class RoutePushService {
         message.put("vehicleId", providerPosition.vehicleId() == null ? lineIdCarIdMap.get(route.lineId()) : providerPosition.vehicleId());
         message.put("plate", lineIdPlateMap.get(route.lineId()));
         message.put("speedQuality", speedQuality);
+        addProviderPositionDetails(message, cached);
         message.put("sequence", positionSequence.incrementAndGet());
         return message;
+    }
+
+    private void addProviderPositionDetails(Map<String, Object> message, PositionSnapshot snapshot) {
+        if (snapshot == null) return;
+        message.put("driverName", snapshot.driverName());
+        message.put("address", snapshot.address());
+        message.put("stateStr", snapshot.stateStr());
+        message.put("directionDeg", snapshot.directionDeg());
+        message.put("directionLabel", snapshot.directionLabel());
     }
 
     private void broadcastChangedPositionFrames(long now) {
@@ -1172,13 +1183,21 @@ public class RoutePushService {
         double speed = ((Number) position.get("speedKmh")).doubleValue();
         String status = String.valueOf(position.get("status"));
         boolean stale = Boolean.TRUE.equals(position.get("stale"));
+        String detailsSignature = String.join("|",
+                String.valueOf(position.get("driverName")),
+                String.valueOf(position.get("address")),
+                String.valueOf(position.get("stateStr")),
+                String.valueOf(position.get("directionDeg")),
+                String.valueOf(position.get("directionLabel")));
         BroadcastPositionState previous = lastBroadcastPositions.get(lineId);
-        BroadcastPositionState current = new BroadcastPositionState(coordinate, speed, status, stale, now);
+        BroadcastPositionState current = new BroadcastPositionState(
+                coordinate, speed, status, stale, detailsSignature, now);
         if (previous == null
                 || distanceKm(previous.position(), coordinate) * 1_000 >= POSITION_CHANGE_THRESHOLD_METERS
                 || Math.abs(previous.speedKmh() - speed) >= 3.0
                 || !previous.status().equals(status)
                 || previous.stale() != stale
+                || !previous.detailsSignature().equals(detailsSignature)
                 || now - previous.sentAt() >= POSITION_MAX_SILENCE_MS) {
             lastBroadcastPositions.put(lineId, current);
             return true;
@@ -2034,6 +2053,7 @@ public class RoutePushService {
             double speedKmh,
             String status,
             boolean stale,
+            String detailsSignature,
             long sentAt
     ) {
     }

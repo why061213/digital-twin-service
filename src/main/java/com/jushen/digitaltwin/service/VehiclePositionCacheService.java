@@ -211,7 +211,9 @@ public class VehiclePositionCacheService {
                     for (String lineId : lineIds) {
                         cache.put(lineId, PositionSnapshot.fromProvider(
                                 lineId, vehicleId, posResult.vehicleName, posResult.plate,
-                                posResult.lng, posResult.lat, posResult.speedKmh));
+                                posResult.lng, posResult.lat, posResult.speedKmh,
+                                posResult.driverName, posResult.address, posResult.stateStr,
+                                posResult.directionDeg, posResult.directionLabel));
                         cacheUpdatedCount++;
                     }
                 }
@@ -297,7 +299,12 @@ public class VehiclePositionCacheService {
 
             resultByVehicleId.put(vehicleId, new ProviderPositionResult(
                     vehicleId, stringValue(vehicle.get("vehicle_name")),
-                    stringValue(vehicle.get("plate")), lng, lat, speed));
+                    stringValue(vehicle.get("plate")), lng, lat, speed,
+                    stringValue(vehicle.get("driverNameIC")),
+                    stringValue(vehicle.get("adree")),
+                    stringValue(vehicle.get("state_str")),
+                    integerValue(vehicle.get("dir")),
+                    stringValue(vehicle.get("dir_str"))));
         }
 
         log.info("[PositionCache] batch: requested={}, returned={}, missing={}, invalid={}",
@@ -312,8 +319,19 @@ public class VehiclePositionCacheService {
         return text.isEmpty() ? null : text;
     }
 
+    private Integer integerValue(Object value) {
+        if (value == null) return null;
+        try {
+            return (int) Math.round(Double.parseDouble(String.valueOf(value)));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
     public record ProviderPositionResult(
             String vehicleId, String vehicleName, String plate,
-            double lng, double lat, double speedKmh
+            double lng, double lat, double speedKmh,
+            String driverName, String address, String stateStr,
+            Integer directionDeg, String directionLabel
     ) {}
 }

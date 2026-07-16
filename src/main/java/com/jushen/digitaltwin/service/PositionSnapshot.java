@@ -14,6 +14,11 @@ public record PositionSnapshot(
         double lng,
         double lat,
         double speedKmh,
+        String driverName,
+        String address,
+        String stateStr,
+        Integer directionDeg,
+        String directionLabel,
         Instant providerTime,
         Instant fetchedAt,
         String source,
@@ -32,10 +37,31 @@ public record PositionSnapshot(
             double lat,
             double speedKmh
     ) {
+        return fromProvider(
+                lineId, vehicleId, vehicleName, plate, lng, lat, speedKmh,
+                null, null, null, null, null
+        );
+    }
+
+    public static PositionSnapshot fromProvider(
+            String lineId,
+            String vehicleId,
+            String vehicleName,
+            String plate,
+            double lng,
+            double lat,
+            double speedKmh,
+            String driverName,
+            String address,
+            String stateStr,
+            Integer directionDeg,
+            String directionLabel
+    ) {
         Instant now = Instant.now();
         return new PositionSnapshot(
                 lineId, vehicleId, vehicleName, plate,
                 lng, lat, speedKmh,
+                driverName, address, stateStr, directionDeg, directionLabel,
                 now, now,
                 "real",
                 false
@@ -46,6 +72,7 @@ public record PositionSnapshot(
         return new PositionSnapshot(
                 lineId, vehicleId, vehicleName, plate,
                 lng, lat, speedKmh,
+                driverName, address, stateStr, directionDeg, directionLabel,
                 providerTime, fetchedAt,
                 "stale-real",
                 true
