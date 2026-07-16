@@ -187,7 +187,7 @@ public class TownRoadRenderService {
             event.put("changedGroupIds", new ArrayList<>(changedGroupIds));
             event.put("removedGroupIds", new ArrayList<>(removedGroupIds));
             event.put("serverTime", Instant.now().toString());
-            realtimeWebSocketHandler.broadcast(event);
+            realtimeWebSocketHandler.broadcastToScopeSubscribers("rm2", event);
         }
 
         // RM1 长途 + RM2 短途车辆注册。RM2 必须从与 REST groups/routes

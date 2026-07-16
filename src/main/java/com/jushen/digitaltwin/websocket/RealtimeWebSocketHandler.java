@@ -91,7 +91,7 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    public void broadcastVehiclePositions(String scope, Object message) {
+    public void broadcastToScopeSubscribers(String scope, Object message) {
         String payload;
         try {
             payload = objectMapper.writeValueAsString(message);
@@ -106,6 +106,10 @@ public class RealtimeWebSocketHandler extends TextWebSocketHandler {
             }
             send(session, payload);
         }
+    }
+
+    public void broadcastVehiclePositions(String scope, Object message) {
+        broadcastToScopeSubscribers(scope, message);
     }
 
     public boolean hasVehiclePositionSubscribers(String scope) {
