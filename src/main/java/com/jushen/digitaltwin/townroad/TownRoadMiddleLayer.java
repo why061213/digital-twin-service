@@ -35,6 +35,7 @@ public class TownRoadMiddleLayer {
     private final ProvinceCodeResolver provinceCodeResolver;
     private final TownRoadExternalOrderProperties properties;
     private final TownRoadCoordinateResolver coordinateResolver;
+    private final DailyOrderStatisticsService dailyOrderStatisticsService;
 
     private final Map<String, NormalizedTownRoadOrder> ordersByInstanceId = new ConcurrentHashMap<>();
 
@@ -66,7 +67,8 @@ public class TownRoadMiddleLayer {
             DistrictRoadGraph districtRoadGraph,
             ProvinceCodeResolver provinceCodeResolver,
             TownRoadExternalOrderProperties properties,
-            TownRoadCoordinateResolver coordinateResolver
+            TownRoadCoordinateResolver coordinateResolver,
+            DailyOrderStatisticsService dailyOrderStatisticsService
     ) {
         this.objectMapper = objectMapper;
         this.provinceRoadGraph = provinceRoadGraph;
@@ -75,11 +77,13 @@ public class TownRoadMiddleLayer {
         this.provinceCodeResolver = provinceCodeResolver;
         this.properties = properties;
         this.coordinateResolver = coordinateResolver;
+        this.dailyOrderStatisticsService = dailyOrderStatisticsService;
     }
 
     public synchronized ExternalOrderSnapshotResult processSnapshot(List<ExternalOrderRecord> rawOrders) {
         List<ExternalOrderRecord> safeRawOrders = rawOrders == null ? List.of() : rawOrders;
         List<ExternalOrderRecord> expandedRawOrders = expandRawOrders(safeRawOrders);
+        dailyOrderStatisticsService.accept(expandedRawOrders);
         Map<String, NormalizedTownRoadOrder> previous = new LinkedHashMap<>(ordersByInstanceId);
 
         List<NormalizedTownRoadOrder> normalized = new ArrayList<>();
