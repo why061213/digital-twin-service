@@ -7,7 +7,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "dashboard.websocket")
 public class DashboardWebSocketProperties {
 
-    private String token = "jushen-screen-token";
+    private String token = "";
+    private boolean legacyTokenEnabled = false;
     private List<String> allowedOriginPatterns = new ArrayList<>(List.of("*"));
 
     public String getToken() {
@@ -16,6 +17,14 @@ public class DashboardWebSocketProperties {
 
     public void setToken(String token) {
         this.token = token;
+    }
+
+    public boolean isLegacyTokenEnabled() {
+        return legacyTokenEnabled;
+    }
+
+    public void setLegacyTokenEnabled(boolean legacyTokenEnabled) {
+        this.legacyTokenEnabled = legacyTokenEnabled;
     }
 
     public List<String> getAllowedOriginPatterns() {

@@ -1,6 +1,9 @@
 package com.jushen.digitaltwin.websocket;
 
+import com.jushen.digitaltwin.bootstrap.DashboardAccessTokenService;
 import com.jushen.digitaltwin.config.DashboardWebSocketProperties;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.net.URI;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -15,9 +18,14 @@ import org.springframework.web.util.UriComponentsBuilder;
 public class TokenHandshakeInterceptor implements HandshakeInterceptor {
 
     private final DashboardWebSocketProperties properties;
+    private final DashboardAccessTokenService accessTokenService;
 
-    public TokenHandshakeInterceptor(DashboardWebSocketProperties properties) {
+    public TokenHandshakeInterceptor(
+            DashboardWebSocketProperties properties,
+            DashboardAccessTokenService accessTokenService
+    ) {
         this.properties = properties;
+        this.accessTokenService = accessTokenService;
     }
 
     @Override
@@ -28,7 +36,7 @@ public class TokenHandshakeInterceptor implements HandshakeInterceptor {
             Map<String, Object> attributes
     ) {
         String token = extractToken(request.getURI());
-        if (properties.getToken().equals(token)) {
+        if (accessTokenService.validate(token).valid() || matchesLegacyToken(token)) {
             return true;
         }
         response.setStatusCode(HttpStatus.UNAUTHORIZED);
@@ -50,5 +58,17 @@ public class TokenHandshakeInterceptor implements HandshakeInterceptor {
                 .build()
                 .getQueryParams()
                 .getFirst("token");
+    }
+
+    private boolean matchesLegacyToken(String candidate) {
+        String configured = properties.getToken();
+        return properties.isLegacyTokenEnabled()
+                && configured != null
+                && !configured.isBlank()
+                && candidate != null
+                && MessageDigest.isEqual(
+                        configured.getBytes(StandardCharsets.UTF_8),
+                        candidate.getBytes(StandardCharsets.UTF_8)
+                );
     }
 }

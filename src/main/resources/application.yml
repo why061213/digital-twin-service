@@ -23,8 +23,15 @@ dashboard:
     allowed-mac-addresses: []
     # 跨 VLAN/反向代理时无法取得终端 MAC，可配置设备令牌作为兜底。
     device-token: ""
+    # 会话密钥提前续期；旧密钥在刷新后保留短暂宽限，避免并发请求瞬间失败。
+    session-ttl: 8h
+    session-refresh-after: 4h
+    session-refresh-grace: 2m
+    max-active-sessions: 256
   websocket:
-    token: jushen-screen-token
+    # WebSocket 默认使用验证页签发的会话密钥；以下固定口令仅作应急兼容。
+    legacy-token-enabled: false
+    token: ""
     allowed-origin-patterns:
       - "*"
     external-order:
