@@ -1,5 +1,6 @@
 package com.jushen.digitaltwin.townroad;
 
+import com.jushen.digitaltwin.bootstrap.DashboardBootstrapService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -21,14 +22,17 @@ public class TownRoadOrderSyncScheduler {
 
     private final TownRoadRenderService renderService;
     private final TownRoadExternalOrderProperties properties;
+    private final DashboardBootstrapService bootstrapService;
     private final AtomicBoolean syncing = new AtomicBoolean(false);
 
     public TownRoadOrderSyncScheduler(
             TownRoadRenderService renderService,
-            TownRoadExternalOrderProperties properties
+            TownRoadExternalOrderProperties properties,
+            DashboardBootstrapService bootstrapService
     ) {
         this.renderService = renderService;
         this.properties = properties;
+        this.bootstrapService = bootstrapService;
     }
 
     @Scheduled(
@@ -45,13 +49,16 @@ public class TownRoadOrderSyncScheduler {
         }
 
         long startedAt = System.currentTimeMillis();
+        bootstrapService.markSynchronizationStarted();
         try {
             Map<String, Object> result = renderService.fetchProcessAndBroadcast();
+            bootstrapService.markSynchronizationSucceeded(result);
             log.info("[TownRoadSync] snapshot synchronized: rawCount={}, shortHaulCount={}, elapsedMs={}",
                     result.getOrDefault("rawCount", 0),
                     result.getOrDefault("shortHaulCount", 0),
                     System.currentTimeMillis() - startedAt);
         } catch (Exception e) {
+            bootstrapService.markSynchronizationFailed(e);
             log.warn("[TownRoadSync] external order sync failed: {}", e.getMessage());
         } finally {
             syncing.set(false);

@@ -15,6 +15,14 @@ spring:
     name: jushen-digital-twin-backend
 
 dashboard:
+  access:
+    # 浏览器无法读取 MAC；后端通过局域网 ARP/邻居表识别客户端并匹配白名单。
+    enabled: true
+    trust-loopback: true
+    # 在 application-private.yml 中填写，例如 ["AA:BB:CC:DD:EE:FF"]。
+    allowed-mac-addresses: []
+    # 跨 VLAN/反向代理时无法取得终端 MAC，可配置设备令牌作为兜底。
+    device-token: ""
   websocket:
     token: jushen-screen-token
     allowed-origin-patterns:
