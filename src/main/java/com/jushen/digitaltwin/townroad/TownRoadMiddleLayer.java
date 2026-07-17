@@ -36,6 +36,7 @@ public class TownRoadMiddleLayer {
     private final TownRoadExternalOrderProperties properties;
     private final TownRoadCoordinateResolver coordinateResolver;
     private final DailyOrderStatisticsService dailyOrderStatisticsService;
+    private final ChinaBoundaryConstraint chinaBoundaryConstraint;
 
     private final Map<String, NormalizedTownRoadOrder> ordersByInstanceId = new ConcurrentHashMap<>();
 
@@ -68,7 +69,8 @@ public class TownRoadMiddleLayer {
             ProvinceCodeResolver provinceCodeResolver,
             TownRoadExternalOrderProperties properties,
             TownRoadCoordinateResolver coordinateResolver,
-            DailyOrderStatisticsService dailyOrderStatisticsService
+            DailyOrderStatisticsService dailyOrderStatisticsService,
+            ChinaBoundaryConstraint chinaBoundaryConstraint
     ) {
         this.objectMapper = objectMapper;
         this.provinceRoadGraph = provinceRoadGraph;
@@ -78,6 +80,7 @@ public class TownRoadMiddleLayer {
         this.properties = properties;
         this.coordinateResolver = coordinateResolver;
         this.dailyOrderStatisticsService = dailyOrderStatisticsService;
+        this.chinaBoundaryConstraint = chinaBoundaryConstraint;
     }
 
     public synchronized ExternalOrderSnapshotResult processSnapshot(List<ExternalOrderRecord> rawOrders) {
@@ -1024,7 +1027,9 @@ public class TownRoadMiddleLayer {
             addDistinctCoordinate(coordinates, to.coords());
         }
 
-        return coordinates.size() >= 2 ? coordinates : List.of();
+        return coordinates.size() >= 2
+                ? chinaBoundaryConstraint.constrainRoute(coordinates)
+                : List.of();
     }
 
     private void addDistinctCoordinate(List<double[]> coordinates, double[] coords) {
