@@ -83,10 +83,9 @@ public class TownRoadMiddleLayer {
     public synchronized ExternalOrderSnapshotResult processSnapshot(List<ExternalOrderRecord> rawOrders) {
         List<ExternalOrderRecord> safeRawOrders = rawOrders == null ? List.of() : rawOrders;
         List<ExternalOrderRecord> expandedRawOrders = expandRawOrders(safeRawOrders);
-        dailyOrderStatisticsService.accept(expandedRawOrders);
         Map<String, NormalizedTownRoadOrder> previous = new LinkedHashMap<>(ordersByInstanceId);
 
-        List<NormalizedTownRoadOrder> normalized = new ArrayList<>();
+        Map<String, NormalizedTownRoadOrder> dedupedCandidates = new LinkedHashMap<>();
         List<String> skippedInvalidLineIds = new ArrayList<>();
         List<String> deletedOrCancelledLineIds = new ArrayList<>();
         int skippedNotRenderable = 0;
@@ -101,6 +100,15 @@ public class TownRoadMiddleLayer {
             }
 
             NormalizedTownRoadOrder order = normalize(raw);
+            dedupedCandidates.merge(order.instanceId(), order, this::newerOrder);
+        }
+
+        // 统计口径位于车辆实例去重之后、装卸/运输/完成状态筛选之前。
+        // 服务内部按 instanceId 累积，因此重复快照和状态迁移不会重复计数。
+        dailyOrderStatisticsService.applySnapshot(List.copyOf(dedupedCandidates.values()));
+
+        List<NormalizedTownRoadOrder> normalized = new ArrayList<>();
+        for (NormalizedTownRoadOrder order : dedupedCandidates.values()) {
 
             if (order.deleted() || "已取消".equals(order.status())) {
                 deletedOrCancelledLineIds.add(order.instanceId());
@@ -1038,6 +1046,15 @@ public class TownRoadMiddleLayer {
                 order.fromProvinceKey(),
                 order.toProvinceKey()
         );
+    }
+
+    private NormalizedTownRoadOrder newerOrder(
+            NormalizedTownRoadOrder first,
+            NormalizedTownRoadOrder second
+    ) {
+        String firstUpdatedAt = safe(first.updatedAt());
+        String secondUpdatedAt = safe(second.updatedAt());
+        return secondUpdatedAt.compareTo(firstUpdatedAt) >= 0 ? second : first;
     }
 
     /** 已完成订单是否超过保留时间窗口（默认30分钟） */

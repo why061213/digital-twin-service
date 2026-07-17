@@ -9,31 +9,46 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class DailyOrderStatisticsServiceTest {
 
     @Test
-    void deduplicatesSnapshotsAndCompletesOrderOnlyAfterAllVehiclesFinish() {
+    void deduplicatesVehiclesAndCountsEachArrivedVehicle() {
         DailyOrderStatisticsService service = new DailyOrderStatisticsService();
-        ExternalOrderRecord completedKgVehicle = record("order-1", "line-1", 1_000d, "kg", "已完成");
-        ExternalOrderRecord runningTonVehicle = record("order-1", "line-2", 2d, "吨", "运输中");
+        NormalizedTownRoadOrder completedKgVehicle = order("order-1", "line-1", "vehicle-1", 1_000d, "kg", "已完成");
+        NormalizedTownRoadOrder runningTonVehicle = order("order-1", "line-1", "vehicle-2", 2d, "吨", "运输中");
 
-        service.accept(List.of(completedKgVehicle, runningTonVehicle, completedKgVehicle));
+        service.applySnapshot(List.of(completedKgVehicle, runningTonVehicle, completedKgVehicle));
         DailyOrderStatisticsService.DailyOrderStatistics first = service.snapshot();
 
         assertEquals(3d, first.deliveryTotalTons());
         assertEquals(2, first.dispatchedVehicleCount());
         assertEquals(1, first.totalOrderCount());
-        assertEquals(0, first.completedOrderCount());
+        assertEquals(1, first.arrivedVehicleCount());
 
-        service.accept(List.of(record("order-1", "line-2", 2d, "吨", "finished")));
+        service.applySnapshot(List.of(order("order-1", "line-1", "vehicle-2", 2d, "吨", "finished")));
         DailyOrderStatisticsService.DailyOrderStatistics completed = service.snapshot();
 
         assertEquals(3d, completed.deliveryTotalTons());
         assertEquals(2, completed.dispatchedVehicleCount());
         assertEquals(1, completed.totalOrderCount());
-        assertEquals(1, completed.completedOrderCount());
+        assertEquals(2, completed.arrivedVehicleCount());
     }
 
-    private ExternalOrderRecord record(
+    @Test
+    void keepsArrivalStickyAndDoesNotCountCancelledVehicles() {
+        DailyOrderStatisticsService service = new DailyOrderStatisticsService();
+        service.applySnapshot(List.of(order("order-1", "line-1", "vehicle-1", 3d, "吨", "已完成")));
+        service.applySnapshot(List.of(order("order-1", "line-1", "vehicle-1", 3d, "吨", "运输中")));
+        service.applySnapshot(List.of(order("order-2", "line-2", "vehicle-2", 4d, "吨", "已取消")));
+
+        DailyOrderStatisticsService.DailyOrderStatistics statistics = service.snapshot();
+        assertEquals(3d, statistics.deliveryTotalTons());
+        assertEquals(1, statistics.dispatchedVehicleCount());
+        assertEquals(1, statistics.totalOrderCount());
+        assertEquals(1, statistics.arrivedVehicleCount());
+    }
+
+    private NormalizedTownRoadOrder order(
             String orderId,
             String lineId,
+            String vehicleId,
             double cargoWeight,
             String cargoUnit,
             String status
@@ -45,10 +60,19 @@ class DailyOrderStatisticsServiceTest {
                 "终点", "广东省", "广州市", "番禺区", "440113", new double[]{113.3, 22.9}
         );
         ExternalOrderRecord.Vehicle vehicle = new ExternalOrderRecord.Vehicle(
-                "粤A12345", "vehicle-1", "铝材", cargoWeight, cargoUnit, null, 50d
+                "粤A12345", vehicleId, "铝材", cargoWeight, cargoUnit, null, 50d
         );
-        return new ExternalOrderRecord(
-                orderId, lineId, from, to, vehicle, status, "2026-07-17 14:00:00", false, true
+        String instanceId = orderId + "::" + lineId + "::" + vehicleId;
+        return new NormalizedTownRoadOrder(
+                orderId, lineId, instanceId, vehicleId,
+                "440605", "440113", "440605->440113",
+                "440000", "440000",
+                List.of(List.of("440000")), List.of("440000"), List.of(1),
+                List.of("440600", "440100"), List.of("佛山市", "广州市"),
+                List.of(from.coords(), to.coords()), 30d, 50d,
+                "group-1", "广东短途运输", from, to, vehicle,
+                status, "2026-07-17 14:00:00", "已取消".equals(status), true,
+                status, "route-signature"
         );
     }
 }

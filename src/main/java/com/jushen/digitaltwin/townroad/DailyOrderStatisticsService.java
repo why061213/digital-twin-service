@@ -13,43 +13,48 @@ import java.util.Map;
 public class DailyOrderStatisticsService {
 
     private final ZoneId zoneId = ZoneId.systemDefault();
-    private final Map<String, DailyVehicleRecord> vehiclesByLineId = new LinkedHashMap<>();
+    private final Map<String, DailyVehicleRecord> vehiclesByInstanceId = new LinkedHashMap<>();
 
     private LocalDate businessDate = LocalDate.now(zoneId);
     private Instant windowStartedAt = Instant.now();
     private Instant lastUpdatedAt;
 
-    public synchronized void accept(List<ExternalOrderRecord> records) {
+    public synchronized void applySnapshot(List<NormalizedTownRoadOrder> orders) {
         rollBusinessDateIfNeeded();
-        if (records == null || records.isEmpty()) {
+        if (orders == null || orders.isEmpty()) {
             return;
         }
 
-        for (ExternalOrderRecord record : records) {
-            if (record == null || record.vehicle() == null) {
+        boolean changed = false;
+        for (NormalizedTownRoadOrder order : orders) {
+            if (order == null || order.vehicle() == null || order.instanceId() == null
+                    || order.instanceId().isBlank()) {
                 continue;
             }
 
-            String lineId = firstNonBlank(
-                    record.lineId(),
-                    record.vehicle().carId(),
-                    record.vehicle().plate()
-            );
-            if (lineId == null) {
-                continue;
+            String orderId = firstNonBlank(order.orderId(), order.lineId(), order.instanceId());
+            boolean cancelled = order.deleted() || isCancelled(order.status());
+            DailyVehicleRecord previous = vehiclesByInstanceId.get(order.instanceId());
+            boolean arrived = isCompleted(order.status()) || previous != null && previous.arrived();
+            double cargoWeightTons = toTons(order.vehicle().cargoWeight(), order.vehicle().cargoUnit());
+            if (cargoWeightTons <= 0 && previous != null) {
+                cargoWeightTons = previous.cargoWeightTons();
             }
-
-            String orderId = firstNonBlank(record.orderId(), record.lineId(), lineId);
-            boolean cancelled = Boolean.TRUE.equals(record.deleted()) || isCancelled(record.status());
-            vehiclesByLineId.put(lineId, new DailyVehicleRecord(
+            DailyVehicleRecord next = new DailyVehicleRecord(
                     orderId,
-                    toTons(record.vehicle().cargoWeight(), record.vehicle().cargoUnit()),
-                    isCompleted(record.status()),
+                    cargoWeightTons,
+                    arrived,
                     cancelled
-            ));
+            );
+            if (!next.equals(previous)) {
+                vehiclesByInstanceId.put(order.instanceId(), next);
+                changed = true;
+            }
         }
 
-        lastUpdatedAt = Instant.now();
+        if (changed) {
+            lastUpdatedAt = Instant.now();
+        }
     }
 
     public synchronized DailyOrderStatistics snapshot() {
@@ -57,27 +62,27 @@ public class DailyOrderStatisticsService {
 
         double deliveryTotalTons = 0;
         int dispatchedVehicleCount = 0;
-        Map<String, Boolean> orderCompletion = new LinkedHashMap<>();
+        Map<String, Boolean> orders = new LinkedHashMap<>();
+        long arrivedVehicleCount = 0;
 
-        for (DailyVehicleRecord vehicle : vehiclesByLineId.values()) {
+        for (DailyVehicleRecord vehicle : vehiclesByInstanceId.values()) {
             if (vehicle.cancelled()) {
                 continue;
             }
             deliveryTotalTons += vehicle.cargoWeightTons();
             dispatchedVehicleCount++;
-            orderCompletion.merge(vehicle.orderId(), vehicle.completed(), Boolean::logicalAnd);
+            orders.put(vehicle.orderId(), Boolean.TRUE);
+            if (vehicle.arrived()) {
+                arrivedVehicleCount++;
+            }
         }
-
-        long completedOrderCount = orderCompletion.values().stream()
-                .filter(Boolean.TRUE::equals)
-                .count();
 
         return new DailyOrderStatistics(
                 businessDate.toString(),
                 roundToTwoDecimals(deliveryTotalTons),
                 dispatchedVehicleCount,
-                orderCompletion.size(),
-                completedOrderCount,
+                orders.size(),
+                arrivedVehicleCount,
                 windowStartedAt.toString(),
                 lastUpdatedAt == null ? null : lastUpdatedAt.toString()
         );
@@ -89,7 +94,7 @@ public class DailyOrderStatisticsService {
             return;
         }
         businessDate = today;
-        vehiclesByLineId.clear();
+        vehiclesByInstanceId.clear();
         windowStartedAt = Instant.now();
         lastUpdatedAt = null;
     }
@@ -98,6 +103,8 @@ public class DailyOrderStatisticsService {
         String normalized = normalize(status);
         return normalized.contains("完成")
                 || normalized.contains("签收")
+                || normalized.contains("到达")
+                || normalized.contains("送达")
                 || "finished".equals(normalized)
                 || "completed".equals(normalized);
     }
@@ -141,7 +148,7 @@ public class DailyOrderStatisticsService {
     private record DailyVehicleRecord(
             String orderId,
             double cargoWeightTons,
-            boolean completed,
+            boolean arrived,
             boolean cancelled
     ) {
     }
@@ -151,7 +158,7 @@ public class DailyOrderStatisticsService {
             double deliveryTotalTons,
             int dispatchedVehicleCount,
             int totalOrderCount,
-            long completedOrderCount,
+            long arrivedVehicleCount,
             String windowStartedAt,
             String lastUpdatedAt
     ) {
