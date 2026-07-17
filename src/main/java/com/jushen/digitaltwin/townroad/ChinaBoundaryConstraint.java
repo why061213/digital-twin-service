@@ -19,8 +19,9 @@ public class ChinaBoundaryConstraint {
 
     private static final Logger log = LoggerFactory.getLogger(ChinaBoundaryConstraint.class);
     private static final double MAX_SEGMENT_SAMPLE_KM = 5.0;
-    private static final double PATHOLOGICAL_DETOUR_RATIO = 2.2;
     private static final double MAX_REPAIR_DETOUR_RATIO = 2.8;
+    private static final double BOUNDARY_CANDIDATE_DETOUR_RATIO = 2.2;
+    private static final int MAX_BOUNDARY_CANDIDATES = 2_000;
     private static final int MAX_REPAIR_DEPTH = 10;
     private static final int MAX_CONTAINS_DEPTH = 14;
 
@@ -38,16 +39,24 @@ public class ChinaBoundaryConstraint {
         List<double[]> points = dedupe(route);
         if (points.size() < 2) return points;
 
-        double directKm = distanceKm(points.get(0), points.get(points.size() - 1));
+        double[] start = points.get(0);
+        double[] end = points.get(points.size() - 1);
+        double directKm = distanceKm(start, end);
         double originalKm = pathLengthKm(points);
-        boolean pathologicalDetour = directKm > 0 && originalKm > directKm * PATHOLOGICAL_DETOUR_RATIO;
-        boolean crossesBoundary = !allSegmentsInside(points);
-        if (!pathologicalDetour && !crossesBoundary) return points;
+        if (segmentInside(start, end)) {
+            return List.of(copy(start), copy(end));
+        }
 
-        List<double[]> candidates = points.stream().filter(this::contains).toList();
+        List<double[]> candidates = new ArrayList<>();
+        for (double[] point : points) {
+            if (contains(point)) addDistinctCandidate(candidates, point);
+        }
+        for (double[] point : nearbyBoundaryCandidates(start, end)) {
+            addDistinctCandidate(candidates, point);
+        }
         List<double[]> repaired = repairSegment(
-                points.get(0),
-                points.get(points.size() - 1),
+                start,
+                end,
                 candidates,
                 new HashSet<>(),
                 0
@@ -63,6 +72,35 @@ public class ChinaBoundaryConstraint {
         log.warn("[ChinaBoundary] unable to safely shorten constrained route: points={}, directKm={}, routeKm={}",
                 points.size(), Math.round(directKm), Math.round(originalKm));
         return points;
+    }
+
+    private List<double[]> nearbyBoundaryCandidates(double[] from, double[] to) {
+        double directKm = Math.max(1, distanceKm(from, to));
+        List<BoundaryCandidate> ranked = new ArrayList<>();
+        for (PolygonArea polygon : landPolygons) {
+            if (!polygon.nearRoute(from, to, directKm)) continue;
+            for (double[] point : polygon.outer()) {
+                double detourKm = distanceKm(from, point) + distanceKm(point, to);
+                if (detourKm <= directKm * BOUNDARY_CANDIDATE_DETOUR_RATIO) {
+                    ranked.add(new BoundaryCandidate(point, detourKm));
+                }
+            }
+        }
+        ranked.sort(java.util.Comparator.comparingDouble(BoundaryCandidate::detourKm));
+        List<double[]> result = new ArrayList<>();
+        for (BoundaryCandidate candidate : ranked) {
+            addDistinctCandidate(result, candidate.point());
+            if (result.size() >= MAX_BOUNDARY_CANDIDATES) break;
+        }
+        return result;
+    }
+
+    private void addDistinctCandidate(List<double[]> candidates, double[] point) {
+        String key = coordinateKey(point);
+        for (double[] existing : candidates) {
+            if (coordinateKey(existing).equals(key)) return;
+        }
+        candidates.add(copy(point));
     }
 
     boolean segmentInside(double[] from, double[] to) {
@@ -273,6 +311,18 @@ public class ChinaBoundaryConstraint {
             return true;
         }
 
+        private boolean nearRoute(double[] from, double[] to, double directKm) {
+            double latitudePadding = directKm / 110.574;
+            double meanLatitude = Math.toRadians((from[1] + to[1]) / 2.0);
+            double longitudePadding = directKm / Math.max(30.0, 111.320 * Math.cos(meanLatitude));
+            double routeMinLng = Math.min(from[0], to[0]) - longitudePadding;
+            double routeMaxLng = Math.max(from[0], to[0]) + longitudePadding;
+            double routeMinLat = Math.min(from[1], to[1]) - latitudePadding;
+            double routeMaxLat = Math.max(from[1], to[1]) + latitudePadding;
+            return maxLng >= routeMinLng && minLng <= routeMaxLng
+                    && maxLat >= routeMinLat && minLat <= routeMaxLat;
+        }
+
         private static boolean pointInRing(double[] point, List<double[]> ring) {
             boolean inside = false;
             for (int i = 0, j = ring.size() - 1; i < ring.size(); j = i++) {
@@ -295,5 +345,8 @@ public class ChinaBoundaryConstraint {
                     && point[1] >= Math.min(from[1], to[1]) - 0.000001
                     && point[1] <= Math.max(from[1], to[1]) + 0.000001;
         }
+    }
+
+    private record BoundaryCandidate(double[] point, double detourKm) {
     }
 }
