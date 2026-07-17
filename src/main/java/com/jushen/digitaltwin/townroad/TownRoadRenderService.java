@@ -35,6 +35,8 @@ public class TownRoadRenderService {
     private final TownRoadCoordinateResolver coordinateResolver;
     private final RoutePushService routePushService;
     private final TownRoadExternalOrderProperties externalOrderProperties;
+    private final DailyOrderStatisticsService dailyOrderStatisticsService;
+    private volatile long lastBroadcastDailyKpiRevision = -1;
     private Map<String, Object> lastResult = Map.of();
     /** RM2 原子快照 */
     private volatile Rm2Snapshot latestRm2Snapshot = new Rm2Snapshot(
@@ -61,7 +63,8 @@ public class TownRoadRenderService {
             AmapGeocodeClient amapGeocodeClient,
             TownRoadCoordinateResolver coordinateResolver,
             RoutePushService routePushService,
-            TownRoadExternalOrderProperties externalOrderProperties
+            TownRoadExternalOrderProperties externalOrderProperties,
+            DailyOrderStatisticsService dailyOrderStatisticsService
     ) {
         this.townRoadExternalOrderClient = townRoadExternalOrderClient;
         this.middleLayer = middleLayer;
@@ -70,6 +73,7 @@ public class TownRoadRenderService {
         this.coordinateResolver = coordinateResolver;
         this.routePushService = routePushService;
         this.externalOrderProperties = externalOrderProperties;
+        this.dailyOrderStatisticsService = dailyOrderStatisticsService;
     }
 
     public Map<String, Object> fetchProcessAndBroadcast() {
@@ -107,6 +111,7 @@ public class TownRoadRenderService {
 
         long middleLayerStartedAt = System.currentTimeMillis();
         ExternalOrderSnapshotResult result = middleLayer.processSnapshot(dedupedOrders);
+        broadcastDailyKpisIfChanged();
         long middleLayerFinishedAt = System.currentTimeMillis();
         if (traceEnabled) {
             pipeline.put("middleLayer", middleLayerSummary(result, middleLayerFinishedAt - middleLayerStartedAt));
@@ -378,6 +383,26 @@ public class TownRoadRenderService {
                 duplicateKeyCount,
                 duplicateSamples
         );
+    }
+
+    private synchronized void broadcastDailyKpisIfChanged() {
+        DailyOrderStatisticsService.DailyOrderStatistics statistics = dailyOrderStatisticsService.snapshot();
+        if (statistics.revision() == lastBroadcastDailyKpiRevision) {
+            return;
+        }
+        lastBroadcastDailyKpiRevision = statistics.revision();
+
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("type", "daily_kpis");
+        event.put("businessDate", statistics.businessDate());
+        event.put("deliveryTotalTons", statistics.deliveryTotalTons());
+        event.put("dispatchedVehicleCount", statistics.dispatchedVehicleCount());
+        event.put("totalOrderCount", statistics.totalOrderCount());
+        event.put("arrivedVehicleCount", statistics.arrivedVehicleCount());
+        event.put("revision", statistics.revision());
+        event.put("windowStartedAt", statistics.windowStartedAt());
+        event.put("lastUpdatedAt", statistics.lastUpdatedAt());
+        realtimeWebSocketHandler.broadcast(event);
     }
 
     private String dedupeKey(ExternalOrderRecord record) {

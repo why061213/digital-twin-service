@@ -18,6 +18,7 @@ public class DailyOrderStatisticsService {
     private LocalDate businessDate = LocalDate.now(zoneId);
     private Instant windowStartedAt = Instant.now();
     private Instant lastUpdatedAt;
+    private long revision = System.currentTimeMillis();
 
     public synchronized void applySnapshot(List<NormalizedTownRoadOrder> orders) {
         rollBusinessDateIfNeeded();
@@ -54,6 +55,7 @@ public class DailyOrderStatisticsService {
 
         if (changed) {
             lastUpdatedAt = Instant.now();
+            bumpRevision();
         }
     }
 
@@ -83,6 +85,7 @@ public class DailyOrderStatisticsService {
                 dispatchedVehicleCount,
                 orders.size(),
                 arrivedVehicleCount,
+                revision,
                 windowStartedAt.toString(),
                 lastUpdatedAt == null ? null : lastUpdatedAt.toString()
         );
@@ -97,6 +100,11 @@ public class DailyOrderStatisticsService {
         vehiclesByInstanceId.clear();
         windowStartedAt = Instant.now();
         lastUpdatedAt = null;
+        bumpRevision();
+    }
+
+    private void bumpRevision() {
+        revision = Math.max(revision + 1, System.currentTimeMillis());
     }
 
     private boolean isCompleted(String status) {
@@ -159,6 +167,7 @@ public class DailyOrderStatisticsService {
             int dispatchedVehicleCount,
             int totalOrderCount,
             long arrivedVehicleCount,
+            long revision,
             String windowStartedAt,
             String lastUpdatedAt
     ) {
