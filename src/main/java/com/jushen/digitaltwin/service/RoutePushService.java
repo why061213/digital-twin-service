@@ -763,9 +763,14 @@ public class RoutePushService {
         if (route == null) return Map.of("type", "truck_position", "lineId", lineId, "status", "finished");
 
         PositionSnapshot cached = positionCache.getPosition(lineId);
+        boolean simulated = cached == null;
         ProviderPosition position = cached == null
                 ? simulatedPosition(route, now)
                 : new ProviderPosition(cached.position(), cached.speedKmh(), cached.vehicleId(), cached.vehicleName());
+        double progress = routeProgress(route, now);
+        double effectiveSpeedKmh = simulated
+                ? (now >= route.startTime() && progress < 1.0 ? normalizedRouteSpeed(route.speedKmh()) : 0)
+                : Math.max(0, position.speedKmh());
         Map<String, Object> message = new LinkedHashMap<>();
         message.put("type", "truck_position");
         message.put("lineId", lineId);
@@ -773,15 +778,20 @@ public class RoutePushService {
         message.put("groupId", positionGroupId(route));
         message.put("snapshotVersion", route.scope() == RouteScope.TOWN ? rm2SnapshotVersion : "");
         message.put("position", position.position());
-        message.put("speedKmh", Math.max(0, position.speedKmh()));
-        message.put("status", now - route.startTime() >= route.travelDurationMs() ? "finished" : "running");
-        message.put("source", cached == null ? "simulated" : cached.source());
+        message.put("velocity", now < route.startTime() || progress >= 1.0
+                ? new double[]{0, 0}
+                : velocityFromSpeed(route.coordinates(), progress, effectiveSpeedKmh));
+        message.put("speedKmh", effectiveSpeedKmh);
+        message.put("progress", progress);
+        message.put("status", progress >= 1.0 ? "finished" : "running");
+        message.put("source", simulated ? "simulated" : cached.source());
         message.put("stale", cached != null && cached.stale());
         message.put("fetchedAt", cached == null ? Instant.ofEpochMilli(now).toString() : cached.fetchedAt().toString());
         message.put("vehicleId", position.vehicleId() == null ? lineIdCarIdMap.get(lineId) : position.vehicleId());
         message.put("plate", lineIdPlateMap.get(lineId));
-        message.put("speedQuality", cached == null ? "fallback" : "provider");
+        message.put("speedQuality", simulated ? "fallback" : "provider");
         addProviderPositionDetails(message, cached);
+        if (simulated) addSimulatedDirectionDetails(message, route.coordinates(), progress);
         message.put("sequence", positionSequence.incrementAndGet());
         return message;
     }
@@ -1098,11 +1108,16 @@ public class RoutePushService {
         ProviderPosition providerPosition = fetchVehiclePosition(route, now);
         boolean waitingDeparture = now < route.startTime();
         PositionSnapshot cached = positionCache.getPosition(route.lineId());
+        boolean simulated = cached == null;
+        double progress = routeProgress(route, now);
         double providerSpeed = providerPosition.speedKmh();
         String speedQuality = "fallback";
         double speedKmh;
-        if (waitingDeparture) {
+        if (waitingDeparture || progress >= 1.0) {
             speedKmh = 0;
+            speedQuality = "fallback";
+        } else if (simulated) {
+            speedKmh = normalizedRouteSpeed(route.speedKmh());
             speedQuality = "fallback";
         } else if (providerSpeed > 0 && providerSpeed <= MAX_PROVIDER_SPEED_KMH) {
             speedKmh = providerSpeed;
@@ -1119,8 +1134,6 @@ public class RoutePushService {
             }
         }
 
-        long elapsed = Math.max(0, now - route.startTime());
-        double progress = Math.min(1.0, elapsed / (double) route.travelDurationMs());
         double[] velocity = waitingDeparture ? new double[]{0, 0} : velocityFromSpeed(route.coordinates(), progress, speedKmh);
 
         Map<String, Object> message = new LinkedHashMap<>();
@@ -1140,6 +1153,7 @@ public class RoutePushService {
         message.put("plate", lineIdPlateMap.get(route.lineId()));
         message.put("speedQuality", speedQuality);
         addProviderPositionDetails(message, cached);
+        if (simulated) addSimulatedDirectionDetails(message, route.coordinates(), progress);
         message.put("sequence", positionSequence.incrementAndGet());
         return message;
     }
@@ -1151,6 +1165,48 @@ public class RoutePushService {
         message.put("stateStr", snapshot.stateStr());
         message.put("directionDeg", snapshot.directionDeg());
         message.put("directionLabel", snapshot.directionLabel());
+    }
+
+    private void addSimulatedDirectionDetails(
+            Map<String, Object> message,
+            List<double[]> coordinates,
+            double progress
+    ) {
+        Integer directionDeg = directionAtProgress(coordinates, progress);
+        if (directionDeg == null) return;
+        message.put("directionDeg", directionDeg);
+        message.put("directionLabel", directionLabel(directionDeg));
+    }
+
+    private double routeProgress(ScheduledRoute route, long now) {
+        if (now <= route.startTime()) return 0;
+        if (route.travelDurationMs() <= 0) return 1;
+        return Math.max(0, Math.min(1.0,
+                (now - route.startTime()) / (double) route.travelDurationMs()));
+    }
+
+    /** 方位角约定为 0 度正北、顺时针增加，与外部定位接口保持一致。 */
+    private Integer directionAtProgress(List<double[]> coordinates, double progress) {
+        if (coordinates == null || coordinates.size() < 2) return null;
+        double clamped = Math.max(0, Math.min(1, progress));
+        double fromProgress = clamped >= 1.0 ? Math.max(0, clamped - 0.001) : clamped;
+        double toProgress = clamped >= 1.0 ? clamped : Math.min(1, clamped + 0.001);
+        double[] from = coordinateAtProgress(coordinates, fromProgress);
+        double[] to = coordinateAtProgress(coordinates, toProgress);
+        if (distanceKm(from, to) <= 0.000001) return null;
+
+        double fromLat = Math.toRadians(from[1]);
+        double toLat = Math.toRadians(to[1]);
+        double deltaLng = Math.toRadians(to[0] - from[0]);
+        double y = Math.sin(deltaLng) * Math.cos(toLat);
+        double x = Math.cos(fromLat) * Math.sin(toLat)
+                - Math.sin(fromLat) * Math.cos(toLat) * Math.cos(deltaLng);
+        return (int) Math.round((Math.toDegrees(Math.atan2(y, x)) + 360) % 360) % 360;
+    }
+
+    private String directionLabel(int directionDeg) {
+        String[] labels = {"北", "东北", "东", "东南", "南", "西南", "西", "西北"};
+        return labels[((directionDeg + 22) % 360) / 45];
     }
 
     private void broadcastChangedPositionFrames(long now) {
