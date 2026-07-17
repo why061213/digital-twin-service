@@ -40,7 +40,7 @@ dashboard:
       # true 时，仅展示能解析 supplier vehicleId、可进行真实位置批量校准的订单。
       ignore-orders-without-real-position: false
   route:
-    # 正式展示使用真实时间尺度的模拟；test 档 36000km/h 仅用于快速演示。
+    # 所有档位都使用正常车辆时间尺度；代码层还会把异常配置限制在可信速度内。
     simulation-profile: real
     passive-position-push-enabled: true
     group-size: 12
@@ -73,7 +73,7 @@ dashboard:
     token-cache-path: target/local-cache/token-cache.json
 
     test:
-      simulation-speed-kmh: 15000
+      simulation-speed-kmh: 120
     real:
       simulation-speed-kmh: 80
 

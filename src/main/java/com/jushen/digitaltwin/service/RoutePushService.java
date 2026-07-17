@@ -121,7 +121,7 @@ public class RoutePushService {
             @Value("${dashboard.route.passive-position-push-enabled:false}") boolean passivePositionPushEnabled,
             @Value("${dashboard.route.simulation-profile:test}") String simulationProfile,
             @Value("${dashboard.route.external-position-url:}") String externalPositionUrl,
-            @Value("${dashboard.route.test.simulation-speed-kmh:36000}") double testSimulationSpeedKmh,
+            @Value("${dashboard.route.test.simulation-speed-kmh:120}") double testSimulationSpeedKmh,
             @Value("${dashboard.route.real.simulation-speed-kmh:80}") double realSimulationSpeedKmh,
             @Value("${dashboard.route.group-size:5}") int groupSize,
             @Value("${dashboard.route.default-group-strategy:sequential}") String defaultGroupStrategy,
@@ -1580,9 +1580,9 @@ public class RoutePushService {
 
     private double simulationSpeedKmh() {
         if ("real".equalsIgnoreCase(simulationProfile)) {
-            return Math.max(1, realSimulationSpeedKmh);
+            return Math.max(1, Math.min(MAX_PROVIDER_SPEED_KMH, realSimulationSpeedKmh));
         }
-        return Math.max(1, testSimulationSpeedKmh);
+        return Math.max(1, Math.min(MAX_PROVIDER_SPEED_KMH, testSimulationSpeedKmh));
     }
 
     private boolean isRealPositionProfile() {
