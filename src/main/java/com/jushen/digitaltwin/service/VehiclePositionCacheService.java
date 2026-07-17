@@ -29,6 +29,7 @@ import java.util.function.Supplier;
 public class VehiclePositionCacheService {
 
     private static final Logger log = LoggerFactory.getLogger(VehiclePositionCacheService.class);
+    private static final double MAX_DEAD_RECKONING_SPEED_KMH = 160.0;
 
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient = HttpClient.newHttpClient();
@@ -72,8 +73,16 @@ public class VehiclePositionCacheService {
     public PositionSnapshot getPosition(String lineId) {
         PositionSnapshot snapshot = cache.get(lineId);
         if (snapshot == null) return null;
-        if (isStale(snapshot)) return snapshot.markStale();
-        return snapshot;
+        if (isStale(snapshot)) return predictionAtStaleBoundary(snapshot).markStale();
+        if (snapshot.speedKmh() > MAX_DEAD_RECKONING_SPEED_KMH) return snapshot;
+        return snapshot.predictAt(Instant.now());
+    }
+
+    private PositionSnapshot predictionAtStaleBoundary(PositionSnapshot snapshot) {
+        if (snapshot.stale() || snapshot.speedKmh() > MAX_DEAD_RECKONING_SPEED_KMH) {
+            return snapshot;
+        }
+        return snapshot.predictAt(snapshot.fetchedAt().plusMillis(staleAfterMs));
     }
 
     public List<PositionSnapshot> getPositions(Collection<String> lineIds) {
@@ -132,7 +141,7 @@ public class VehiclePositionCacheService {
         int count = 0;
         for (Map.Entry<String, PositionSnapshot> entry : cache.entrySet()) {
             if (entry.getValue().fetchedAt().toEpochMilli() < threshold && !entry.getValue().stale()) {
-                cache.put(entry.getKey(), entry.getValue().markStale());
+                cache.put(entry.getKey(), predictionAtStaleBoundary(entry.getValue()).markStale());
                 count++;
             }
         }
