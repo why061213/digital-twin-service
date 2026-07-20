@@ -53,19 +53,24 @@ public class RoutePlanningService {
     }
 
     public PlannedRoute plan(double[] origin, double[] destination) {
+        return plan(origin, destination, List.of());
+    }
+
+    public PlannedRoute plan(double[] origin, double[] destination, List<double[]> waypoints) {
         if (!enabled || !validCoordinate(origin) || !validCoordinate(destination)) {
             return PlannedRoute.unavailable("disabled-or-invalid-coordinates");
         }
+        List<double[]> validWaypoints = sanitizeWaypoints(waypoints);
 
-        String key = routeKey(origin, destination);
+        String key = routeKey(origin, destination, validWaypoints);
         long now = System.currentTimeMillis();
         CacheEntry cached = cache.get(key);
         if (cached != null && now - cached.createdAt() <= cacheTtlMs) {
             return cached.route();
         }
 
-        PlannedRoute planned = planBaidu(origin, destination);
-        if (!planned.success()) planned = planAmap(origin, destination);
+        PlannedRoute planned = planBaidu(origin, destination, validWaypoints);
+        if (!planned.success()) planned = planAmap(origin, destination, validWaypoints);
         if (planned.success()) {
             cache.put(key, new CacheEntry(planned, now));
         } else {
@@ -98,10 +103,11 @@ public class RoutePlanningService {
         return entry != null && System.currentTimeMillis() - entry.createdAt() <= cacheTtlMs;
     }
 
-    private PlannedRoute planBaidu(double[] origin, double[] destination) {
+    private PlannedRoute planBaidu(double[] origin, double[] destination, List<double[]> waypoints) {
         if (!awaitProviderRequestSlot()) return PlannedRoute.unavailable("baidu: interrupted");
-        BaiduRoutePlanService.RoutePlanResult result = baidu.planRoute(
-                origin[1], origin[0], destination[1], destination[0]);
+        BaiduRoutePlanService.RoutePlanResult result = waypoints.isEmpty()
+                ? baidu.planRoute(origin[1], origin[0], destination[1], destination[0])
+                : baidu.planRoute(origin[1], origin[0], destination[1], destination[0], waypoints);
         if (!result.success || result.path == null || result.path.size() < 2) {
             return PlannedRoute.unavailable("baidu: " + result.error);
         }
@@ -109,10 +115,11 @@ public class RoutePlanningService {
                 "baidu", withExactEndpoints(result.path, origin, destination), result.totalDistance, result.totalDuration);
     }
 
-    private PlannedRoute planAmap(double[] origin, double[] destination) {
+    private PlannedRoute planAmap(double[] origin, double[] destination, List<double[]> waypoints) {
         if (!awaitProviderRequestSlot()) return PlannedRoute.unavailable("amap: interrupted");
-        AmapRoutePlanService.RoutePlanResult result = amap.planRoute(
-                origin[1], origin[0], destination[1], destination[0]);
+        AmapRoutePlanService.RoutePlanResult result = waypoints.isEmpty()
+                ? amap.planRoute(origin[1], origin[0], destination[1], destination[0])
+                : amap.planRoute(origin[1], origin[0], destination[1], destination[0], waypoints);
         if (!result.success || result.path == null || result.path.size() < 2) {
             return PlannedRoute.unavailable("amap: " + result.error);
         }
@@ -154,8 +161,29 @@ public class RoutePlanningService {
     }
 
     private String routeKey(double[] origin, double[] destination) {
+        return routeKey(origin, destination, List.of());
+    }
+
+    private String routeKey(double[] origin, double[] destination, List<double[]> waypoints) {
+        String waypointKey = waypoints.stream()
+                .map(this::coordinateText)
+                .collect(java.util.stream.Collectors.joining("|"));
         return String.format(Locale.ROOT, "%.5f,%.5f>%.5f,%.5f",
-                origin[0], origin[1], destination[0], destination[1]);
+                origin[0], origin[1], destination[0], destination[1]) + "@" + waypointKey;
+    }
+
+    private List<double[]> sanitizeWaypoints(List<double[]> waypoints) {
+        if (waypoints == null || waypoints.isEmpty()) return List.of();
+        List<double[]> result = new ArrayList<>();
+        for (double[] waypoint : waypoints) {
+            if (!validCoordinate(waypoint)) continue;
+            if (!result.isEmpty() && coordinateText(result.get(result.size() - 1)).equals(coordinateText(waypoint))) {
+                continue;
+            }
+            result.add(new double[]{waypoint[0], waypoint[1]});
+            if (result.size() == 10) break;
+        }
+        return List.copyOf(result);
     }
 
     private String coordinateText(double[] coordinate) {
@@ -182,7 +210,7 @@ public class RoutePlanningService {
                     Math.max(0L, durationSeconds) * 1000L, null);
         }
 
-        static PlannedRoute unavailable(String error) {
+        public static PlannedRoute unavailable(String error) {
             return new PlannedRoute(false, "fallback", List.of(), 0, 0, error);
         }
 

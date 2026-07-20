@@ -9,6 +9,8 @@ import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.ProvincePathCandida
 import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.ProvinceRef;
 import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.TownRoadOrder;
 import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.TownRoadRouteGroup;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -17,12 +19,14 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class TownRoadMiddleLayer {
+    private static final Logger log = LoggerFactory.getLogger(TownRoadMiddleLayer.class);
 
     /**
      * 两点之间最多保留多少条等长最短路径，避免某些节点组合出现过多等价路径。
@@ -41,6 +45,7 @@ public class TownRoadMiddleLayer {
     private final RoutePlanningService routePlanningService;
 
     private final Map<String, NormalizedTownRoadOrder> ordersByInstanceId = new ConcurrentHashMap<>();
+    private final Map<String, List<double[]>> baselineRouteCoordinatesByInstanceId = new ConcurrentHashMap<>();
 
     /**
      * 区县/地点 OD MapMap：fromKey -> toKey -> transport instance ids。
@@ -89,17 +94,8 @@ public class TownRoadMiddleLayer {
 
     public synchronized ExternalOrderSnapshotResult processSnapshot(List<ExternalOrderRecord> rawOrders) {
         List<ExternalOrderRecord> safeRawOrders = rawOrders == null ? List.of() : rawOrders;
-        List<ExternalOrderRecord> expandedRawOrders = expandRawOrders(safeRawOrders);
-        List<RoutePlanningService.RouteRequest> planningRequests = new ArrayList<>();
-        for (ExternalOrderRecord raw : expandedRawOrders) {
-            if (!isValidBasic(raw)) continue;
-            ExternalOrderRecord.Location from = coordinateResolver.resolveLocation(raw.from());
-            ExternalOrderRecord.Location to = coordinateResolver.resolveLocation(raw.to());
-            planningRequests.add(new RoutePlanningService.RouteRequest(
-                    from == null ? null : from.coords(),
-                    to == null ? null : to.coords()));
-        }
-        routePlanningService.preload(planningRequests);
+        List<ExternalOrderRecord> expandedRawOrders = expandVehicleInstances(safeRawOrders);
+        Map<String, RoutePlanBundle> routePlansByOrderLine = planOrderLineRoutes(expandedRawOrders);
         Map<String, NormalizedTownRoadOrder> previous = new LinkedHashMap<>(ordersByInstanceId);
 
         Map<String, NormalizedTownRoadOrder> dedupedCandidates = new LinkedHashMap<>();
@@ -116,7 +112,7 @@ public class TownRoadMiddleLayer {
                 continue;
             }
 
-            NormalizedTownRoadOrder order = normalize(raw);
+            NormalizedTownRoadOrder order = normalize(raw, routePlansByOrderLine);
             dedupedCandidates.merge(order.instanceId(), order, this::newerOrder);
         }
 
@@ -136,6 +132,7 @@ public class TownRoadMiddleLayer {
         }
 
         rebuildIndexes(normalized);
+        baselineRouteCoordinatesByInstanceId.keySet().retainAll(ordersByInstanceId.keySet());
 
         List<NormalizedTownRoadOrder> shortHaulOrders = new ArrayList<>();
         List<NormalizedTownRoadOrder> longHaulOrders = new ArrayList<>();
@@ -371,7 +368,7 @@ public class TownRoadMiddleLayer {
         );
     }
 
-    private List<ExternalOrderRecord> expandRawOrders(List<ExternalOrderRecord> rawOrders) {
+    public List<ExternalOrderRecord> expandVehicleInstances(List<ExternalOrderRecord> rawOrders) {
         List<ExternalOrderRecord> expanded = new ArrayList<>();
 
         for (ExternalOrderRecord raw : rawOrders) {
@@ -407,6 +404,10 @@ public class TownRoadMiddleLayer {
         }
 
         return expanded;
+    }
+
+    public String instanceIdFor(ExternalOrderRecord raw) {
+        return rawDebugId(raw);
     }
 
     private List<ExternalOrderRecord.Vehicle> lineVehicles(
@@ -463,7 +464,10 @@ public class TownRoadMiddleLayer {
         );
     }
 
-    private NormalizedTownRoadOrder normalize(ExternalOrderRecord raw) {
+    private NormalizedTownRoadOrder normalize(
+            ExternalOrderRecord raw,
+            Map<String, RoutePlanBundle> routePlansByOrderLine
+    ) {
         // 补全缺失的经纬度：从地址名称中解析省市区并查本地坐标库
         ExternalOrderRecord.Location resolvedFrom = coordinateResolver.resolveLocation(raw.from());
         ExternalOrderRecord.Location resolvedTo = coordinateResolver.resolveLocation(raw.to());
@@ -492,19 +496,33 @@ public class TownRoadMiddleLayer {
                 allowedProvinceCodes
         );
         List<double[]> fallbackCoordinates = routeCoordinatesFor(resolvedFrom, resolvedTo, cityPath, districtPath);
-        RoutePlanningService.PlannedRoute plannedRoute = routePlanningService.plan(
-                resolvedFrom == null ? null : resolvedFrom.coords(),
-                resolvedTo == null ? null : resolvedTo.coords());
-        List<double[]> routeCoordinates = plannedRoute.success()
-                ? plannedRoute.coordinates()
+        RoutePlanBundle routePlanBundle = routePlansByOrderLine.get(
+                routePlanKey(raw, resolvedFrom, resolvedTo));
+        RoutePlanningService.PlannedRoute baselineRoute = routePlanBundle == null
+                ? RoutePlanningService.PlannedRoute.unavailable("missing-order-line-plan")
+                : routePlanBundle.baseline();
+        RoutePlanningService.PlannedRoute initializationRoute = routePlanBundle == null
+                ? RoutePlanningService.PlannedRoute.unavailable("missing-order-line-plan")
+                : routePlanBundle.initialization();
+        List<double[]> baselineRouteCoordinates = baselineRoute.success()
+                ? baselineRoute.coordinates()
                 : fallbackCoordinates;
-        double routeLengthKm = plannedRoute.success()
-                ? plannedRoute.distanceKm()
+        List<double[]> routeCoordinates = initializationRoute.success()
+                ? initializationRoute.coordinates()
+                : baselineRouteCoordinates;
+        double routeLengthKm = initializationRoute.success()
+                ? initializationRoute.distanceKm()
+                : baselineRoute.success() ? baselineRoute.distanceKm()
                 : pathLengthKm(routeCoordinates);
-        Long travelDurationMs = plannedRoute.success() && plannedRoute.durationMs() > 0
-                ? plannedRoute.durationMs()
+        Long travelDurationMs = initializationRoute.success() && initializationRoute.durationMs() > 0
+                ? initializationRoute.durationMs()
+                : baselineRoute.success() && baselineRoute.durationMs() > 0
+                ? baselineRoute.durationMs()
                 : null;
-        String routeProvider = plannedRoute.success() ? plannedRoute.provider() : "fallback";
+        boolean usesVehicleWaypoints = routePlanBundle != null && !routePlanBundle.waypoints().isEmpty();
+        String routeProvider = initializationRoute.success() && usesVehicleWaypoints
+                ? initializationRoute.provider() + "-waypoints"
+                : baselineRoute.success() ? baselineRoute.provider() : "fallback";
         Double speedKmh = raw.vehicle() == null ? null : raw.vehicle().speedKmh();
 
         List<ProvincePath> candidatePaths = candidateProvincePathsForOrder(
@@ -537,6 +555,7 @@ public class TownRoadMiddleLayer {
                 : raw.orderId();
         String vehicleKey = vehicleKey(raw);
         String instanceId = instanceId(orderId, raw.lineId(), raw.lineIndex(), raw.vehicleIndex(), vehicleKey);
+        baselineRouteCoordinatesByInstanceId.put(instanceId, copyCoordinates(baselineRouteCoordinates));
 
         String dataSignature = signature(Map.of(
                 "orderId", safe(orderId),
@@ -551,18 +570,21 @@ public class TownRoadMiddleLayer {
                 "deleted", Boolean.TRUE.equals(raw.deleted())
         ));
 
-        String routeSignature = signature(Map.of(
-                "fromKey", safe(fromKey),
-                "toKey", safe(toKey),
-                "fromCoords", coordsForSignature(resolvedFrom.coords()),
-                "toCoords", coordsForSignature(resolvedTo.coords()),
-                "cityPath", cityPath,
-                "districtPath", districtPath,
-                "routeCoordinates", routeCoordinates.stream().map(this::coordsForSignature).toList(),
-                "routeProvider", routeProvider,
-                "provincePathKeys", provincePathKeys,
-                "upToDate", Boolean.TRUE.equals(raw.upToDate())
-        ));
+        Map<String, Object> routeSignatureValues = new LinkedHashMap<>();
+        routeSignatureValues.put("fromKey", safe(fromKey));
+        routeSignatureValues.put("toKey", safe(toKey));
+        routeSignatureValues.put("fromCoords", coordsForSignature(resolvedFrom.coords()));
+        routeSignatureValues.put("toCoords", coordsForSignature(resolvedTo.coords()));
+        routeSignatureValues.put("cityPath", cityPath);
+        routeSignatureValues.put("districtPath", districtPath);
+        routeSignatureValues.put("baselineRouteCoordinates",
+                baselineRouteCoordinates.stream().map(this::coordsForSignature).toList());
+        routeSignatureValues.put("routeCoordinates",
+                routeCoordinates.stream().map(this::coordsForSignature).toList());
+        routeSignatureValues.put("routeProvider", routeProvider);
+        routeSignatureValues.put("provincePathKeys", provincePathKeys);
+        routeSignatureValues.put("upToDate", Boolean.TRUE.equals(raw.upToDate()));
+        String routeSignature = signature(routeSignatureValues);
 
         return new NormalizedTownRoadOrder(
                 orderId,
@@ -1081,6 +1103,142 @@ public class TownRoadMiddleLayer {
                 order.toProvinceKey()
         );
     }
+
+    public List<double[]> baselineRouteCoordinates(String instanceId) {
+        List<double[]> coordinates = baselineRouteCoordinatesByInstanceId.get(instanceId);
+        return coordinates == null ? List.of() : copyCoordinates(coordinates);
+    }
+
+    private Map<String, RoutePlanBundle> planOrderLineRoutes(List<ExternalOrderRecord> expandedRawOrders) {
+        Map<String, List<ResolvedRouteSeed>> seedsByKey = new LinkedHashMap<>();
+        for (ExternalOrderRecord raw : expandedRawOrders) {
+            if (!isValidBasic(raw)) continue;
+            ExternalOrderRecord.Location from = coordinateResolver.resolveLocation(raw.from());
+            ExternalOrderRecord.Location to = coordinateResolver.resolveLocation(raw.to());
+            if (!hasCoords(from == null ? null : from.coords()) || !hasCoords(to == null ? null : to.coords())) {
+                continue;
+            }
+            String key = routePlanKey(raw, from, to);
+            seedsByKey.computeIfAbsent(key, ignored -> new ArrayList<>())
+                    .add(new ResolvedRouteSeed(raw, from.coords(), to.coords()));
+        }
+
+        Map<String, RoutePlanBundle> result = new LinkedHashMap<>();
+        for (Map.Entry<String, List<ResolvedRouteSeed>> entry : seedsByKey.entrySet()) {
+            ResolvedRouteSeed representative = entry.getValue().get(0);
+            RoutePlanningService.PlannedRoute baseline = routePlanningService.plan(
+                    representative.fromCoords(), representative.toCoords());
+            List<double[]> orderingRoute = baseline.success()
+                    ? baseline.coordinates()
+                    : List.of(representative.fromCoords(), representative.toCoords());
+            List<double[]> waypoints = orderedVehicleWaypoints(entry.getValue(), orderingRoute);
+            RoutePlanningService.PlannedRoute initialization = waypoints.isEmpty()
+                    ? baseline
+                    : routePlanningService.plan(
+                            representative.fromCoords(), representative.toCoords(), waypoints);
+            if (!initialization.success()) initialization = baseline;
+            result.put(entry.getKey(), new RoutePlanBundle(baseline, initialization, waypoints));
+            log.info("[RoutePlan] order-line routes prepared: key={}, waypointCount={}, baselineProvider={}, initializationProvider={}",
+                    entry.getKey(), waypoints.size(), baseline.provider(), initialization.provider());
+        }
+        return Map.copyOf(result);
+    }
+
+    private List<double[]> orderedVehicleWaypoints(
+            List<ResolvedRouteSeed> seeds,
+            List<double[]> baselineCoordinates
+    ) {
+        List<double[]> sorted = seeds.stream()
+                .map(seed -> seed.raw().vehicle() == null ? null : seed.raw().vehicle().currentCoords())
+                .filter(this::hasCoords)
+                .map(this::copyCoordinate)
+                .sorted(Comparator.comparingDouble(point -> routeProgress(baselineCoordinates, point)))
+                .toList();
+
+        List<double[]> deduped = new ArrayList<>();
+        for (double[] point : sorted) {
+            if (!deduped.isEmpty() && distanceKm(deduped.get(deduped.size() - 1), point) < 0.05) continue;
+            if (distanceKm(baselineCoordinates.get(0), point) < 0.05) continue;
+            if (distanceKm(baselineCoordinates.get(baselineCoordinates.size() - 1), point) < 0.05) continue;
+            deduped.add(point);
+        }
+        if (deduped.size() <= 10) return List.copyOf(deduped);
+
+        List<double[]> sampled = new ArrayList<>(10);
+        for (int i = 0; i < 10; i++) {
+            int index = (int) Math.round(i * (deduped.size() - 1.0) / 9.0);
+            sampled.add(deduped.get(index));
+        }
+        return List.copyOf(sampled);
+    }
+
+    private double routeProgress(List<double[]> coordinates, double[] position) {
+        if (coordinates == null || coordinates.size() < 2 || !hasCoords(position)) return 0;
+        double totalKm = pathLengthKm(coordinates);
+        if (totalKm <= 0) return 0;
+        double nearestDistanceSq = Double.POSITIVE_INFINITY;
+        double distanceAlongKm = 0;
+        double walkedKm = 0;
+        for (int i = 1; i < coordinates.size(); i++) {
+            double[] start = coordinates.get(i - 1);
+            double[] end = coordinates.get(i);
+            double dx = end[0] - start[0];
+            double dy = end[1] - start[1];
+            double lengthSq = dx * dx + dy * dy;
+            if (lengthSq <= 0) continue;
+            double ratio = ((position[0] - start[0]) * dx + (position[1] - start[1]) * dy) / lengthSq;
+            ratio = Math.max(0, Math.min(1, ratio));
+            double projectedLng = start[0] + dx * ratio;
+            double projectedLat = start[1] + dy * ratio;
+            double distanceSq = Math.pow(position[0] - projectedLng, 2)
+                    + Math.pow(position[1] - projectedLat, 2);
+            double segmentKm = distanceKm(start, end);
+            if (distanceSq < nearestDistanceSq) {
+                nearestDistanceSq = distanceSq;
+                distanceAlongKm = walkedKm + segmentKm * ratio;
+            }
+            walkedKm += segmentKm;
+        }
+        return Math.max(0, Math.min(1, distanceAlongKm / totalKm));
+    }
+
+    private String routePlanKey(
+            ExternalOrderRecord raw,
+            ExternalOrderRecord.Location from,
+            ExternalOrderRecord.Location to
+    ) {
+        return String.join("::",
+                firstNonBlank(raw.orderId(), "unknown-order"),
+                firstNonBlank(raw.lineId(), "unknown-line"),
+                coordinateKey(from == null ? null : from.coords()),
+                coordinateKey(to == null ? null : to.coords()));
+    }
+
+    private String coordinateKey(double[] coordinate) {
+        if (!hasCoords(coordinate)) return "missing";
+        return String.format(Locale.ROOT, "%.5f,%.5f", coordinate[0], coordinate[1]);
+    }
+
+    private List<double[]> copyCoordinates(List<double[]> coordinates) {
+        if (coordinates == null) return List.of();
+        return coordinates.stream().filter(this::hasCoords).map(this::copyCoordinate).toList();
+    }
+
+    private double[] copyCoordinate(double[] coordinate) {
+        return new double[]{coordinate[0], coordinate[1]};
+    }
+
+    private record ResolvedRouteSeed(
+            ExternalOrderRecord raw,
+            double[] fromCoords,
+            double[] toCoords
+    ) {}
+
+    private record RoutePlanBundle(
+            RoutePlanningService.PlannedRoute baseline,
+            RoutePlanningService.PlannedRoute initialization,
+            List<double[]> waypoints
+    ) {}
 
     private NormalizedTownRoadOrder newerOrder(
             NormalizedTownRoadOrder first,

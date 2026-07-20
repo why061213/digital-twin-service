@@ -50,20 +50,37 @@ public class AmapRoutePlanService {
      */
     public RoutePlanResult planRoute(double originLat, double originLng,
                                      double destinationLat, double destinationLng) {
+        return planRoute(originLat, originLng, destinationLat, destinationLng, List.of());
+    }
+
+    public RoutePlanResult planRoute(
+            double originLat,
+            double originLng,
+            double destinationLat,
+            double destinationLng,
+            List<double[]> waypoints
+    ) {
         // 高德参数格式：lng,lat（经度在前）
         String origin = originLng + "," + originLat;
         String destination = destinationLng + "," + destinationLat;
-        return planRoute(origin, destination);
+        String waypointText = waypointText(waypoints);
+        return planRoute(origin, destination, waypointText);
     }
 
     public RoutePlanResult planRoute(String origin, String destination) {
+        return planRoute(origin, destination, "");
+    }
+
+    private RoutePlanResult planRoute(String origin, String destination, String waypoints) {
         if (key == null || key.isBlank()) {
             return RoutePlanResult.fail("高德 Key 未配置");
         }
         try {
             String url = API_URL + "?origin=" + origin + "&destination=" + destination
                     + "&key=" + key + "&show_fields=polyline,cost";
-            log.info("[AmapRoute] 请求: origin={}, dest={}", origin, destination);
+            if (!waypoints.isBlank()) url += "&waypoints=" + waypoints;
+            log.info("[AmapRoute] 请求: origin={}, dest={}, waypointCount={}",
+                    origin, destination, waypoints.isBlank() ? 0 : waypoints.split(";").length);
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
@@ -84,6 +101,16 @@ public class AmapRoutePlanService {
             log.error("[AmapRoute] 请求失败: {}", e.getMessage());
             return RoutePlanResult.fail(e.getMessage());
         }
+    }
+
+    private String waypointText(List<double[]> waypoints) {
+        if (waypoints == null || waypoints.isEmpty()) return "";
+        return waypoints.stream()
+                .filter(point -> point != null && point.length >= 2
+                        && Double.isFinite(point[0]) && Double.isFinite(point[1]))
+                .limit(10)
+                .map(point -> point[0] + "," + point[1])
+                .collect(java.util.stream.Collectors.joining(";"));
     }
 
     // ================================================================

@@ -4,6 +4,7 @@ import com.jushen.digitaltwin.dto.RenderRouteDTO;
 import com.jushen.digitaltwin.dto.Rm2RouteGroupDTO;
 import com.jushen.digitaltwin.dto.Rm2Snapshot;
 import com.jushen.digitaltwin.dto.RouteDtoConverter;
+import com.jushen.digitaltwin.service.PositionSnapshot;
 import com.jushen.digitaltwin.service.RoutePushService;
 import com.jushen.digitaltwin.websocket.RealtimeWebSocketHandler;
 import org.slf4j.Logger;
@@ -15,6 +16,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -109,8 +111,23 @@ public class TownRoadRenderService {
             pipeline.put("deduplication", deduplication.toMap());
         }
 
+        List<ExternalOrderRecord> expandedOrders = middleLayer.expandVehicleInstances(dedupedOrders);
+        Set<String> planningLineIds = new LinkedHashSet<>();
+        for (ExternalOrderRecord order : expandedOrders) {
+            if (order == null || order.vehicle() == null) continue;
+            String instanceId = middleLayer.instanceIdFor(order);
+            if (routePushService.prepareProviderPositionVehicle(
+                    instanceId, order.vehicle().plate(), order.vehicle().carId())) {
+                planningLineIds.add(instanceId);
+            }
+        }
+        Map<String, Object> positionWarmup = routePushService.warmPositionCacheForLineIds(planningLineIds);
+        List<ExternalOrderRecord> planningOrders = expandedOrders.stream()
+                .map(this::withFreshProviderPosition)
+                .toList();
+
         long middleLayerStartedAt = System.currentTimeMillis();
-        ExternalOrderSnapshotResult result = middleLayer.processSnapshot(dedupedOrders);
+        ExternalOrderSnapshotResult result = middleLayer.processSnapshot(planningOrders);
         broadcastDailyKpisIfChanged();
         long middleLayerFinishedAt = System.currentTimeMillis();
         if (traceEnabled) {
@@ -123,11 +140,6 @@ public class TownRoadRenderService {
                 .toList();
         // 先注册运行路线，后续 routes 快照直接使用同一运行池计算出的速度、距离和时长。
         int townRouteDispatchCount = registerShortHaulRoutesForPositions(eligibleShortHaulOrders);
-        Set<String> eligibleShortHaulLineIds = eligibleShortHaulOrders.stream()
-                .map(NormalizedTownRoadOrder::instanceId)
-                .filter(lineId -> lineId != null && !lineId.isBlank())
-                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-        Map<String, Object> positionWarmup = routePushService.warmPositionCacheForLineIds(eligibleShortHaulLineIds);
         List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(eligibleShortHaulOrders).stream()
                 .map(this::withRuntimeMetrics)
                 .filter(route -> route != null)
@@ -589,6 +601,16 @@ public class TownRoadRenderService {
             log.info("[TownRoad] filtered RM2 route without registered runtime: lineId={}", route.lineId());
             return null;
         }
+        Map<String, Object> meta = new LinkedHashMap<>();
+        if (route.meta() != null) {
+            meta.putAll(route.meta());
+        }
+        List<double[]> baselineCoordinates = middleLayer.baselineRouteCoordinates(route.lineId());
+        if (!baselineCoordinates.isEmpty()) {
+            meta.put("baselineCoordinates", baselineCoordinates);
+            meta.put("initializationUsesVehicleWaypoints",
+                    String.valueOf(meta.getOrDefault("routeProvider", "")).endsWith("-waypoints"));
+        }
         return new RenderRouteDTO(
                 route.lineId(), route.orderId(), route.businessLineId(),
                 coalesce(metrics.plate(), route.plate()), metrics.vehicleId(),
@@ -596,7 +618,8 @@ public class TownRoadRenderService {
                 metrics.routeLengthKm(), metrics.speedKmh(), route.status(), route.cargo(),
                 route.cargoWeight(), route.cargoUnit(),
                 metrics.travelDurationMs(), metrics.pathKey(), route.scope(), route.groupId(), route.role(),
-                route.coordinateSystem(), route.updatedAt(), route.routeSignature(), route.meta()
+                route.coordinateSystem(), route.updatedAt(), route.routeSignature(),
+                Collections.unmodifiableMap(meta)
         );
     }
 
@@ -618,6 +641,26 @@ public class TownRoadRenderService {
                     routePushService.hasFreshProviderPosition(route.lineId()));
         }
         return publishable;
+    }
+
+    private ExternalOrderRecord withFreshProviderPosition(ExternalOrderRecord order) {
+        if (order == null || order.vehicle() == null) return order;
+        String instanceId = middleLayer.instanceIdFor(order);
+        PositionSnapshot snapshot = routePushService.freshProviderPosition(instanceId);
+        if (snapshot == null) return order;
+
+        ExternalOrderRecord.Vehicle vehicle = order.vehicle();
+        ExternalOrderRecord.Vehicle enrichedVehicle = new ExternalOrderRecord.Vehicle(
+                vehicle.plate(), vehicle.carId(), vehicle.cargo(),
+                vehicle.cargoWeight(), vehicle.cargoUnit(),
+                snapshot.position(), snapshot.speedKmh()
+        );
+        return new ExternalOrderRecord(
+                order.orderId(), order.lineId(), null,
+                order.from(), order.to(), enrichedVehicle,
+                order.status(), order.updatedAt(), order.deleted(), order.upToDate(),
+                order.lineIndex(), order.vehicleIndex()
+        );
     }
 
     private String coalesce(String first, String second) {

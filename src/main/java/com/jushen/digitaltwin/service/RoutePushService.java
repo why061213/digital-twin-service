@@ -881,6 +881,14 @@ public class RoutePushService {
                 && "real".equals(snapshot.source());
     }
 
+    /** 路线初始化前只读已经批量拉取的真实位置，不触发单车接口。 */
+    public PositionSnapshot freshProviderPosition(String lineId) {
+        PositionSnapshot snapshot = positionCache.getPosition(lineId);
+        return snapshot != null && !snapshot.stale() && "real".equals(snapshot.source())
+                ? snapshot
+                : null;
+    }
+
     public boolean hasProviderVehicleId(String lineId) {
         String vehicleId = lineIdCarIdMap.get(lineId);
         return vehicleId != null && !vehicleId.isBlank();
@@ -2103,7 +2111,7 @@ public class RoutePushService {
         // 外部订单快照会反复抵达。相同 lineId 的短途任务必须沿用第一次注册的
         // startTime，否则模拟进度会被重新随机并回跳到路线起点附近。
         ScheduledRoute existingRoute = activeRoutes.get(lineId);
-        if (isSameTownRoute(existingRoute, from, to, pathKey)) {
+        if (isSameTownOrderRoute(existingRoute, from, to, fromCoords, toCoords)) {
             log.debug("[TownRoad] retained active simulation: lineId={}, startTime={}, speedKmh={}",
                     lineId, existingRoute.startTime(), existingRoute.speedKmh());
             return;
@@ -2159,12 +2167,19 @@ public class RoutePushService {
                 from, to, lineId, route.orderId(), coordinates.size(), Math.round(progress * 100), progressSource);
     }
 
-    private boolean isSameTownRoute(ScheduledRoute route, String from, String to, String pathKey) {
+    private boolean isSameTownOrderRoute(
+            ScheduledRoute route,
+            String from,
+            String to,
+            double[] fromCoords,
+            double[] toCoords
+    ) {
         return route != null
                 && route.scope() == RouteScope.TOWN
                 && safeRouteText(route.from()).equals(safeRouteText(from))
                 && safeRouteText(route.to()).equals(safeRouteText(to))
-                && safeRouteText(route.pathKey()).equals(safeRouteText(pathKey));
+                && distanceKm(route.getFromCoords(), fromCoords) < 0.1
+                && distanceKm(route.getToCoords(), toCoords) < 0.1;
     }
 
     /** 真实速度优先，0 表示停车；订单速度只作已校验的兜底。 */

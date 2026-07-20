@@ -7,10 +7,12 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -52,9 +54,20 @@ public class BaiduRoutePlanService {
      */
     public RoutePlanResult planRoute(double originLat, double originLng,
                                      double destinationLat, double destinationLng) {
+        return planRoute(originLat, originLng, destinationLat, destinationLng, List.of());
+    }
+
+    public RoutePlanResult planRoute(
+            double originLat,
+            double originLng,
+            double destinationLat,
+            double destinationLng,
+            List<double[]> waypoints
+    ) {
         String origin = originLat + "," + originLng;
         String destination = destinationLat + "," + destinationLng;
-        return planRoute(origin, destination);
+        String waypointText = waypointText(waypoints);
+        return planRoute(origin, destination, waypointText);
     }
 
     /**
@@ -65,13 +78,21 @@ public class BaiduRoutePlanService {
      * @return 规划结果
      */
     public RoutePlanResult planRoute(String origin, String destination) {
+        return planRoute(origin, destination, "");
+    }
+
+    private RoutePlanResult planRoute(String origin, String destination, String waypoints) {
         if (ak == null || ak.isBlank()) {
             return RoutePlanResult.fail("百度 AK 未配置");
         }
         try {
             String url = API_URL + "?origin=" + origin + "&destination=" + destination
-                    + "&coord_type=gcj02&ak=" + ak;
-            log.info("[BaiduRoute] 请求: origin={}, dest={}", origin, destination);
+                    + "&coord_type=gcj02&ret_coordtype=gcj02&ak=" + ak;
+            if (!waypoints.isBlank()) {
+                url += "&waypoints=" + URLEncoder.encode(waypoints, StandardCharsets.UTF_8);
+            }
+            log.info("[BaiduRoute] 请求: origin={}, dest={}, waypointCount={}",
+                    origin, destination, waypoints.isBlank() ? 0 : waypoints.split("\\|").length);
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
@@ -92,6 +113,16 @@ public class BaiduRoutePlanService {
             log.error("[BaiduRoute] 请求失败: {}", e.getMessage());
             return RoutePlanResult.fail(e.getMessage());
         }
+    }
+
+    private String waypointText(List<double[]> waypoints) {
+        if (waypoints == null || waypoints.isEmpty()) return "";
+        return waypoints.stream()
+                .filter(point -> point != null && point.length >= 2
+                        && Double.isFinite(point[0]) && Double.isFinite(point[1]))
+                .limit(10)
+                .map(point -> point[1] + "," + point[0])
+                .collect(Collectors.joining("|"));
     }
 
     // ================================================================

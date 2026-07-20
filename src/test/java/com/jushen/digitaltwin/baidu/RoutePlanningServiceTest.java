@@ -6,6 +6,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -57,5 +59,49 @@ class RoutePlanningServiceTest {
         assertThat(route.success()).isTrue();
         assertThat(route.provider()).isEqualTo("amap");
         assertThat(route.distanceKm()).isEqualTo(21.0);
+    }
+
+    @Test
+    void keepsBaselineAndWaypointPlansInSeparateCacheEntries() {
+        BaiduRoutePlanService baidu = mock(BaiduRoutePlanService.class);
+        AmapRoutePlanService amap = mock(AmapRoutePlanService.class);
+        List<double[]> waypoints = List.of(new double[]{113.20, 23.08});
+        when(baidu.planRoute(origin[1], origin[0], destination[1], destination[0]))
+                .thenReturn(BaiduRoutePlanService.RoutePlanResult.success(
+                        20_500, 1_800, List.of(origin, destination), List.of()));
+        when(baidu.planRoute(eq(origin[1]), eq(origin[0]), eq(destination[1]), eq(destination[0]), anyList()))
+                .thenReturn(BaiduRoutePlanService.RoutePlanResult.success(
+                        22_000, 2_000, List.of(origin, waypoints.get(0), destination), List.of()));
+        RoutePlanningService service = new RoutePlanningService(baidu, amap, true, 60_000, 0);
+
+        RoutePlanningService.PlannedRoute baseline = service.plan(origin, destination);
+        RoutePlanningService.PlannedRoute initialization = service.plan(origin, destination, waypoints);
+        RoutePlanningService.PlannedRoute cachedInitialization = service.plan(origin, destination, waypoints);
+
+        assertThat(baseline.distanceKm()).isEqualTo(20.5);
+        assertThat(initialization.distanceKm()).isEqualTo(22.0);
+        assertThat(cachedInitialization).isEqualTo(initialization);
+        verify(baidu, times(1)).planRoute(origin[1], origin[0], destination[1], destination[0]);
+        verify(baidu, times(1)).planRoute(eq(origin[1]), eq(origin[0]), eq(destination[1]), eq(destination[0]), anyList());
+    }
+
+    @Test
+    void preservesWaypointsWhenFallingBackToAmap() {
+        BaiduRoutePlanService baidu = mock(BaiduRoutePlanService.class);
+        AmapRoutePlanService amap = mock(AmapRoutePlanService.class);
+        List<double[]> waypoints = List.of(new double[]{113.20, 23.08});
+        when(baidu.planRoute(eq(origin[1]), eq(origin[0]), eq(destination[1]), eq(destination[0]), anyList()))
+                .thenReturn(BaiduRoutePlanService.RoutePlanResult.fail("quota"));
+        when(amap.planRoute(eq(origin[1]), eq(origin[0]), eq(destination[1]), eq(destination[0]), anyList()))
+                .thenReturn(AmapRoutePlanService.RoutePlanResult.success(
+                        22_500, 2_100, 0, List.of(origin, waypoints.get(0), destination), List.of()));
+        RoutePlanningService service = new RoutePlanningService(baidu, amap, true, 60_000, 0);
+
+        RoutePlanningService.PlannedRoute route = service.plan(origin, destination, waypoints);
+
+        assertThat(route.success()).isTrue();
+        assertThat(route.provider()).isEqualTo("amap");
+        assertThat(route.coordinates()).anyMatch(point -> point[0] == 113.20 && point[1] == 23.08);
+        verify(amap, times(1)).planRoute(eq(origin[1]), eq(origin[0]), eq(destination[1]), eq(destination[0]), anyList());
     }
 }
