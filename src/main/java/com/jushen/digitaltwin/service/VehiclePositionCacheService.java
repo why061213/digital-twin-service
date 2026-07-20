@@ -222,7 +222,8 @@ public class VehiclePositionCacheService {
                                 lineId, vehicleId, posResult.vehicleName, posResult.plate,
                                 posResult.lng, posResult.lat, posResult.speedKmh,
                                 posResult.driverName, posResult.address, posResult.stateStr,
-                                posResult.directionDeg, posResult.directionLabel));
+                                posResult.directionDeg, posResult.directionLabel,
+                                posResult.alarmStr, posResult.online));
                         cacheUpdatedCount++;
                     }
                 }
@@ -313,7 +314,9 @@ public class VehiclePositionCacheService {
                     stringValue(vehicle.get("adree")),
                     stringValue(vehicle.get("state_str")),
                     integerValue(vehicle.get("dir")),
-                    stringValue(vehicle.get("dir_str"))));
+                    stringValue(vehicle.get("dir_str")),
+                    stringValue(vehicle.get("alarm_str")),
+                    booleanValue(vehicle.get("online"))));
         }
 
         log.info("[PositionCache] batch: requested={}, returned={}, missing={}, invalid={}",
@@ -337,10 +340,20 @@ public class VehiclePositionCacheService {
         }
     }
 
+    private Boolean booleanValue(Object value) {
+        if (value == null) return null;
+        if (value instanceof Boolean booleanValue) return booleanValue;
+        String text = String.valueOf(value).trim();
+        if ("true".equalsIgnoreCase(text) || "1".equals(text)) return true;
+        if ("false".equalsIgnoreCase(text) || "0".equals(text)) return false;
+        return null;
+    }
+
     public record ProviderPositionResult(
             String vehicleId, String vehicleName, String plate,
             double lng, double lat, double speedKmh,
             String driverName, String address, String stateStr,
-            Integer directionDeg, String directionLabel
+            Integer directionDeg, String directionLabel,
+            String alarmStr, Boolean online
     ) {}
 }

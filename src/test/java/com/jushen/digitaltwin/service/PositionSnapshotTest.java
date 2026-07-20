@@ -46,6 +46,16 @@ class PositionSnapshotTest {
         assertSame(stationary, stationary.predictAt(anchor.plusSeconds(3_600)));
     }
 
+    @Test
+    void classifiesDocumentedAlarmLevels() {
+        assertEquals("critical", PositionSnapshot.classifyAlarmSeverity("碰撞报警", "行驶", true));
+        assertEquals("critical", PositionSnapshot.classifyAlarmSeverity("", "紧急报警", true));
+        assertEquals("warning", PositionSnapshot.classifyAlarmSeverity("车道偏离报警", "行驶", true));
+        assertEquals("warning", PositionSnapshot.classifyAlarmSeverity("", "停车超时(20分)", true));
+        assertEquals("warning", PositionSnapshot.classifyAlarmSeverity("", "行驶", false));
+        assertEquals("none", PositionSnapshot.classifyAlarmSeverity("", "行驶", true));
+    }
+
     private PositionSnapshot snapshot(
             Instant anchor,
             double speedKmh,

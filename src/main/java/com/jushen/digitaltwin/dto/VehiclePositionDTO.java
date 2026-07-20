@@ -34,6 +34,12 @@ public record VehiclePositionDTO(
         String address,
         /** 车辆状态说明（供应商 state_str） */
         String stateStr,
+        /** 供应商报警说明（alarm_str） */
+        String alarmStr,
+        /** 报警等级：none / warning / critical */
+        String alarmSeverity,
+        /** 供应商在线状态 */
+        Boolean online,
         /** 方位角，0 为正北，顺时针 */
         Integer directionDeg,
         /** 供应商方向文本（dir_str） */

@@ -17,6 +17,9 @@ public record PositionSnapshot(
         String driverName,
         String address,
         String stateStr,
+        String alarmStr,
+        String alarmSeverity,
+        Boolean online,
         Integer directionDeg,
         String directionLabel,
         Instant providerTime,
@@ -25,6 +28,30 @@ public record PositionSnapshot(
         boolean stale
 ) {
     private static final double EARTH_RADIUS_KM = 6_371.0088;
+
+    public PositionSnapshot(
+            String lineId,
+            String vehicleId,
+            String vehicleName,
+            String plate,
+            double lng,
+            double lat,
+            double speedKmh,
+            String driverName,
+            String address,
+            String stateStr,
+            Integer directionDeg,
+            String directionLabel,
+            Instant providerTime,
+            Instant fetchedAt,
+            String source,
+            boolean stale
+    ) {
+        this(lineId, vehicleId, vehicleName, plate, lng, lat, speedKmh,
+                driverName, address, stateStr,
+                null, classifyAlarmSeverity(null, stateStr, null), null,
+                directionDeg, directionLabel, providerTime, fetchedAt, source, stale);
+    }
 
     public double[] position() {
         return new double[]{lng, lat};
@@ -59,11 +86,36 @@ public record PositionSnapshot(
             Integer directionDeg,
             String directionLabel
     ) {
+        return fromProvider(
+                lineId, vehicleId, vehicleName, plate, lng, lat, speedKmh,
+                driverName, address, stateStr, directionDeg, directionLabel,
+                null, null
+        );
+    }
+
+    public static PositionSnapshot fromProvider(
+            String lineId,
+            String vehicleId,
+            String vehicleName,
+            String plate,
+            double lng,
+            double lat,
+            double speedKmh,
+            String driverName,
+            String address,
+            String stateStr,
+            Integer directionDeg,
+            String directionLabel,
+            String alarmStr,
+            Boolean online
+    ) {
         Instant now = Instant.now();
         return new PositionSnapshot(
                 lineId, vehicleId, vehicleName, plate,
                 lng, lat, speedKmh,
-                driverName, address, stateStr, directionDeg, directionLabel,
+                driverName, address, stateStr,
+                alarmStr, classifyAlarmSeverity(alarmStr, stateStr, online), online,
+                directionDeg, directionLabel,
                 now, now,
                 "real",
                 false
@@ -74,7 +126,8 @@ public record PositionSnapshot(
         return new PositionSnapshot(
                 lineId, vehicleId, vehicleName, plate,
                 lng, lat, speedKmh,
-                driverName, address, stateStr, directionDeg, directionLabel,
+                driverName, address, stateStr, alarmStr, alarmSeverity, online,
+                directionDeg, directionLabel,
                 providerTime, fetchedAt,
                 "stale-real",
                 true
@@ -112,8 +165,33 @@ public record PositionSnapshot(
         return new PositionSnapshot(
                 lineId, vehicleId, vehicleName, plate,
                 normalizedLng, Math.toDegrees(predictedLat), speedKmh,
-                driverName, address, stateStr, directionDeg, directionLabel,
+                driverName, address, stateStr, alarmStr, alarmSeverity, online,
+                directionDeg, directionLabel,
                 providerTime, fetchedAt, source, stale
         );
+    }
+
+    public static String classifyAlarmSeverity(String alarmStr, String stateStr, Boolean online) {
+        String description = ((alarmStr == null ? "" : alarmStr) + " "
+                + (stateStr == null ? "" : stateStr)).trim();
+        if (containsAny(description,
+                "紧急报警", "碰撞报警", "前向碰撞", "行人碰撞", "侧翻", "危险预警",
+                "防劫", "双手脱把", "未检测到驾驶员", "驾驶员异常")) {
+            return "critical";
+        }
+        if (Boolean.FALSE.equals(online) || containsAny(description,
+                "报警", "预警", "停车", "停驶", "静止", "熄火", "离线", "失联",
+                "故障", "异常", "超速", "疲劳", "偏离", "车距过近")) {
+            return "warning";
+        }
+        return "none";
+    }
+
+    private static boolean containsAny(String value, String... keywords) {
+        if (value == null || value.isBlank()) return false;
+        for (String keyword : keywords) {
+            if (value.contains(keyword)) return true;
+        }
+        return false;
     }
 }

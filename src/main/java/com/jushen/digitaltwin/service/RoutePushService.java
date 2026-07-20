@@ -729,7 +729,14 @@ public class RoutePushService {
                 new double[]{lng, lat},
                 speedKmh,
                 stringValue(vehicle.get("vehicle_id")),
-                stringValue(vehicle.get("vehicle_name"))
+                stringValue(vehicle.get("vehicle_name")),
+                stringValue(vehicle.get("driverNameIC")),
+                stringValue(vehicle.get("adree")),
+                stringValue(vehicle.get("state_str")),
+                integerValue(vehicle.get("dir")),
+                stringValue(vehicle.get("dir_str")),
+                stringValue(vehicle.get("alarm_str")),
+                booleanValue(vehicle.get("online"))
         );
     }
 
@@ -737,6 +744,24 @@ public class RoutePushService {
         if (value == null) return null;
         String text = String.valueOf(value).trim();
         return text.isEmpty() ? null : text;
+    }
+
+    private Integer integerValue(Object value) {
+        if (value == null) return null;
+        try {
+            return (int) Math.round(Double.parseDouble(String.valueOf(value)));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private Boolean booleanValue(Object value) {
+        if (value == null) return null;
+        if (value instanceof Boolean booleanValue) return booleanValue;
+        String text = String.valueOf(value).trim();
+        if ("true".equalsIgnoreCase(text) || "1".equals(text)) return true;
+        if ("false".equalsIgnoreCase(text) || "0".equals(text)) return false;
+        return null;
     }
 
     public Map<String, Object> getPosition(String lineId) {
@@ -1163,6 +1188,9 @@ public class RoutePushService {
         message.put("driverName", snapshot.driverName());
         message.put("address", snapshot.address());
         message.put("stateStr", snapshot.stateStr());
+        message.put("alarmStr", snapshot.alarmStr());
+        message.put("alarmSeverity", snapshot.alarmSeverity());
+        message.put("online", snapshot.online());
         message.put("directionDeg", snapshot.directionDeg());
         message.put("directionLabel", snapshot.directionLabel());
     }
@@ -1243,6 +1271,9 @@ public class RoutePushService {
                 String.valueOf(position.get("driverName")),
                 String.valueOf(position.get("address")),
                 String.valueOf(position.get("stateStr")),
+                String.valueOf(position.get("alarmStr")),
+                String.valueOf(position.get("alarmSeverity")),
+                String.valueOf(position.get("online")),
                 String.valueOf(position.get("directionDeg")),
                 String.valueOf(position.get("directionLabel")));
         BroadcastPositionState previous = lastBroadcastPositions.get(lineId);
@@ -1323,7 +1354,9 @@ public class RoutePushService {
             if (pos != null) {
                 positionCache.putPosition(lineId, PositionSnapshot.fromProvider(
                         lineId, pos.vehicleId(), pos.vehicleName(), plate,
-                        pos.position()[0], pos.position()[1], pos.speedKmh()));
+                        pos.position()[0], pos.position()[1], pos.speedKmh(),
+                        pos.driverName(), pos.address(), pos.stateStr(),
+                        pos.directionDeg(), pos.directionLabel(), pos.alarmStr(), pos.online()));
                 return pos;
             }
         }
@@ -1334,7 +1367,9 @@ public class RoutePushService {
             if (pos != null) {
                 positionCache.putPosition(lineId, PositionSnapshot.fromProvider(
                         lineId, pos.vehicleId(), pos.vehicleName(), plate,
-                        pos.position()[0], pos.position()[1], pos.speedKmh()));
+                        pos.position()[0], pos.position()[1], pos.speedKmh(),
+                        pos.driverName(), pos.address(), pos.stateStr(),
+                        pos.directionDeg(), pos.directionLabel(), pos.alarmStr(), pos.online()));
                 return pos;
             }
         }
@@ -2043,8 +2078,19 @@ public class RoutePushService {
             double[] position,
             double speedKmh,
             String vehicleId,
-            String vehicleName
+            String vehicleName,
+            String driverName,
+            String address,
+            String stateStr,
+            Integer directionDeg,
+            String directionLabel,
+            String alarmStr,
+            Boolean online
     ) {
+        private ProviderPosition(double[] position, double speedKmh, String vehicleId, String vehicleName) {
+            this(position, speedKmh, vehicleId, vehicleName,
+                    null, null, null, null, null, null, null);
+        }
     }
 
     private enum RouteScope {
