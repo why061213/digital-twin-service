@@ -28,8 +28,11 @@ public class RoutePlanningService {
     private final AmapRoutePlanService amap;
     private final boolean enabled;
     private final long cacheTtlMs;
+    private final long minRequestIntervalMs;
     private final Map<String, CacheEntry> cache = new ConcurrentHashMap<>();
-    private final ExecutorService preloadExecutor = Executors.newFixedThreadPool(4, runnable -> {
+    private final Object providerRequestLock = new Object();
+    private long nextProviderRequestAtMs;
+    private final ExecutorService preloadExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "route-plan-preload");
         thread.setDaemon(true);
         return thread;
@@ -39,12 +42,14 @@ public class RoutePlanningService {
             BaiduRoutePlanService baidu,
             AmapRoutePlanService amap,
             @Value("${dashboard.route-plan.enabled:true}") boolean enabled,
-            @Value("${dashboard.route-plan.cache-ttl-ms:86400000}") long cacheTtlMs
+            @Value("${dashboard.route-plan.cache-ttl-ms:86400000}") long cacheTtlMs,
+            @Value("${dashboard.route-plan.min-request-interval-ms:400}") long minRequestIntervalMs
     ) {
         this.baidu = baidu;
         this.amap = amap;
         this.enabled = enabled;
         this.cacheTtlMs = cacheTtlMs > 0 ? cacheTtlMs : DEFAULT_CACHE_TTL_MS;
+        this.minRequestIntervalMs = Math.max(0, minRequestIntervalMs);
     }
 
     public PlannedRoute plan(double[] origin, double[] destination) {
@@ -94,21 +99,51 @@ public class RoutePlanningService {
     }
 
     private PlannedRoute planBaidu(double[] origin, double[] destination) {
+        if (!awaitProviderRequestSlot()) return PlannedRoute.unavailable("baidu: interrupted");
         BaiduRoutePlanService.RoutePlanResult result = baidu.planRoute(
                 origin[1], origin[0], destination[1], destination[0]);
         if (!result.success || result.path == null || result.path.size() < 2) {
             return PlannedRoute.unavailable("baidu: " + result.error);
         }
-        return PlannedRoute.success("baidu", result.path, result.totalDistance, result.totalDuration);
+        return PlannedRoute.success(
+                "baidu", withExactEndpoints(result.path, origin, destination), result.totalDistance, result.totalDuration);
     }
 
     private PlannedRoute planAmap(double[] origin, double[] destination) {
+        if (!awaitProviderRequestSlot()) return PlannedRoute.unavailable("amap: interrupted");
         AmapRoutePlanService.RoutePlanResult result = amap.planRoute(
                 origin[1], origin[0], destination[1], destination[0]);
         if (!result.success || result.path == null || result.path.size() < 2) {
             return PlannedRoute.unavailable("amap: " + result.error);
         }
-        return PlannedRoute.success("amap", result.path, result.totalDistance, result.totalDuration);
+        return PlannedRoute.success(
+                "amap", withExactEndpoints(result.path, origin, destination), result.totalDistance, result.totalDuration);
+    }
+
+    private List<double[]> withExactEndpoints(List<double[]> path, double[] origin, double[] destination) {
+        List<double[]> result = new ArrayList<>(path.size() + 2);
+        result.add(new double[]{origin[0], origin[1]});
+        for (double[] coordinate : path) {
+            if (validCoordinate(coordinate)) result.add(new double[]{coordinate[0], coordinate[1]});
+        }
+        result.add(new double[]{destination[0], destination[1]});
+        return result;
+    }
+
+    private boolean awaitProviderRequestSlot() {
+        synchronized (providerRequestLock) {
+            long waitMs = nextProviderRequestAtMs - System.currentTimeMillis();
+            if (waitMs > 0) {
+                try {
+                    Thread.sleep(waitMs);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            nextProviderRequestAtMs = System.currentTimeMillis() + minRequestIntervalMs;
+            return true;
+        }
     }
 
     private boolean validCoordinate(double[] coordinate) {

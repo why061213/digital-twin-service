@@ -84,9 +84,10 @@ public class RoutePushService {
     private static final long POSITION_MAX_SILENCE_MS = 120_000L;
     private static final double MAX_CALIBRATION_OFF_ROUTE_KM = 1.0;
     private static final long DEVIATION_WINDOW_MS = 10 * 60_000L;
+    private static final long DEVIATION_EVENT_COOLDOWN_MS = 2 * 60_000L;
     private static final long DEVIATION_ALERT_TTL_MS = 10 * 60_000L;
     private static final int DEVIATION_WARNING_COUNT = 2;
-    private static final int DEVIATION_CRITICAL_COUNT = 4;
+    private static final int DEVIATION_CRITICAL_COUNT = 3;
     private final boolean passivePositionPushEnabled;
     private final String simulationProfile;
     private final String externalPositionUrl;
@@ -985,7 +986,7 @@ public class RoutePushService {
                             lineId, String.format(Locale.ROOT, "%.3f", offRouteKm));
                     continue;
                 }
-                recordRouteDeviation(lineId, now, offRouteKm);
+                if (!recordRouteDeviation(lineId, now, offRouteKm)) continue;
                 RoutePlanningService.PlannedRoute replanned = routePlanningService.plan(
                         snapshot.position(), route.getToCoords());
                 if (replanned.success()) {
@@ -1291,11 +1292,17 @@ public class RoutePushService {
         applyRouteDeviationAlert(message, snapshot.lineId(), System.currentTimeMillis());
     }
 
-    private void recordRouteDeviation(String lineId, long now, double distanceKm) {
+    private boolean recordRouteDeviation(String lineId, long now, double distanceKm) {
         Deque<Long> times = routeDeviationTimes.computeIfAbsent(lineId, ignored -> new ArrayDeque<>());
         int count;
         synchronized (times) {
             while (!times.isEmpty() && now - times.peekFirst() > DEVIATION_WINDOW_MS) times.removeFirst();
+            Long previous = times.peekLast();
+            if (previous != null && now - previous < DEVIATION_EVENT_COOLDOWN_MS) {
+                log.info("[RouteCorrection] persistent deviation remains in probe cooldown: lineId={}, count={}, cooldownRemainingMs={}",
+                        lineId, times.size(), DEVIATION_EVENT_COOLDOWN_MS - (now - previous));
+                return false;
+            }
             times.addLast(now);
             count = times.size();
         }
@@ -1305,6 +1312,10 @@ public class RoutePushService {
         if (!"none".equals(severity)) {
             routeDeviationAlerts.put(lineId, new RouteDeviationAlert(severity, now, count, distanceKm));
         }
+        log.warn("[RouteCorrection] deviation event recorded: lineId={}, phase={}, count={}, distanceKm={}",
+                lineId, "critical".equals(severity) ? "alarm" : "warning".equals(severity) ? "warning" : "probe",
+                count, String.format(Locale.ROOT, "%.3f", distanceKm));
+        return true;
     }
 
     private void applyRouteDeviationAlert(Map<String, Object> message, String lineId, long now) {

@@ -117,6 +117,8 @@ dashboard:
     amap-rate-limit-ms: 334
     # 相同起终点规划结果缓存一天，groups/routes 查询不会穿透地图供应商。
     cache-ttl-ms: 86400000
+    # 百度、高德回退及偏航重规划共用全局限速，控制在每秒最多 2.5 次。
+    min-request-interval-ms: 400
     # 本地库 classpath 路径
     local-path: coord-db
     # API 请求超时（毫秒）
