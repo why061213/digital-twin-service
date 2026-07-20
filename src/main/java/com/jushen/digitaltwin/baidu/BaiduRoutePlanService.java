@@ -251,7 +251,7 @@ public class BaiduRoutePlanService {
     // 测试用 main
     // ================================================================
     public static void main(String[] args) {
-        BaiduRoutePlanService service = new BaiduRoutePlanService("kA0QRI9zSauQp7feYRnN6foanRkL18NF");
+        BaiduRoutePlanService service = new BaiduRoutePlanService("your-baidu-ak");
         // 北京天安门 → 北京西站
         RoutePlanResult result = service.planRoute(39.908823, 116.397470, 39.894962, 116.322200);
         System.out.println("结果: " + result);

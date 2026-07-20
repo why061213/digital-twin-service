@@ -262,7 +262,7 @@ public class AmapRoutePlanService {
     // 测试
     // ================================================================
     public static void main(String[] args) {
-        AmapRoutePlanService service = new AmapRoutePlanService("605b4510118744d3f49270a79e5ed6a3");
+        AmapRoutePlanService service = new AmapRoutePlanService("your-amap-key");
         // 北京天安门 → 北京西站（经纬度用 GCJ-02）
         RoutePlanResult result = service.planRoute(39.908823, 116.397470, 39.894962, 116.322200);
         System.out.println("结果: " + result);
