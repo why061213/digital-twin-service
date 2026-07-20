@@ -990,27 +990,35 @@ public class RoutePushService {
                 RoutePlanningService.PlannedRoute replanned = routePlanningService.plan(
                         snapshot.position(), route.getToCoords());
                 if (replanned.success()) {
+                    RouteCorrectionPathBuilder.Result correctedPath = RouteCorrectionPathBuilder.splice(
+                            route.coordinates(), pathProgress, snapshot.position(), replanned.coordinates());
                     double effectiveSpeedKmh = isProviderSpeed(snapshot.speedKmh())
                             ? snapshot.speedKmh()
                             : normalizedRouteSpeed(route.speedKmh());
-                    long durationMs = replanned.durationMs() > 0
+                    long remainingDurationMs = replanned.durationMs() > 0
                             ? replanned.durationMs()
                             : travelDurationMs(replanned.distanceKm(), effectiveSpeedKmh);
+                    long completedDurationMs = travelDurationMs(
+                            correctedPath.completedDistanceKm(), effectiveSpeedKmh);
+                    long durationMs = completedDurationMs + remainingDurationMs;
+                    long correctedStartTime = now - completedDurationMs;
                     ScheduledRoute correctedRoute = new ScheduledRoute(
                             route.lineId(), route.orderId(), route.orderFamilyId(), route.orderName(),
                             route.orderTotalTons(), route.orderVehicleCount(), route.from(), route.to(),
-                            route.startProvince(), route.endProvince(), replanned.coordinates(),
-                            pathKey(route.from(), route.to(), replanned.coordinates()), now,
-                            replanned.distanceKm(), effectiveSpeedKmh, durationMs, route.scope());
+                            route.startProvince(), route.endProvince(), correctedPath.coordinates(),
+                            pathKey(route.from(), route.to(), correctedPath.coordinates()), correctedStartTime,
+                            correctedPath.totalDistanceKm(), effectiveSpeedKmh, durationMs, route.scope());
                     activeRoutes.replace(lineId, route, correctedRoute);
                     routeCorrectionRevisions.put(lineId, now);
                     lastBroadcastPositions.remove(lineId);
                     if (route.scope() == RouteScope.ROAD) {
                         webSocketHandler.broadcast(routeMessage(correctedRoute, false));
                     }
-                    log.warn("[RouteCorrection] replanned from real position: lineId={}, provider={}, offRouteKm={}, distanceKm={}, durationMs={}",
+                    log.warn("[RouteCorrection] replanned remaining route with fixed order endpoints: lineId={}, provider={}, offRouteKm={}, completedKm={}, totalKm={}, progress={}%, durationMs={}",
                             lineId, replanned.provider(), String.format(Locale.ROOT, "%.3f", offRouteKm),
-                            String.format(Locale.ROOT, "%.2f", replanned.distanceKm()), durationMs);
+                            String.format(Locale.ROOT, "%.2f", correctedPath.completedDistanceKm()),
+                            String.format(Locale.ROOT, "%.2f", correctedPath.totalDistanceKm()),
+                            Math.round(correctedPath.progress() * 100), durationMs);
                     calibrated++;
                 } else {
                     log.warn("[RouteCorrection] replan failed: lineId={}, offRouteKm={}, reason={}",
@@ -1946,6 +1954,16 @@ public class RoutePushService {
         }
 
         if (coordinates.size() >= 2) {
+            if (distanceKm(coordinates.get(0), fromCoords) > 0.001) {
+                coordinates.add(0, new double[]{fromCoords[0], fromCoords[1]});
+            } else {
+                coordinates.set(0, new double[]{fromCoords[0], fromCoords[1]});
+            }
+            if (distanceKm(coordinates.get(coordinates.size() - 1), toCoords) > 0.001) {
+                coordinates.add(new double[]{toCoords[0], toCoords[1]});
+            } else {
+                coordinates.set(coordinates.size() - 1, new double[]{toCoords[0], toCoords[1]});
+            }
             return coordinates;
         }
 
