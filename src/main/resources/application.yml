@@ -105,6 +105,13 @@ dashboard:
     amap-key: ""
     # 高德地图安全密钥（用于请求 SHA256 签名）
     amap-secret: ""
+
+  # ===== 地图路线规划 API（百度/高德） =====
+  route-plan:
+    # 百度地图 AK：https://lbsyun.baidu.com/apiconsole/key
+    baidu-ak: ""
+    # 高德地图 Key：https://console.amap.com/dev/key/app
+    amap-key: ""
     # API 调用间隔（毫秒），避免 QPS 超限。3次/秒 ≈ 334ms
     amap-rate-limit-ms: 334
     # 本地库 classpath 路径
