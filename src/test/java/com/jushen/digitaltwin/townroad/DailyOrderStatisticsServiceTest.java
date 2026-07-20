@@ -1,12 +1,20 @@
 package com.jushen.digitaltwin.townroad;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DailyOrderStatisticsServiceTest {
+
+    @TempDir
+    Path tempDirectory;
 
     @Test
     void deduplicatesVehiclesAndCountsEachArrivedVehicle() {
@@ -43,6 +51,31 @@ class DailyOrderStatisticsServiceTest {
         assertEquals(1, statistics.dispatchedVehicleCount());
         assertEquals(1, statistics.totalOrderCount());
         assertEquals(1, statistics.arrivedVehicleCount());
+    }
+
+    @Test
+    void restoresCurrentDayWhenProviderNoLongerReturnsOrders() {
+        Path cachePath = tempDirectory.resolve("daily-statistics.json");
+        DailyOrderStatisticsService firstProcess = persistentService(cachePath);
+        firstProcess.applySnapshot(List.of(
+                order("order-1", "line-1", "vehicle-1", 1_000d, "kg", "已完成"),
+                order("order-1", "line-1", "vehicle-2", 2d, "吨", "运输中")
+        ));
+
+        assertTrue(Files.isRegularFile(cachePath));
+
+        DailyOrderStatisticsService restartedProcess = persistentService(cachePath);
+        restartedProcess.applySnapshot(List.of());
+        DailyOrderStatisticsService.DailyOrderStatistics restored = restartedProcess.snapshot();
+
+        assertEquals(3d, restored.deliveryTotalTons());
+        assertEquals(2, restored.dispatchedVehicleCount());
+        assertEquals(1, restored.totalOrderCount());
+        assertEquals(1, restored.arrivedVehicleCount());
+    }
+
+    private DailyOrderStatisticsService persistentService(Path cachePath) {
+        return new DailyOrderStatisticsService(new ObjectMapper(), true, cachePath.toString(), 3);
     }
 
     private NormalizedTownRoadOrder order(

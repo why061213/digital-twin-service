@@ -5,6 +5,7 @@ src/main/resources/*private*.yml
 # Runtime token/cache files
 src/main/resources/token-cache.json
 target/
+runtime-data/
 
 # IDE and OS files
 .idea/

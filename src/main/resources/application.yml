@@ -15,6 +15,11 @@ spring:
     name: jushen-digital-twin-backend
 
 dashboard:
+  daily-statistics:
+    # 仅缓存顶部 KPI 所需的去重订单/车辆记录，不会恢复为地图播放路线。
+    cache-enabled: true
+    cache-path: runtime-data/daily-order-statistics.json
+    retention-days: 3
   access:
     # 浏览器无法读取 MAC；后端通过局域网 ARP/邻居表识别客户端并匹配白名单。
     enabled: true
