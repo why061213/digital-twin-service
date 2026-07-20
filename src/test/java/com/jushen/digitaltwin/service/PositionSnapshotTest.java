@@ -49,10 +49,12 @@ class PositionSnapshotTest {
     @Test
     void classifiesDocumentedAlarmLevels() {
         assertEquals("critical", PositionSnapshot.classifyAlarmSeverity("碰撞报警", "行驶", true));
-        assertEquals("critical", PositionSnapshot.classifyAlarmSeverity("", "紧急报警", true));
-        assertEquals("warning", PositionSnapshot.classifyAlarmSeverity("车道偏离报警", "行驶", true));
+        assertEquals("critical", PositionSnapshot.classifyAlarmSeverity("车道偏离报警", "行驶", true));
+        assertEquals("critical", PositionSnapshot.classifyAlarmSeverity("", "无效定位(4分)", true));
+        assertEquals("critical", PositionSnapshot.classifyAlarmSeverity("", "离线(2天)", false));
         assertEquals("warning", PositionSnapshot.classifyAlarmSeverity("", "停车超时(20分)", true));
-        assertEquals("warning", PositionSnapshot.classifyAlarmSeverity("", "行驶", false));
+        assertEquals("none", PositionSnapshot.classifyAlarmSeverity("", "停车(29分) ACC熄火(29分)", true));
+        assertEquals("none", PositionSnapshot.classifyAlarmSeverity("", "ACC点火(8分) 停车(1分)", true));
         assertEquals("none", PositionSnapshot.classifyAlarmSeverity("", "行驶", true));
     }
 

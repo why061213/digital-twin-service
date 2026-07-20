@@ -172,16 +172,18 @@ public record PositionSnapshot(
     }
 
     public static String classifyAlarmSeverity(String alarmStr, String stateStr, Boolean online) {
-        String description = ((alarmStr == null ? "" : alarmStr) + " "
-                + (stateStr == null ? "" : stateStr)).trim();
-        if (containsAny(description,
-                "紧急报警", "碰撞报警", "前向碰撞", "行人碰撞", "侧翻", "危险预警",
-                "防劫", "双手脱把", "未检测到驾驶员", "驾驶员异常")) {
+        if (alarmStr != null && !alarmStr.isBlank()) {
             return "critical";
         }
+        String description = stateStr == null ? "" : stateStr.trim();
         if (Boolean.FALSE.equals(online) || containsAny(description,
-                "报警", "预警", "停车", "停驶", "静止", "熄火", "离线", "失联",
-                "故障", "异常", "超速", "疲劳", "偏离", "车距过近")) {
+                "无效定位", "离线", "失联", "故障", "异常", "紧急报警", "碰撞报警",
+                "前向碰撞", "行人碰撞", "侧翻", "危险预警", "防劫", "双手脱把",
+                "未检测到驾驶员", "驾驶员异常")) {
+            return "critical";
+        }
+        if (containsAny(description,
+                "停车超时", "超速", "疲劳", "偏离", "车距过近", "预警", "报警")) {
             return "warning";
         }
         return "none";
