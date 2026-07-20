@@ -82,7 +82,7 @@ public class RoutePushService {
     private static final double MAX_CALCULATED_SPEED_KMH = 160.0;
     private static final double POSITION_CHANGE_THRESHOLD_METERS = 35.0;
     private static final long POSITION_MAX_SILENCE_MS = 120_000L;
-    private static final double MAX_CALIBRATION_OFF_ROUTE_KM = 1.0;
+    private static final double MAX_CALIBRATION_OFF_ROUTE_KM = 2.0;
     private static final long DEVIATION_WINDOW_MS = 10 * 60_000L;
     private static final long DEVIATION_EVENT_COOLDOWN_MS = 2 * 60_000L;
     private static final long DEVIATION_ALERT_TTL_MS = 10 * 60_000L;
