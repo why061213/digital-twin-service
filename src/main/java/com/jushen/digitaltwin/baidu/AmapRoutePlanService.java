@@ -57,6 +57,9 @@ public class AmapRoutePlanService {
     }
 
     public RoutePlanResult planRoute(String origin, String destination) {
+        if (key == null || key.isBlank()) {
+            return RoutePlanResult.fail("高德 Key 未配置");
+        }
         try {
             String url = API_URL + "?origin=" + origin + "&destination=" + destination
                     + "&key=" + key + "&show_fields=polyline,cost";

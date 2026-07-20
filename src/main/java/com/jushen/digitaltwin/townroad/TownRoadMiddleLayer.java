@@ -3,6 +3,7 @@ package com.jushen.digitaltwin.townroad;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jushen.digitaltwin.townroad.ProvinceRoadGraph.ProvincePath;
+import com.jushen.digitaltwin.baidu.RoutePlanningService;
 import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.ProvinceEdgeView;
 import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.ProvincePathCandidate;
 import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.ProvinceRef;
@@ -37,6 +38,7 @@ public class TownRoadMiddleLayer {
     private final TownRoadCoordinateResolver coordinateResolver;
     private final DailyOrderStatisticsService dailyOrderStatisticsService;
     private final ChinaBoundaryConstraint chinaBoundaryConstraint;
+    private final RoutePlanningService routePlanningService;
 
     private final Map<String, NormalizedTownRoadOrder> ordersByInstanceId = new ConcurrentHashMap<>();
 
@@ -70,7 +72,8 @@ public class TownRoadMiddleLayer {
             TownRoadExternalOrderProperties properties,
             TownRoadCoordinateResolver coordinateResolver,
             DailyOrderStatisticsService dailyOrderStatisticsService,
-            ChinaBoundaryConstraint chinaBoundaryConstraint
+            ChinaBoundaryConstraint chinaBoundaryConstraint,
+            RoutePlanningService routePlanningService
     ) {
         this.objectMapper = objectMapper;
         this.provinceRoadGraph = provinceRoadGraph;
@@ -81,11 +84,22 @@ public class TownRoadMiddleLayer {
         this.coordinateResolver = coordinateResolver;
         this.dailyOrderStatisticsService = dailyOrderStatisticsService;
         this.chinaBoundaryConstraint = chinaBoundaryConstraint;
+        this.routePlanningService = routePlanningService;
     }
 
     public synchronized ExternalOrderSnapshotResult processSnapshot(List<ExternalOrderRecord> rawOrders) {
         List<ExternalOrderRecord> safeRawOrders = rawOrders == null ? List.of() : rawOrders;
         List<ExternalOrderRecord> expandedRawOrders = expandRawOrders(safeRawOrders);
+        List<RoutePlanningService.RouteRequest> planningRequests = new ArrayList<>();
+        for (ExternalOrderRecord raw : expandedRawOrders) {
+            if (!isValidBasic(raw)) continue;
+            ExternalOrderRecord.Location from = coordinateResolver.resolveLocation(raw.from());
+            ExternalOrderRecord.Location to = coordinateResolver.resolveLocation(raw.to());
+            planningRequests.add(new RoutePlanningService.RouteRequest(
+                    from == null ? null : from.coords(),
+                    to == null ? null : to.coords()));
+        }
+        routePlanningService.preload(planningRequests);
         Map<String, NormalizedTownRoadOrder> previous = new LinkedHashMap<>(ordersByInstanceId);
 
         Map<String, NormalizedTownRoadOrder> dedupedCandidates = new LinkedHashMap<>();
@@ -477,8 +491,20 @@ public class TownRoadMiddleLayer {
                 cityPath,
                 allowedProvinceCodes
         );
-        List<double[]> routeCoordinates = routeCoordinatesFor(resolvedFrom, resolvedTo, cityPath, districtPath);
-        double routeLengthKm = pathLengthKm(routeCoordinates);
+        List<double[]> fallbackCoordinates = routeCoordinatesFor(resolvedFrom, resolvedTo, cityPath, districtPath);
+        RoutePlanningService.PlannedRoute plannedRoute = routePlanningService.plan(
+                resolvedFrom == null ? null : resolvedFrom.coords(),
+                resolvedTo == null ? null : resolvedTo.coords());
+        List<double[]> routeCoordinates = plannedRoute.success()
+                ? plannedRoute.coordinates()
+                : fallbackCoordinates;
+        double routeLengthKm = plannedRoute.success()
+                ? plannedRoute.distanceKm()
+                : pathLengthKm(routeCoordinates);
+        Long travelDurationMs = plannedRoute.success() && plannedRoute.durationMs() > 0
+                ? plannedRoute.durationMs()
+                : null;
+        String routeProvider = plannedRoute.success() ? plannedRoute.provider() : "fallback";
         Double speedKmh = raw.vehicle() == null ? null : raw.vehicle().speedKmh();
 
         List<ProvincePath> candidatePaths = candidateProvincePathsForOrder(
@@ -533,6 +559,7 @@ public class TownRoadMiddleLayer {
                 "cityPath", cityPath,
                 "districtPath", districtPath,
                 "routeCoordinates", routeCoordinates.stream().map(this::coordsForSignature).toList(),
+                "routeProvider", routeProvider,
                 "provincePathKeys", provincePathKeys,
                 "upToDate", Boolean.TRUE.equals(raw.upToDate())
         ));
@@ -558,6 +585,8 @@ public class TownRoadMiddleLayer {
                 routeCoordinates,
                 routeLengthKm > 0 ? routeLengthKm : null,
                 speedKmh,
+                travelDurationMs,
+                routeProvider,
 
                 groupId,
                 groupName,

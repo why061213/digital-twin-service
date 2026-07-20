@@ -44,7 +44,9 @@ public final class RouteDtoConverter {
         String pathKey = RenderRouteDTO.buildStablePathKey(scope, fromAdcode, toAdcode, order.routeCoordinates());
 
         Double speedKmh = normalizedRouteSpeed(order.speedKmh());
-        Long travelDurationMs = travelDurationMs(order.routeLengthKm(), speedKmh);
+        Long travelDurationMs = order.travelDurationMs() != null && order.travelDurationMs() > 0
+                ? order.travelDurationMs()
+                : travelDurationMs(order.routeLengthKm(), speedKmh);
 
         return new RenderRouteDTO(
                 order.instanceId(),
@@ -409,6 +411,7 @@ public final class RouteDtoConverter {
         if (order.cityNames() != null) {
             meta.put("cityNames", order.cityNames());
         }
+        meta.put("routeProvider", order.routeProvider());
         return meta;
     }
 

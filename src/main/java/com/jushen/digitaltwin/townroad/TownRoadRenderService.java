@@ -567,11 +567,11 @@ public class TownRoadRenderService {
             Double cargoWeight = vehicle == null ? null : vehicle.cargoWeight();
             Integer orderTotalTons = cargoWeight == null ? null : Math.max(0, (int) Math.round(cargoWeight));
             routePushService.dispatchExternalOrderRoute(
-                    order.instanceId(), order.orderId() != null ? order.orderId() : order.instanceId(),
+                    order.instanceId(), order.orderId() != null ? order.orderId() : order.instanceId(), order.lineId(),
                     order.groupName(), orderTotalTons,
                     order.from().name(), order.to().name(),
                     order.from().province(), order.to().province(),
-                    fc, tc, order.routeCoordinates(),
+                    fc, tc, order.routeCoordinates(), order.travelDurationMs(),
                     vehicle == null ? null : vehicle.currentCoords(),
                     vehicle == null ? null : vehicle.plate(),
                     vehicle == null ? null : vehicle.carId(),
@@ -592,10 +592,10 @@ public class TownRoadRenderService {
         return new RenderRouteDTO(
                 route.lineId(), route.orderId(), route.businessLineId(),
                 coalesce(metrics.plate(), route.plate()), metrics.vehicleId(),
-                route.from(), route.to(), route.fromCoords(), route.toCoords(), route.coordinates(),
+                route.from(), route.to(), route.fromCoords(), route.toCoords(), metrics.coordinates(),
                 metrics.routeLengthKm(), metrics.speedKmh(), route.status(), route.cargo(),
                 route.cargoWeight(), route.cargoUnit(),
-                metrics.travelDurationMs(), route.pathKey(), route.scope(), route.groupId(), route.role(),
+                metrics.travelDurationMs(), metrics.pathKey(), route.scope(), route.groupId(), route.role(),
                 route.coordinateSystem(), route.updatedAt(), route.routeSignature(), route.meta()
         );
     }
@@ -641,8 +641,9 @@ public class TownRoadRenderService {
             routePushService.dispatchTownRoute(
                     order.instanceId(),
                     order.orderId() != null ? order.orderId() : order.instanceId(),
+                    order.lineId(),
                     order.from().name(), order.to().name(),
-                    fromCoords, toCoords, order.routeCoordinates(),
+                    fromCoords, toCoords, order.routeCoordinates(), order.travelDurationMs(),
                     vehicle == null ? null : vehicle.currentCoords(),
                     vehicle == null ? null : vehicle.plate(),
                     vehicle == null ? null : vehicle.carId(),

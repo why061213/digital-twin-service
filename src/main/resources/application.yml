@@ -108,12 +108,15 @@ dashboard:
 
   # ===== 地图路线规划 API（百度/高德） =====
   route-plan:
+    enabled: true
     # 百度地图 AK：https://lbsyun.baidu.com/apiconsole/key
     baidu-ak: ""
     # 高德地图 Key：https://console.amap.com/dev/key/app
     amap-key: ""
     # API 调用间隔（毫秒），避免 QPS 超限。3次/秒 ≈ 334ms
     amap-rate-limit-ms: 334
+    # 相同起终点规划结果缓存一天，groups/routes 查询不会穿透地图供应商。
+    cache-ttl-ms: 86400000
     # 本地库 classpath 路径
     local-path: coord-db
     # API 请求超时（毫秒）

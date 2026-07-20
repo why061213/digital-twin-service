@@ -65,8 +65,12 @@ public class BaiduRoutePlanService {
      * @return 规划结果
      */
     public RoutePlanResult planRoute(String origin, String destination) {
+        if (ak == null || ak.isBlank()) {
+            return RoutePlanResult.fail("百度 AK 未配置");
+        }
         try {
-            String url = API_URL + "?origin=" + origin + "&destination=" + destination + "&ak=" + ak;
+            String url = API_URL + "?origin=" + origin + "&destination=" + destination
+                    + "&coord_type=gcj02&ak=" + ak;
             log.info("[BaiduRoute] 请求: origin={}, dest={}", origin, destination);
 
             HttpRequest request = HttpRequest.newBuilder()

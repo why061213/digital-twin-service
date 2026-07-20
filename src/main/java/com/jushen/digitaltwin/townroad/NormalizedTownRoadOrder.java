@@ -28,6 +28,8 @@ public record NormalizedTownRoadOrder(
         List<double[]> routeCoordinates,
         Double routeLengthKm,
         Double speedKmh,
+        Long travelDurationMs,
+        String routeProvider,
 
         String groupId,
         String groupName,
@@ -44,4 +46,22 @@ public record NormalizedTownRoadOrder(
         String dataSignature,
         String routeSignature
 ) {
+    public NormalizedTownRoadOrder(
+            String orderId, String lineId, String instanceId, String vehicleKey,
+            String fromKey, String toKey, String odKey,
+            String fromProvinceKey, String toProvinceKey,
+            List<List<String>> provincePaths, List<String> provincePathKeys, List<Integer> provincePathCosts,
+            List<String> cityPath, List<String> cityNames, List<double[]> routeCoordinates,
+            Double routeLengthKm, Double speedKmh,
+            String groupId, String groupName,
+            ExternalOrderRecord.Location from, ExternalOrderRecord.Location to, ExternalOrderRecord.Vehicle vehicle,
+            String status, String updatedAt, boolean deleted, boolean upToDate,
+            String dataSignature, String routeSignature
+    ) {
+        this(orderId, lineId, instanceId, vehicleKey, fromKey, toKey, odKey,
+                fromProvinceKey, toProvinceKey, provincePaths, provincePathKeys, provincePathCosts,
+                cityPath, cityNames, routeCoordinates, routeLengthKm, speedKmh,
+                null, "fallback", groupId, groupName, from, to, vehicle, status, updatedAt,
+                deleted, upToDate, dataSignature, routeSignature);
+    }
 }
