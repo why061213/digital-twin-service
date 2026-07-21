@@ -34,7 +34,7 @@ public class DashboardAccessService {
     }
 
     public Verification verify(HttpServletRequest request, String suppliedDeviceToken) {
-        String remoteAddress = normalizeRemoteAddress(request.getRemoteAddr());
+        String remoteAddress = resolveRemoteAddress(request);
         if (!properties.isEnabled()) {
             return new Verification(true, "disabled", "access_control_disabled", remoteAddress, null, "设备验证未启用");
         }
@@ -142,6 +142,29 @@ public class DashboardAccessService {
             if (address == null) return false;
             InetAddress inetAddress = InetAddress.getByName(address);
             return inetAddress.isLoopbackAddress() || NetworkInterface.getByInetAddress(inetAddress) != null;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    String resolveRemoteAddress(HttpServletRequest request) {
+        String directAddress = normalizeRemoteAddress(request.getRemoteAddr());
+        if (!isLoopbackAddress(directAddress)) return directAddress;
+
+        String forwardedFor = request.getHeader("X-Forwarded-For");
+        if (forwardedFor == null || forwardedFor.isBlank()) return directAddress;
+        String candidate = normalizeRemoteAddress(forwardedFor.split(",", 2)[0].trim());
+        try {
+            InetAddress.getByName(candidate);
+            return candidate;
+        } catch (Exception ignored) {
+            return directAddress;
+        }
+    }
+
+    private boolean isLoopbackAddress(String address) {
+        try {
+            return address != null && InetAddress.getByName(address).isLoopbackAddress();
         } catch (Exception ignored) {
             return false;
         }
