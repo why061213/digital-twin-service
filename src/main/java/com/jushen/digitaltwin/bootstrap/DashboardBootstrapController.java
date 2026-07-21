@@ -48,8 +48,10 @@ public class DashboardBootstrapController {
         response.put("backendReady", true);
         response.put("dataInitialized", bootstrap.initialized());
         response.put("authorized", authorized);
-        response.put("phase", authorized ? bootstrap.phase() : "unauthorized");
-        response.put("message", authorized ? bootstrap.message() : verificationMessage);
+        response.put("phase", bootstrap.phase());
+        response.put("message", bootstrap.message());
+        response.put("authorizationState", authorized ? "verified" : "denied");
+        response.put("authorizationMessage", verificationMessage);
         response.put("lastError", bootstrap.lastError());
         response.put("rawCount", bootstrap.rawCount());
         response.put("routeCount", bootstrap.routeCount());
