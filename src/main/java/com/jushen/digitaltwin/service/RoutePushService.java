@@ -1338,7 +1338,7 @@ public class RoutePushService {
     private void applyRouteDeviationAlert(Map<String, Object> message, String lineId, long now) {
         RouteDeviationAlert alert = routeDeviationAlerts.get(lineId);
         if (alert == null) return;
-        if (now - alert.lastDeviationAt() > DEVIATION_ALERT_TTL_MS) {
+        if (now - alert.lastDeviationAt() >     DEVIATION_ALERT_TTL_MS) {
             routeDeviationAlerts.remove(lineId, alert);
             return;
         }

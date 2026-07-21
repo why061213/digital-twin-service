@@ -95,7 +95,16 @@ public class TownRoadMiddleLayer {
     public synchronized ExternalOrderSnapshotResult processSnapshot(List<ExternalOrderRecord> rawOrders) {
         List<ExternalOrderRecord> safeRawOrders = rawOrders == null ? List.of() : rawOrders;
         List<ExternalOrderRecord> expandedRawOrders = expandVehicleInstances(safeRawOrders);
-        Map<String, RoutePlanBundle> routePlansByOrderLine = planOrderLineRoutes(expandedRawOrders);
+
+        // 预过滤：先筛选出值得调用路线规划API的订单。
+        // 避免对已取消/待装载/已完成超时等注定被丢弃的订单浪费百度/高德API调用。
+        List<ExternalOrderRecord> ordersNeedingRoutePlan = new ArrayList<>();
+        for (ExternalOrderRecord raw : expandedRawOrders) {
+            if (isWorthRoutePlanning(raw)) {
+                ordersNeedingRoutePlan.add(raw);
+            }
+        }
+        Map<String, RoutePlanBundle> routePlansByOrderLine = planOrderLineRoutes(ordersNeedingRoutePlan);
         Map<String, NormalizedTownRoadOrder> previous = new LinkedHashMap<>(ordersByInstanceId);
 
         Map<String, NormalizedTownRoadOrder> dedupedCandidates = new LinkedHashMap<>();
@@ -1261,6 +1270,27 @@ public class TownRoadMiddleLayer {
         } catch (Exception e) {
             return true; // 解析失败，保守过滤
         }
+    }
+
+    /**
+     * 预过滤：判断一条原始订单是否值得调用百度/高德路线规划API。
+     * 在 {@link #processSnapshot} 中先于路线规划执行，避免对
+     * 已取消、待装载、已完成超时等注定被丢弃的订单浪费外部API调用。
+     */
+    private boolean isWorthRoutePlanning(ExternalOrderRecord raw) {
+        if (!isValidBasic(raw)) return false;
+
+        ExternalOrderRecord.Location resolvedFrom = coordinateResolver.resolveLocation(raw.from());
+        ExternalOrderRecord.Location resolvedTo = coordinateResolver.resolveLocation(raw.to());
+        if (!hasCoords(resolvedFrom.coords()) || !hasCoords(resolvedTo.coords())) return false;
+
+        String status = raw.status();
+        if (Boolean.TRUE.equals(raw.deleted())) return false;
+        if ("已取消".equals(status)) return false;
+        if ("待装载".equals(status)) return false;
+        if ("已完成".equals(status) && isCompletedExpired(raw.updatedAt())) return false;
+
+        return true;
     }
 
     private boolean orderHasAnyPathAsContinuousSubPath(
