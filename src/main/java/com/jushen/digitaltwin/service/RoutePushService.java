@@ -860,7 +860,8 @@ public class RoutePushService {
         double effectiveSpeedKmh = snapshot != null && isProviderSpeed(snapshot.speedKmh())
                 ? snapshot.speedKmh()
                 : route.speedKmh();
-        long effectiveTravelDurationMs = travelDurationMs(route.routeLengthKm(), effectiveSpeedKmh);
+        // 路线时长来自导航规划；当前瞬时速度只用于车辆运动，不能反推并覆盖 ETA。
+        long effectiveTravelDurationMs = route.travelDurationMs();
         return new RouteRuntimeMetrics(
                 effectiveSpeedKmh,
                 route.routeLengthKm(),
