@@ -1031,7 +1031,7 @@ public class RoutePushService {
                 continue;
             }
 
-            double pathProgress = progressOnCoordinates(route.coordinates(), snapshot.position());
+            double pathProgress = progressOnCoordinates(route.coordinates(), snapshot.position(), progress);
             double[] projected = coordinateAtProgress(route.coordinates(), pathProgress);
             double offRouteKm = distanceKm(projected, snapshot.position());
             if (offRouteKm > MAX_CALIBRATION_OFF_ROUTE_KM) {
@@ -1042,7 +1042,7 @@ public class RoutePushService {
                         lineId, route, snapshot.fetchedAt(), offRouteKm, deviationConfirmationRefresh);
                 if (confirmedSnapshot == null) continue;
                 snapshot = confirmedSnapshot;
-                pathProgress = progressOnCoordinates(route.coordinates(), snapshot.position());
+                pathProgress = progressOnCoordinates(route.coordinates(), snapshot.position(), progress);
                 projected = coordinateAtProgress(route.coordinates(), pathProgress);
                 offRouteKm = distanceKm(projected, snapshot.position());
                 if (offRouteKm <= MAX_CALIBRATION_OFF_ROUTE_KM) {
@@ -2090,8 +2090,33 @@ public class RoutePushService {
     }
 
     private double progressOnCoordinates(List<double[]> coordinates, double[] position) {
+        return progressOnCoordinates(coordinates, position, -1);
+    }
+
+    /**
+     * 将 GPS 位置投影到路线坐标上，返回 [0,1] 的进度。
+     * hintProgress 用于 U 形路线约束：只搜索 hintProgress ±30% 窗口内的线段，
+     * 避免车辆被贴到弯路对面一侧。hintProgress < 0 时全图搜索。
+     */
+    private double progressOnCoordinates(List<double[]> coordinates, double[] position, double hintProgress) {
         if (coordinates == null || coordinates.size() < 2 || position == null || position.length < 2) {
             return 0;
+        }
+
+        double totalKm = 0;
+        for (int i = 1; i < coordinates.size(); i++) {
+            totalKm += distanceKm(coordinates.get(i - 1), coordinates.get(i));
+        }
+        if (totalKm <= 0) return 0;
+
+        // 窗口约束：hintProgress ±30%
+        double windowStart = 0;
+        double windowEnd = totalKm;
+        boolean useWindow = hintProgress >= 0 && hintProgress <= 1;
+        if (useWindow) {
+            double hintKm = hintProgress * totalKm;
+            windowStart = Math.max(0, hintKm - totalKm * 0.3);
+            windowEnd = Math.min(totalKm, hintKm + totalKm * 0.3);
         }
 
         double nearestDistanceSq = Double.POSITIVE_INFINITY;
@@ -2100,22 +2125,34 @@ public class RoutePushService {
         for (int i = 1; i < coordinates.size(); i++) {
             double[] start = coordinates.get(i - 1);
             double[] end = coordinates.get(i);
+            double segmentKm = distanceKm(start, end);
+            double segmentStart = walked;
+            double segmentEnd = walked + segmentKm;
+
+            // 窗口约束：跳过不在窗口内的线段
+            if (useWindow && segmentEnd < windowStart) { walked = segmentEnd; continue; }
+            if (useWindow && segmentStart > windowEnd) break;
+
             double dx = end[0] - start[0];
             double dy = end[1] - start[1];
             double segmentLengthSq = dx * dx + dy * dy;
-            if (segmentLengthSq <= 0) continue;
+            if (segmentLengthSq <= 0) { walked = segmentEnd; continue; }
 
             double t = ((position[0] - start[0]) * dx + (position[1] - start[1]) * dy) / segmentLengthSq;
             t = Math.max(0, Math.min(1, t));
             double projectedLng = start[0] + dx * t;
             double projectedLat = start[1] + dy * t;
             double distSq = Math.pow(position[0] - projectedLng, 2) + Math.pow(position[1] - projectedLat, 2);
-            double segmentKm = distanceKm(start, end);
             if (distSq < nearestDistanceSq) {
                 nearestDistanceSq = distSq;
                 distanceAlong = walked + segmentKm * t;
             }
-            walked += segmentKm;
+            walked = segmentEnd;
+        }
+
+        // 窗口内没找到足够近的点（偏离太远），回退全图搜索
+        if (useWindow && nearestDistanceSq > 0.0001) { // ≈ 3km² in degree²
+            return progressOnCoordinates(coordinates, position, -1);
         }
 
         return walked <= 0 ? 0 : Math.max(0, Math.min(1, distanceAlong / walked));
