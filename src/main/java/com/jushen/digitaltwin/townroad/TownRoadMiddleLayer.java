@@ -104,6 +104,9 @@ public class TownRoadMiddleLayer {
                 ordersNeedingRoutePlan.add(raw);
             }
         }
+        log.info("[TownRoad] pre-filter: expandedTotal={}, worthRoutePlan={}, skipped={}",
+                expandedRawOrders.size(), ordersNeedingRoutePlan.size(),
+                expandedRawOrders.size() - ordersNeedingRoutePlan.size());
         Map<String, RoutePlanBundle> routePlansByOrderLine = planOrderLineRoutes(ordersNeedingRoutePlan);
         Map<String, NormalizedTownRoadOrder> previous = new LinkedHashMap<>(ordersByInstanceId);
 

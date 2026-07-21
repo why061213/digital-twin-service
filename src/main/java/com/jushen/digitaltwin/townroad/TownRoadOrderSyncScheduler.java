@@ -59,7 +59,7 @@ public class TownRoadOrderSyncScheduler {
                     System.currentTimeMillis() - startedAt);
         } catch (Exception e) {
             bootstrapService.markSynchronizationFailed(e);
-            log.warn("[TownRoadSync] external order sync failed: {}", e.getMessage());
+            log.warn("[TownRoadSync] external order sync failed: {}", e.getMessage(), e);
         } finally {
             syncing.set(false);
         }
