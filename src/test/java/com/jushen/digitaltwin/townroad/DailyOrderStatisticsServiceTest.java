@@ -18,7 +18,7 @@ class DailyOrderStatisticsServiceTest {
 
     @Test
     void deduplicatesVehiclesAndCountsEachArrivedVehicle() {
-        DailyOrderStatisticsService service = new DailyOrderStatisticsService();
+        DailyOrderStatisticsService service = inMemoryService();
         NormalizedTownRoadOrder completedKgVehicle = order("order-1", "line-1", "vehicle-1", 1_000d, "kg", "已完成");
         NormalizedTownRoadOrder runningTonVehicle = order("order-1", "line-1", "vehicle-2", 2d, "吨", "运输中");
 
@@ -41,7 +41,7 @@ class DailyOrderStatisticsServiceTest {
 
     @Test
     void keepsArrivalStickyAndDoesNotCountCancelledVehicles() {
-        DailyOrderStatisticsService service = new DailyOrderStatisticsService();
+        DailyOrderStatisticsService service = inMemoryService();
         service.applySnapshot(List.of(order("order-1", "line-1", "vehicle-1", 3d, "吨", "已完成")));
         service.applySnapshot(List.of(order("order-1", "line-1", "vehicle-1", 3d, "吨", "运输中")));
         service.applySnapshot(List.of(order("order-2", "line-2", "vehicle-2", 4d, "吨", "已取消")));
@@ -51,6 +51,18 @@ class DailyOrderStatisticsServiceTest {
         assertEquals(1, statistics.dispatchedVehicleCount());
         assertEquals(1, statistics.totalOrderCount());
         assertEquals(1, statistics.arrivedVehicleCount());
+    }
+
+    @Test
+    void doesNotDecrementDailyTotalsWhenDispatchedVehicleIsLaterCancelled() {
+        DailyOrderStatisticsService service = inMemoryService();
+        service.applySnapshot(List.of(order("order-1", "line-1", "vehicle-1", 3d, "吨", "运输中")));
+        service.applySnapshot(List.of(order("order-1", "line-1", "vehicle-1", 3d, "吨", "已取消")));
+
+        DailyOrderStatisticsService.DailyOrderStatistics statistics = service.snapshot();
+        assertEquals(3d, statistics.deliveryTotalTons());
+        assertEquals(1, statistics.dispatchedVehicleCount());
+        assertEquals(1, statistics.totalOrderCount());
     }
 
     @Test
@@ -76,6 +88,10 @@ class DailyOrderStatisticsServiceTest {
 
     private DailyOrderStatisticsService persistentService(Path cachePath) {
         return new DailyOrderStatisticsService(new ObjectMapper(), true, cachePath.toString(), 3);
+    }
+
+    private DailyOrderStatisticsService inMemoryService() {
+        return new DailyOrderStatisticsService(new ObjectMapper(), false, "", 3);
     }
 
     private NormalizedTownRoadOrder order(

@@ -44,14 +44,12 @@ public class DailyOrderStatisticsService {
         this.cacheEnabled = cacheEnabled && cachePath != null && !cachePath.isBlank();
         this.cachePath = this.cacheEnabled ? Path.of(cachePath).toAbsolutePath().normalize() : null;
         this.retentionDays = Math.max(1, retentionDays);
+        log.info("[DailyStatistics] cache configuration: enabled={}, path={}, retentionDays={}",
+                this.cacheEnabled, this.cachePath, this.retentionDays);
         loadCache();
         currentBucket();
         cleanupExpiredBuckets();
         persistCache();
-    }
-
-    DailyOrderStatisticsService() {
-        this(new ObjectMapper(), false, "", 3);
     }
 
     public synchronized void applySnapshot(List<NormalizedTownRoadOrder> orders) {
@@ -69,8 +67,11 @@ public class DailyOrderStatisticsService {
             }
 
             String orderId = firstNonBlank(order.orderId(), order.lineId(), order.instanceId());
-            boolean cancelled = order.deleted() || isCancelled(order.status());
             DailyVehicleRecord previous = bucket.vehiclesByInstanceId().get(order.instanceId());
+            boolean currentlyCancelled = order.deleted() || isCancelled(order.status());
+            // Daily KPIs are cumulative: a vehicle already dispatched today must not disappear
+            // merely because a later provider snapshot marks the order cancelled or deleted.
+            boolean cancelled = currentlyCancelled && (previous == null || previous.cancelled());
             boolean arrived = isCompleted(order.status()) || previous != null && previous.arrived();
             double cargoWeightTons = toTons(order.vehicle().cargoWeight(), order.vehicle().cargoUnit());
             if (cargoWeightTons <= 0 && previous != null) {
