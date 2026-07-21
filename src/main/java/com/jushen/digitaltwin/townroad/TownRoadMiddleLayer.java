@@ -1300,7 +1300,7 @@ public class TownRoadMiddleLayer {
         if (Boolean.TRUE.equals(raw.deleted())) return false;
         if ("已取消".equals(status)) return false;
         if ("待装载".equals(status)) return false;
-        if ("已完成".equals(status) && isCompletedExpired(raw.updatedAt())) return false;
+        if ("已完成".equals(status)) return false;
 
         return true;
     }
