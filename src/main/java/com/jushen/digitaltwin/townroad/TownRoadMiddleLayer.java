@@ -535,11 +535,12 @@ public class TownRoadMiddleLayer {
                 ? initializationRoute.distanceKm()
                 : baselineRoute.success() ? baselineRoute.distanceKm()
                 : pathLengthKm(routeCoordinates);
-        Long travelDurationMs = initializationRoute.success() && initializationRoute.durationMs() > 0
-                ? initializationRoute.durationMs()
-                : baselineRoute.success() && baselineRoute.durationMs() > 0
-                ? baselineRoute.durationMs()
-                : null;
+        Long travelDurationMs = null;
+        if (initializationRoute.success() && initializationRoute.durationMs() > 0) {
+            travelDurationMs = initializationRoute.durationMs();
+        } else if (baselineRoute.success() && baselineRoute.durationMs() > 0) {
+            travelDurationMs = baselineRoute.durationMs();
+        }
         boolean usesVehicleWaypoints = routePlanBundle != null && !routePlanBundle.waypoints().isEmpty();
         String routeProvider = initializationRoute.success() && usesVehicleWaypoints
                 ? initializationRoute.provider() + "-waypoints"
