@@ -86,8 +86,8 @@ public class RoutePushService {
     private static final long DEVIATION_WINDOW_MS = 10 * 60_000L;
     private static final long DEVIATION_EVENT_COOLDOWN_MS = 2 * 60_000L;
     private static final long DEVIATION_ALERT_TTL_MS = 10 * 60_000L;
-    private static final int DEVIATION_WARNING_COUNT = 2;
-    private static final int DEVIATION_CRITICAL_COUNT = 3;
+    private static final int DEVIATION_WARNING_COUNT = 3;
+    private static final int DEVIATION_CRITICAL_COUNT = 5;
     private final boolean passivePositionPushEnabled;
     private final String simulationProfile;
     private final String externalPositionUrl;
@@ -1019,8 +1019,6 @@ public class RoutePushService {
                             correctedPath.totalDistanceKm(), effectiveSpeedKmh, durationMs, route.scope());
                     activeRoutes.replace(lineId, route, correctedRoute);
                     routeCorrectionRevisions.put(lineId, now);
-                    routeDeviationTimes.remove(lineId);       // 修正成功，清零偏移计数
-                    routeDeviationAlerts.remove(lineId);      // 清除告警状态
                     lastBroadcastPositions.remove(lineId);
                     if (route.scope() == RouteScope.ROAD) {
                         webSocketHandler.broadcast(routeMessage(correctedRoute, false));
