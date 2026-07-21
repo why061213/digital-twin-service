@@ -124,7 +124,16 @@ public class TownRoadMiddleLayer {
                 continue;
             }
 
-            NormalizedTownRoadOrder order = normalize(raw, routePlansByOrderLine);
+            NormalizedTownRoadOrder order;
+            try {
+                order = normalize(raw, routePlansByOrderLine);
+            } catch (Exception e) {
+                log.error("[TownRoad] normalize failed: instanceId={}, orderId={}, lineId={}, status={}, deleted={}, from={}, to={}",
+                        rawDebugId(raw), raw.orderId(), raw.lineId(), raw.status(), raw.deleted(),
+                        raw.from() == null ? null : raw.from().name(),
+                        raw.to() == null ? null : raw.to().name(), e);
+                throw e;
+            }
             dedupedCandidates.merge(order.instanceId(), order, this::newerOrder);
         }
 
