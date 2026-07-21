@@ -7,11 +7,14 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.Map;
+import java.util.UUID;
 
 @Service
 public class DashboardBootstrapService {
 
     private final TownRoadExternalOrderProperties orderProperties;
+    private final String instanceId = UUID.randomUUID().toString();
+    private final Instant processStartedAt = Instant.now();
     private volatile boolean initialized;
     private volatile boolean synchronizing;
     private volatile String lastError;
@@ -57,7 +60,8 @@ public class DashboardBootstrapService {
                 : synchronizing
                     ? "正在同步订单与路线快照"
                     : lastError == null ? "等待后端初始化" : "订单初始化失败，等待自动重试";
-        return new Snapshot(initialized, phase, message, lastError, rawCount, routeCount, initializedAt);
+        return new Snapshot(instanceId, processStartedAt, initialized, phase, message, lastError,
+                rawCount, routeCount, initializedAt);
     }
 
     private int asInt(Object value) {
@@ -65,6 +69,8 @@ public class DashboardBootstrapService {
     }
 
     public record Snapshot(
+            String instanceId,
+            Instant processStartedAt,
             boolean initialized,
             String phase,
             String message,

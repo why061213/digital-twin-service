@@ -44,6 +44,8 @@ public class DashboardBootstrapController {
         String verificationMessage = tokenValidation.valid() ? "访问密钥验证通过" : verification.message();
 
         Map<String, Object> response = new LinkedHashMap<>();
+        response.put("instanceId", bootstrap.instanceId());
+        response.put("processStartedAt", bootstrap.processStartedAt());
         response.put("ready", bootstrap.initialized() && authorized);
         response.put("backendReady", true);
         response.put("dataInitialized", bootstrap.initialized());
