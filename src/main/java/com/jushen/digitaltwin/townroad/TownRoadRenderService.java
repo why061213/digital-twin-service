@@ -76,6 +76,16 @@ public class TownRoadRenderService {
         this.routePushService = routePushService;
         this.externalOrderProperties = externalOrderProperties;
         this.dailyOrderStatisticsService = dailyOrderStatisticsService;
+        routePushService.setOnLoadingVehicleDeparted(this::onLoadingVehicleDeparted);
+    }
+
+    private void onLoadingVehicleDeparted() {
+        try {
+            log.info("[TownRoad] loading vehicle departed, triggering order sync");
+            fetchProcessAndBroadcast();
+        } catch (Exception e) {
+            log.warn("[TownRoad] loading vehicle departure sync failed", e);
+        }
     }
 
     public Map<String, Object> fetchProcessAndBroadcast() {
@@ -122,6 +132,17 @@ public class TownRoadRenderService {
             }
         }
         Map<String, Object> positionWarmup = routePushService.warmPositionCacheForLineIds(planningLineIds);
+        // 注册装载中车辆的初始位置，后续位置刷新时检测是否出发
+        for (ExternalOrderRecord order : expandedOrders) {
+            if (order == null || order.vehicle() == null) continue;
+            if (!"待装载".equals(order.status())) continue;
+            double[] currentCoords = order.vehicle().currentCoords();
+            if (currentCoords != null && currentCoords.length >= 2) {
+                routePushService.trackLoadingVehicle(
+                        middleLayer.instanceIdFor(order),
+                        order.vehicle().plate(), order.vehicle().carId(), currentCoords);
+            }
+        }
         List<ExternalOrderRecord> planningOrders = expandedOrders.stream()
                 .map(this::withFreshProviderPosition)
                 .toList();

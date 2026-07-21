@@ -88,6 +88,16 @@ public class RoutePushService {
     private static final long DEVIATION_ALERT_TTL_MS = 10 * 60_000L;
     private static final int DEVIATION_WARNING_COUNT = 3;
     private static final int DEVIATION_CRITICAL_COUNT = 5;
+    /** 装载中车辆位置偏离阈值（公里），超过此值触发订单刷新 */
+    private static final double LOADING_DEPARTURE_THRESHOLD_KM = 1.0;
+    /** 装载中车辆的初始位置：lineId → [lng, lat] */
+    private final Map<String, double[]> loadingVehiclePositions = new ConcurrentHashMap<>();
+    /** 装载中车辆的车牌缓存 */
+    private final Map<String, String> loadingVehiclePlateMap = new ConcurrentHashMap<>();
+    /** 装载中车辆的carId缓存 */
+    private final Map<String, String> loadingVehicleCarIdMap = new ConcurrentHashMap<>();
+    /** 装载车辆出发回调（触发订单同步） */
+    private volatile Runnable onLoadingVehicleDeparted = null;
     private final boolean passivePositionPushEnabled;
     private final String simulationProfile;
     private final String externalPositionUrl;
@@ -920,6 +930,14 @@ public class RoutePushService {
         cleanupExpiredRoutes(now);
 
         Map<String, Set<String>> vehicleToLineIds = collectActiveTransportVehicleMap();
+        // 装载中车辆也纳入位置刷新，用于检测是否已出发
+        for (Map.Entry<String, double[]> entry : loadingVehiclePositions.entrySet()) {
+            String lineId = entry.getKey();
+            String vehicleId = loadingVehicleCarIdMap.get(lineId);
+            if (vehicleId != null && !vehicleId.isBlank()) {
+                vehicleToLineIds.computeIfAbsent(vehicleId, k -> new LinkedHashSet<>()).add(lineId);
+            }
+        }
         Map<String, Object> summary = positionCache.runBatchRefresh(this::getAccessTokenForExternalSafe, vehicleToLineIds);
         int calibratedRouteCount = calibrateActiveRoutesFromCache(now);
         if (calibratedRouteCount > 0) {
@@ -927,9 +945,46 @@ public class RoutePushService {
                     calibratedRouteCount, summary);
         }
 
+        // 检测装载中车辆是否已出发（偏离初始位置超过阈值）
+        checkLoadingVehicleDepartures();
+
         // 每个 scope 一轮最多一个位置帧，避免逐车 WebSocket 广播风暴。
         if (passivePositionPushEnabled) {
             broadcastChangedPositionFrames(now);
+        }
+    }
+
+    /** 检查装载中车辆是否偏离初始位置超过阈值，若是则触发订单刷新。 */
+    private void checkLoadingVehicleDepartures() {
+        if (loadingVehiclePositions.isEmpty()) return;
+        List<String> departedLineIds = new ArrayList<>();
+        for (Map.Entry<String, double[]> entry : loadingVehiclePositions.entrySet()) {
+            String lineId = entry.getKey();
+            double[] initialPos = entry.getValue();
+            PositionSnapshot snapshot = positionCache.getPosition(lineId);
+            if (snapshot == null || snapshot.position() == null || snapshot.position().length < 2) continue;
+
+            double distanceKm = distanceKm(initialPos, snapshot.position());
+            if (distanceKm > LOADING_DEPARTURE_THRESHOLD_KM) {
+                log.info("[PositionCache] loading vehicle departed: lineId={}, plate={}, distanceKm={}",
+                        lineId, loadingVehiclePlateMap.getOrDefault(lineId, "?"), distanceKm);
+                departedLineIds.add(lineId);
+            }
+        }
+        if (!departedLineIds.isEmpty()) {
+            departedLineIds.forEach(lineId -> {
+                loadingVehiclePositions.remove(lineId);
+                loadingVehiclePlateMap.remove(lineId);
+                loadingVehicleCarIdMap.remove(lineId);
+            });
+            Runnable callback = onLoadingVehicleDeparted;
+            if (callback != null) {
+                try {
+                    callback.run();
+                } catch (Exception e) {
+                    log.warn("[PositionCache] loading vehicle departure callback failed", e);
+                }
+            }
         }
     }
 
@@ -1104,6 +1159,20 @@ public class RoutePushService {
         rm2GroupIdByLineId.clear();
         if (groupIdByLineId != null) rm2GroupIdByLineId.putAll(groupIdByLineId);
         rm2SnapshotVersion = snapshotVersion == null || snapshotVersion.isBlank() ? "0" : snapshotVersion;
+    }
+
+    /** 注册装载中车辆的初始位置，后续位置刷新时检测是否已出发。 */
+    public void trackLoadingVehicle(String lineId, String plate, String carId, double[] position) {
+        if (lineId == null || position == null || position.length < 2) return;
+        loadingVehiclePositions.putIfAbsent(lineId, new double[]{position[0], position[1]});
+        if (plate != null && !plate.isBlank()) loadingVehiclePlateMap.put(lineId, plate);
+        if (carId != null && !carId.isBlank()) loadingVehicleCarIdMap.put(lineId, carId);
+        rememberProviderVehicleId(lineId, plate, carId);
+    }
+
+    /** 装载车辆出发时回调（供 TownRoadRenderService 注入订单刷新逻辑）。 */
+    public void setOnLoadingVehicleDeparted(Runnable callback) {
+        this.onLoadingVehicleDeparted = callback;
     }
 
     private String getAccessTokenForExternalSafe() {
