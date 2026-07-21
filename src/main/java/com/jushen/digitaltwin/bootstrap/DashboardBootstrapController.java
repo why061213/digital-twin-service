@@ -54,6 +54,8 @@ public class DashboardBootstrapController {
         response.put("rawCount", bootstrap.rawCount());
         response.put("routeCount", bootstrap.routeCount());
         response.put("verificationMethod", verificationMethod);
+        response.put("authorizationCode", tokenValidation.valid() ? "access_key_verified" : verification.reasonCode());
+        response.put("remoteAddress", verification.remoteAddress());
         response.put("deviceIdentity", deviceIdentity);
         response.put("retryAfterMs", 1500);
         response.put("serverTime", Instant.now().toString());

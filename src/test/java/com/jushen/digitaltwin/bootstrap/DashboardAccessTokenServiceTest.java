@@ -20,6 +20,7 @@ class DashboardAccessTokenServiceTest {
         DashboardAccessService.Verification verification = new DashboardAccessService.Verification(
                 true,
                 "mac-whitelist",
+                "mac_whitelist_verified",
                 "192.168.1.20",
                 "AA:BB:CC:DD:EE:FF",
                 "设备验证通过"

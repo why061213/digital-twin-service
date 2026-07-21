@@ -36,11 +36,11 @@ public class DashboardAccessService {
     public Verification verify(HttpServletRequest request, String suppliedDeviceToken) {
         String remoteAddress = normalizeRemoteAddress(request.getRemoteAddr());
         if (!properties.isEnabled()) {
-            return new Verification(true, "disabled", remoteAddress, null, "设备验证未启用");
+            return new Verification(true, "disabled", "access_control_disabled", remoteAddress, null, "设备验证未启用");
         }
 
         if (tokenMatches(suppliedDeviceToken)) {
-            return new Verification(true, "device-token", remoteAddress, null, "设备令牌验证通过");
+            return new Verification(true, "device-token", "device_token_verified", remoteAddress, null, "设备令牌验证通过");
         }
 
         boolean localHost = isLocalHost(remoteAddress);
@@ -49,24 +49,31 @@ public class DashboardAccessService {
 
         for (String mac : detectedMacs) {
             if (allowedMacs.contains(mac)) {
-                return new Verification(true, "mac-whitelist", remoteAddress, maskMac(mac), "局域网设备验证通过");
+                return new Verification(true, "mac-whitelist", "mac_whitelist_verified", remoteAddress, maskMac(mac), "局域网设备验证通过");
             }
         }
 
         if (localHost && properties.isTrustLoopback() && allowedMacs.isEmpty()) {
-            return new Verification(true, "loopback", remoteAddress, null, "后端本机验证通过");
+            return new Verification(true, "loopback", "loopback_verified", remoteAddress, null, "后端本机验证通过");
         }
 
         String detectedMac = detectedMacs.isEmpty() ? null : detectedMacs.get(0);
         if (detectedMac != null) {
             log.info("Dashboard device rejected: remoteAddress={}, detectedMac={}", remoteAddress, detectedMac);
         }
-        String message = allowedMacs.isEmpty()
-                ? "尚未配置局域网 MAC 白名单"
-                : detectedMac == null
-                    ? "无法从邻居表识别设备，请确认处于同一局域网或配置设备令牌"
-                    : "当前设备不在 MAC 白名单中";
-        return new Verification(false, "denied", remoteAddress, maskMac(detectedMac), message);
+        String reasonCode;
+        String message;
+        if (allowedMacs.isEmpty()) {
+            reasonCode = "mac_whitelist_not_configured";
+            message = "尚未配置局域网 MAC 白名单";
+        } else if (detectedMac == null) {
+            reasonCode = "device_mac_unresolved";
+            message = "无法从邻居表识别设备，请确认处于同一局域网或配置设备令牌";
+        } else {
+            reasonCode = "device_not_in_mac_whitelist";
+            message = "当前设备不在 MAC 白名单中";
+        }
+        return new Verification(false, "denied", reasonCode, remoteAddress, maskMac(detectedMac), message);
     }
 
     private boolean tokenMatches(String suppliedDeviceToken) {
@@ -171,6 +178,7 @@ public class DashboardAccessService {
     public record Verification(
             boolean authorized,
             String method,
+            String reasonCode,
             String remoteAddress,
             String deviceIdentity,
             String message
