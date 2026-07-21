@@ -1019,6 +1019,8 @@ public class RoutePushService {
                             correctedPath.totalDistanceKm(), effectiveSpeedKmh, durationMs, route.scope());
                     activeRoutes.replace(lineId, route, correctedRoute);
                     routeCorrectionRevisions.put(lineId, now);
+                    routeDeviationTimes.remove(lineId);       // 修正成功，清零偏移计数
+                    routeDeviationAlerts.remove(lineId);      // 清除告警状态
                     lastBroadcastPositions.remove(lineId);
                     if (route.scope() == RouteScope.ROAD) {
                         webSocketHandler.broadcast(routeMessage(correctedRoute, false));

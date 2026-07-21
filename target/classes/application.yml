@@ -15,8 +15,28 @@ spring:
     name: jushen-digital-twin-backend
 
 dashboard:
+  daily-statistics:
+    # 仅缓存顶部 KPI 所需的去重订单/车辆记录，不会恢复为地图播放路线。
+    cache-enabled: true
+    cache-path: runtime-data/daily-order-statistics.json
+    retention-days: 3
+  access:
+    # 浏览器无法读取 MAC；后端通过局域网 ARP/邻居表识别客户端并匹配白名单。
+    enabled: true
+    trust-loopback: true
+    # 在 application-private.yml 中填写，例如 ["AA:BB:CC:DD:EE:FF"]。
+    allowed-mac-addresses: []
+    # 跨 VLAN/反向代理时无法取得终端 MAC，可配置设备令牌作为兜底。
+    device-token: ""
+    # 会话密钥提前续期；旧密钥在刷新后保留短暂宽限，避免并发请求瞬间失败。
+    session-ttl: 8h
+    session-refresh-after: 4h
+    session-refresh-grace: 2m
+    max-active-sessions: 256
   websocket:
-    token: jushen-screen-token
+    # WebSocket 默认使用验证页签发的会话密钥；以下固定口令仅作应急兼容。
+    legacy-token-enabled: false
+    token: ""
     allowed-origin-patterns:
       - "*"
     external-order:
@@ -38,9 +58,9 @@ dashboard:
       auto-sync-initial-delay-ms: 5000
       auto-sync-fixed-delay-ms: 900000
       # true 时，仅展示能解析 supplier vehicleId、可进行真实位置批量校准的订单。
-      ignore-orders-without-real-position: false
+      ignore-orders-without-real-position: true
   route:
-    # 正式展示使用真实时间尺度的模拟；test 档 36000km/h 仅用于快速演示。
+    # 所有档位都使用正常车辆时间尺度；代码层还会把异常配置限制在可信速度内。
     simulation-profile: real
     passive-position-push-enabled: true
     group-size: 12
@@ -73,7 +93,7 @@ dashboard:
     token-cache-path: target/local-cache/token-cache.json
 
     test:
-      simulation-speed-kmh: 15000
+      simulation-speed-kmh: 120
     real:
       simulation-speed-kmh: 80
 
@@ -85,8 +105,20 @@ dashboard:
     amap-key: ""
     # 高德地图安全密钥（用于请求 SHA256 签名）
     amap-secret: ""
+
+  # ===== 地图路线规划 API（百度/高德） =====
+  route-plan:
+    enabled: true
+    # 百度地图 AK：https://lbsyun.baidu.com/apiconsole/key
+    baidu-ak: ""
+    # 高德地图 Key：https://console.amap.com/dev/key/app
+    amap-key: ""
     # API 调用间隔（毫秒），避免 QPS 超限。3次/秒 ≈ 334ms
     amap-rate-limit-ms: 334
+    # 相同起终点规划结果缓存一天，groups/routes 查询不会穿透地图供应商。
+    cache-ttl-ms: 86400000
+    # 百度、高德回退及偏航重规划共用全局限速，控制在每秒最多 2.5 次。
+    min-request-interval-ms: 400
     # 本地库 classpath 路径
     local-path: coord-db
     # API 请求超时（毫秒）
