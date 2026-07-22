@@ -525,6 +525,9 @@ public class TownRoadMiddleLayer {
         List<double[]> baselineRouteCoordinates = baselineRoute.success()
                 ? baselineRoute.coordinates()
                 : fallbackCoordinates;
+        List<double[]> matchingRouteCoordinates = baselineRoute.success()
+                ? baselineRoute.matchingCoordinates()
+                : fallbackCoordinates;
         List<double[]> routeCoordinates = baselineRouteCoordinates;
         double routeLengthKm = baselineRoute.success() ? baselineRoute.distanceKm()
                 : pathLengthKm(routeCoordinates);
@@ -615,6 +618,7 @@ public class TownRoadMiddleLayer {
                 cityPath,
                 cityNames,
                 routeCoordinates,
+                matchingRouteCoordinates,
                 routeLengthKm > 0 ? routeLengthKm : null,
                 speedKmh,
                 travelDurationMs,

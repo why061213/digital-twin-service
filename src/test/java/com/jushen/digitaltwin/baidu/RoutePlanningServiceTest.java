@@ -3,6 +3,7 @@ package com.jushen.digitaltwin.baidu;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.ArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -103,5 +104,31 @@ class RoutePlanningServiceTest {
         assertThat(route.provider()).isEqualTo("amap");
         assertThat(route.coordinates()).anyMatch(point -> point[0] == 113.20 && point[1] == 23.08);
         verify(amap, times(1)).planRoute(eq(origin[1]), eq(origin[0]), eq(destination[1]), eq(destination[0]), anyList());
+    }
+
+    @Test
+    void keepsFullMatchingPathAndOnlyLimitsRenderingPath() {
+        BaiduRoutePlanService baidu = mock(BaiduRoutePlanService.class);
+        AmapRoutePlanService amap = mock(AmapRoutePlanService.class);
+        List<double[]> detailed = new ArrayList<>();
+        for (int i = 0; i < 600; i++) {
+            double ratio = i / 599.0;
+            detailed.add(new double[]{
+                    origin[0] + (destination[0] - origin[0]) * ratio,
+                    origin[1] + (destination[1] - origin[1]) * ratio
+                            + Math.sin(ratio * Math.PI * 16) * 0.01
+            });
+        }
+        when(baidu.planRoute(origin[1], origin[0], destination[1], destination[0]))
+                .thenReturn(BaiduRoutePlanService.RoutePlanResult.success(
+                        30_000, 2_400, detailed, List.of()));
+        RoutePlanningService service = new RoutePlanningService(baidu, amap, true, 60_000, 0);
+
+        RoutePlanningService.PlannedRoute route = service.plan(origin, destination);
+
+        assertThat(route.matchingCoordinates()).hasSize(602);
+        assertThat(route.coordinates()).hasSizeLessThanOrEqualTo(240);
+        assertThat(route.coordinates().get(0)).containsExactly(origin);
+        assertThat(route.coordinates().get(route.coordinates().size() - 1)).containsExactly(destination);
     }
 }

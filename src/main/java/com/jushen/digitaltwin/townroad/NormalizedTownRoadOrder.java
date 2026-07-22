@@ -26,6 +26,7 @@ public record NormalizedTownRoadOrder(
         List<String> cityPath,
         List<String> cityNames,
         List<double[]> routeCoordinates,
+        List<double[]> matchingCoordinates,
         Double routeLengthKm,
         Double speedKmh,
         Long travelDurationMs,
@@ -60,7 +61,7 @@ public record NormalizedTownRoadOrder(
     ) {
         this(orderId, lineId, instanceId, vehicleKey, fromKey, toKey, odKey,
                 fromProvinceKey, toProvinceKey, provincePaths, provincePathKeys, provincePathCosts,
-                cityPath, cityNames, routeCoordinates, routeLengthKm, speedKmh,
+                cityPath, cityNames, routeCoordinates, routeCoordinates, routeLengthKm, speedKmh,
                 null, "fallback", groupId, groupName, from, to, vehicle, status, updatedAt,
                 deleted, upToDate, dataSignature, routeSignature);
     }

@@ -194,6 +194,7 @@ public class RoutePlanningService {
             boolean success,
             String provider,
             List<double[]> coordinates,
+            List<double[]> matchingCoordinates,
             double distanceKm,
             long durationMs,
             String error
@@ -205,24 +206,90 @@ public class RoutePlanningService {
                     copy.add(new double[]{coordinate[0], coordinate[1]});
                 }
             }
-            return new PlannedRoute(true, provider, simplify(copy, 240),
+            List<double[]> matching = List.copyOf(copy);
+            return new PlannedRoute(true, provider, simplifyForRendering(matching, 240), matching,
                     Math.max(0, distanceMeters) / 1000.0,
                     Math.max(0L, durationSeconds) * 1000L, null);
         }
 
         public static PlannedRoute unavailable(String error) {
-            return new PlannedRoute(false, "fallback", List.of(), 0, 0, error);
+            return new PlannedRoute(false, "fallback", List.of(), List.of(), 0, 0, error);
         }
 
-        private static List<double[]> simplify(List<double[]> coordinates, int maxPoints) {
+        /**
+         * 仅生成前端渲染折线。判偏、投影和进度必须使用 matchingCoordinates，不能使用这里的结果。
+         * 先用 Douglas-Peucker 保留弯道，再二分误差阈值，直到满足传输点数上限。
+         */
+        public static List<double[]> simplifyForRendering(List<double[]> coordinates, int maxPoints) {
             if (coordinates.size() <= maxPoints) return List.copyOf(coordinates);
-            List<double[]> sampled = new ArrayList<>(maxPoints);
-            for (int i = 0; i < maxPoints; i++) {
-                int index = (int) Math.round(i * (coordinates.size() - 1.0) / (maxPoints - 1.0));
-                double[] coordinate = coordinates.get(index);
-                sampled.add(new double[]{coordinate[0], coordinate[1]});
+            if (maxPoints < 2) return List.of(copyOf(coordinates.get(0)));
+
+            double lowKm = 0;
+            double highKm = 0.01;
+            List<double[]> simplified = douglasPeucker(coordinates, highKm);
+            while (simplified.size() > maxPoints && highKm < 1_000) {
+                highKm *= 2;
+                simplified = douglasPeucker(coordinates, highKm);
             }
-            return List.copyOf(sampled);
+            for (int iteration = 0; iteration < 32; iteration++) {
+                double middleKm = (lowKm + highKm) / 2;
+                List<double[]> candidate = douglasPeucker(coordinates, middleKm);
+                if (candidate.size() > maxPoints) {
+                    lowKm = middleKm;
+                } else {
+                    highKm = middleKm;
+                    simplified = candidate;
+                }
+            }
+            return List.copyOf(simplified);
+        }
+
+        private static List<double[]> douglasPeucker(List<double[]> coordinates, double toleranceKm) {
+            boolean[] kept = new boolean[coordinates.size()];
+            kept[0] = true;
+            kept[coordinates.size() - 1] = true;
+            simplifySection(coordinates, 0, coordinates.size() - 1, toleranceKm, kept);
+            List<double[]> result = new ArrayList<>();
+            for (int i = 0; i < coordinates.size(); i++) {
+                if (kept[i]) result.add(copyOf(coordinates.get(i)));
+            }
+            return result;
+        }
+
+        private static void simplifySection(
+                List<double[]> coordinates, int start, int end, double toleranceKm, boolean[] kept) {
+            if (end <= start + 1) return;
+            double maximumKm = -1;
+            int farthest = -1;
+            for (int i = start + 1; i < end; i++) {
+                double distanceKm = perpendicularDistanceKm(
+                        coordinates.get(i), coordinates.get(start), coordinates.get(end));
+                if (distanceKm > maximumKm) {
+                    maximumKm = distanceKm;
+                    farthest = i;
+                }
+            }
+            if (farthest >= 0 && maximumKm > toleranceKm) {
+                kept[farthest] = true;
+                simplifySection(coordinates, start, farthest, toleranceKm, kept);
+                simplifySection(coordinates, farthest, end, toleranceKm, kept);
+            }
+        }
+
+        private static double perpendicularDistanceKm(double[] point, double[] start, double[] end) {
+            double referenceLatRad = Math.toRadians((start[1] + end[1] + point[1]) / 3.0);
+            double x = (point[0] - start[0]) * 111.320 * Math.cos(referenceLatRad);
+            double y = (point[1] - start[1]) * 110.574;
+            double dx = (end[0] - start[0]) * 111.320 * Math.cos(referenceLatRad);
+            double dy = (end[1] - start[1]) * 110.574;
+            double lengthSquared = dx * dx + dy * dy;
+            if (lengthSquared <= 1e-12) return Math.hypot(x, y);
+            double t = Math.max(0, Math.min(1, (x * dx + y * dy) / lengthSquared));
+            return Math.hypot(x - t * dx, y - t * dy);
+        }
+
+        private static double[] copyOf(double[] coordinate) {
+            return new double[]{coordinate[0], coordinate[1]};
         }
     }
 
