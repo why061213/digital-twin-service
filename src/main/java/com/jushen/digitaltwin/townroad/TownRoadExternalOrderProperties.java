@@ -46,6 +46,10 @@ public class TownRoadExternalOrderProperties {
      */
     private boolean treatLoadingUnloadingAsTransporting = false;
 
+    /** 新中间层实验：落盘订单/车辆链后立即截断所有后续处理。 */
+    private boolean vehicleOrderChainExperimentEnabled = false;
+    private String vehicleOrderChainStorePath = "runtime-data/vehicle-order-chain";
+
     public String getPostUrl() {
         return postUrl;
     }
@@ -156,5 +160,21 @@ public class TownRoadExternalOrderProperties {
 
     public void setTreatLoadingUnloadingAsTransporting(boolean treatLoadingUnloadingAsTransporting) {
         this.treatLoadingUnloadingAsTransporting = treatLoadingUnloadingAsTransporting;
+    }
+
+    public boolean isVehicleOrderChainExperimentEnabled() {
+        return vehicleOrderChainExperimentEnabled;
+    }
+
+    public void setVehicleOrderChainExperimentEnabled(boolean vehicleOrderChainExperimentEnabled) {
+        this.vehicleOrderChainExperimentEnabled = vehicleOrderChainExperimentEnabled;
+    }
+
+    public String getVehicleOrderChainStorePath() {
+        return vehicleOrderChainStorePath;
+    }
+
+    public void setVehicleOrderChainStorePath(String vehicleOrderChainStorePath) {
+        this.vehicleOrderChainStorePath = vehicleOrderChainStorePath;
     }
 }

@@ -38,6 +38,7 @@ public class TownRoadRenderService {
     private final RoutePushService routePushService;
     private final TownRoadExternalOrderProperties externalOrderProperties;
     private final DailyOrderStatisticsService dailyOrderStatisticsService;
+    private final VehicleOrderChainStore vehicleOrderChainStore;
     private volatile long lastBroadcastDailyKpiRevision = -1;
     private Map<String, Object> lastResult = Map.of();
     /** RM2 原子快照 */
@@ -66,7 +67,8 @@ public class TownRoadRenderService {
             TownRoadCoordinateResolver coordinateResolver,
             RoutePushService routePushService,
             TownRoadExternalOrderProperties externalOrderProperties,
-            DailyOrderStatisticsService dailyOrderStatisticsService
+            DailyOrderStatisticsService dailyOrderStatisticsService,
+            VehicleOrderChainStore vehicleOrderChainStore
     ) {
         this.townRoadExternalOrderClient = townRoadExternalOrderClient;
         this.middleLayer = middleLayer;
@@ -76,6 +78,7 @@ public class TownRoadRenderService {
         this.routePushService = routePushService;
         this.externalOrderProperties = externalOrderProperties;
         this.dailyOrderStatisticsService = dailyOrderStatisticsService;
+        this.vehicleOrderChainStore = vehicleOrderChainStore;
         routePushService.setOnLoadingVehicleDeparted(this::onLoadingVehicleDeparted);
     }
 
@@ -107,6 +110,25 @@ public class TownRoadRenderService {
         Map<String, Object> pipeline = traceEnabled ? new LinkedHashMap<>() : null;
         if (traceEnabled) {
             pipeline.put("input", inputSummary(rawOrders));
+        }
+
+        if (externalOrderProperties.isVehicleOrderChainExperimentEnabled()) {
+            List<ExternalOrderRecord> expanded = middleLayer.expandVehicleInstances(
+                    rawOrders == null ? List.of() : rawOrders);
+            VehicleOrderChainStore.IngestResult stored = vehicleOrderChainStore.ingest(expanded);
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("ok", true);
+            response.put("type", "vehicle_order_chain_store");
+            response.put("message", "new middle layer stored data; downstream pipeline intentionally stopped");
+            response.put("pipelineCut", true);
+            response.put("inputRawCount", inputRawCount);
+            response.put("expandedVehicleRecordCount", expanded.size());
+            response.put("store", stored);
+            response.put("elapsedMs", System.currentTimeMillis() - startedAt);
+            if (traceEnabled) response.put("pipeline", pipeline);
+            this.lastResult = Collections.unmodifiableMap(response);
+            log.warn("[VehicleOrderChain][PIPELINE_CUT] route planning, grouping, runtime registration and publishing were skipped");
+            return this.lastResult;
         }
 
         // 入口去重：同订单+同线路+同车牌号，保留 updatedAt 最晚的记录
