@@ -29,7 +29,8 @@ class TownRoadRenderServicePipelineCutTest {
         ExternalOrderRecord record = mock(ExternalOrderRecord.class);
         when(middleLayer.expandVehicleInstances(List.of(record))).thenReturn(List.of(record));
         when(store.ingest(List.of(record))).thenReturn(new VehicleOrderChainStore.IngestResult(
-                1, 1, 0, 0, 1, 0, 1, 1, 0, "store", "general"));
+                1, 1, 0, 1, 0, 0, 0, 0, 1, 0,
+                1, 1, List.of("2026-07-21", "2026-07-22"), "store", "daily"));
         TownRoadRenderService service = new TownRoadRenderService(
                 client, middleLayer, websocket, geocode, resolver, routePush,
                 properties, statistics, store);

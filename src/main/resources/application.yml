@@ -62,7 +62,7 @@ dashboard:
       # 上游状态诊断开关：临时把装载/卸载中的车辆按“运输中”走完整运行链路。
       # 定位问题确认后请改回 false。
       treat-loading-unloading-as-transporting: true
-      # 新中间层实验分支：只做订单去重、车辆全链路检查和本地订单库落盘，随后截断后续程序。
+      # 新中间层实验分支：只做今昨订单日库 diff 与车辆轻量索引，随后截断后续程序。
       vehicle-order-chain-experiment-enabled: true
       vehicle-order-chain-store-path: runtime-data/vehicle-order-chain
   route:

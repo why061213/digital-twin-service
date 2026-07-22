@@ -46,7 +46,7 @@ public class TownRoadExternalOrderProperties {
      */
     private boolean treatLoadingUnloadingAsTransporting = false;
 
-    /** 新中间层实验：落盘订单/车辆链后立即截断所有后续处理。 */
+    /** 新中间层实验：完成日订单 diff 和车辆轻量索引后立即截断所有后续处理。 */
     private boolean vehicleOrderChainExperimentEnabled = false;
     private String vehicleOrderChainStorePath = "runtime-data/vehicle-order-chain";
 
