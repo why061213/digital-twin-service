@@ -1036,7 +1036,12 @@ public class RoutePushService {
             }
 
             double pathProgress = progressOnCoordinates(route.coordinates(), snapshot.position(), progress);
-            double[] projected = coordinateAtProgress(route.coordinates(), pathProgress);
+            double[] currentRouteProjected = coordinateAtProgress(route.coordinates(), pathProgress);
+            double offCurrentRouteKm = distanceKm(currentRouteProjected, snapshot.position());
+            List<double[]> baselineCoordinates = baselineRouteCoordinates.getOrDefault(
+                    lineId, route.coordinates());
+            double baselineProgress = progressOnCoordinates(baselineCoordinates, snapshot.position(), progress);
+            double[] projected = coordinateAtProgress(baselineCoordinates, baselineProgress);
             double offRouteKm = distanceKm(projected, snapshot.position());
             if (offRouteKm > MAX_CALIBRATION_OFF_ROUTE_KM) {
                 if (deviationConfirmationRefresh == null) {
@@ -1047,7 +1052,10 @@ public class RoutePushService {
                 if (confirmedSnapshot == null) continue;
                 snapshot = confirmedSnapshot;
                 pathProgress = progressOnCoordinates(route.coordinates(), snapshot.position(), progress);
-                projected = coordinateAtProgress(route.coordinates(), pathProgress);
+                currentRouteProjected = coordinateAtProgress(route.coordinates(), pathProgress);
+                offCurrentRouteKm = distanceKm(currentRouteProjected, snapshot.position());
+                baselineProgress = progressOnCoordinates(baselineCoordinates, snapshot.position(), progress);
+                projected = coordinateAtProgress(baselineCoordinates, baselineProgress);
                 offRouteKm = distanceKm(projected, snapshot.position());
                 if (offRouteKm <= MAX_CALIBRATION_OFF_ROUTE_KM) {
                     log.info("[RouteCorrection] stale prediction cleared after refresh: lineId={}, confirmedDistanceKm={}",
@@ -1055,8 +1063,14 @@ public class RoutePushService {
                     continue;
                 }
                 if (!recordRouteDeviation(lineId, now, offRouteKm)) continue;
-                List<double[]> baselineCoordinates = baselineRouteCoordinates.getOrDefault(
-                        lineId, route.coordinates());
+                if (routeCorrectionRevisions.containsKey(lineId)
+                        && offCurrentRouteKm <= MAX_CALIBRATION_OFF_ROUTE_KM) {
+                    // 车辆仍沿上次修正路线行驶：只累计偏离等级并刷新颜色，不重复调用规划 API。
+                    routeCorrectionRevisions.put(lineId, now);
+                    lastBroadcastPositions.remove(lineId);
+                    calibrated++;
+                    continue;
+                }
                 RoutePlanningService.PlannedRoute replanned = routePlanningService.plan(
                         baselineCoordinates.get(0),
                         baselineCoordinates.get(baselineCoordinates.size() - 1),
@@ -1415,8 +1429,8 @@ public class RoutePushService {
         log.warn("[RouteCorrection] deviation event recorded: lineId={}, phase={}, count={}, distanceKm={}",
                 lineId, "critical".equals(severity) ? "alarm" : "warning".equals(severity) ? "warning" : "probe",
                 count, String.format(Locale.ROOT, "%.3f", distanceKm));
-        // 探测阶段只累计证据；达到橙色 warning 或红色 critical 后才调用路线 API。
-        return !"none".equals(severity);
+        // 首次确认偏离就修正车辆路线；颜色升级仍由 warning/critical 独立控制。
+        return true;
     }
 
     private void applyRouteDeviationAlert(Map<String, Object> message, String lineId, long now) {
@@ -1455,9 +1469,16 @@ public class RoutePushService {
         message.put("routeLengthKm", route.routeLengthKm());
         message.put("travelDurationMs", route.travelDurationMs());
         message.put("pathKey", route.pathKey());
-        message.put("deviationCoordinates", vehicleDeviationCoordinates.getOrDefault(route.lineId(), List.of()));
-        message.put("colorKey", "branch:" + route.lineId());
-        message.put("isRouteBranch", true);
+        RouteDeviationAlert alert = routeDeviationAlerts.get(route.lineId());
+        boolean highlightedBranch = alert != null
+                && System.currentTimeMillis() - alert.lastDeviationAt() <= DEVIATION_ALERT_TTL_MS;
+        message.put("deviationCoordinates", highlightedBranch
+                ? vehicleDeviationCoordinates.getOrDefault(route.lineId(), List.of())
+                : List.of());
+        message.put("colorKey", highlightedBranch
+                ? "branch:" + route.lineId()
+                : route.orderFamilyId());
+        message.put("isRouteBranch", highlightedBranch);
     }
 
     private double routeProgress(ScheduledRoute route, long now) {
