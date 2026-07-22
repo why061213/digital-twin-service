@@ -59,6 +59,9 @@ dashboard:
       auto-sync-fixed-delay-ms: 900000
       # true 时，仅展示能解析 supplier vehicleId、可进行真实位置批量校准的订单。
       ignore-orders-without-real-position: true
+      # 上游状态诊断开关：临时把装载/卸载中的车辆按“运输中”走完整运行链路。
+      # 定位问题确认后请改回 false。
+      treat-loading-unloading-as-transporting: true
   route:
     # 所有档位都使用正常车辆时间尺度；代码层还会把异常配置限制在可信速度内。
     simulation-profile: real

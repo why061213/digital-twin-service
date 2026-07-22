@@ -40,6 +40,12 @@ public class TownRoadExternalOrderProperties {
      */
     private boolean ignoreOrdersWithoutRealPosition = false;
 
+    /**
+     * 上游状态诊断开关：开启后把装载/卸载中的车辆临时按“运输中”走完整运行链路。
+     * 仅用于核对上游状态是否错误，验证结束后应关闭。
+     */
+    private boolean treatLoadingUnloadingAsTransporting = false;
+
     public String getPostUrl() {
         return postUrl;
     }
@@ -142,5 +148,13 @@ public class TownRoadExternalOrderProperties {
 
     public void setIgnoreOrdersWithoutRealPosition(boolean ignoreOrdersWithoutRealPosition) {
         this.ignoreOrdersWithoutRealPosition = ignoreOrdersWithoutRealPosition;
+    }
+
+    public boolean isTreatLoadingUnloadingAsTransporting() {
+        return treatLoadingUnloadingAsTransporting;
+    }
+
+    public void setTreatLoadingUnloadingAsTransporting(boolean treatLoadingUnloadingAsTransporting) {
+        this.treatLoadingUnloadingAsTransporting = treatLoadingUnloadingAsTransporting;
     }
 }

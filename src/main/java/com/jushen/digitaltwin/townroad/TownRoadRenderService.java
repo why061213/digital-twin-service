@@ -122,6 +122,7 @@ public class TownRoadRenderService {
         }
 
         List<ExternalOrderRecord> expandedOrders = middleLayer.expandVehicleInstances(dedupedOrders);
+        expandedOrders = applyLoadingUnloadingDiagnosticOverride(expandedOrders);
         Set<String> planningLineIds = new LinkedHashSet<>();
         for (ExternalOrderRecord order : expandedOrders) {
             if (order == null || order.vehicle() == null) continue;
@@ -742,6 +743,54 @@ public class TownRoadRenderService {
                     lineId, vehicle == null ? null : vehicle.plate(), providerVehicleReady);
         }
         return eligible;
+    }
+
+    private List<ExternalOrderRecord> applyLoadingUnloadingDiagnosticOverride(
+            List<ExternalOrderRecord> orders
+    ) {
+        if (!externalOrderProperties.isTreatLoadingUnloadingAsTransporting()
+                || orders == null || orders.isEmpty()) {
+            return orders == null ? List.of() : orders;
+        }
+        Map<String, Integer> overriddenStatusCounts = new LinkedHashMap<>();
+        List<String> overriddenSamples = new ArrayList<>();
+        List<ExternalOrderRecord> result = new ArrayList<>(orders.size());
+        for (ExternalOrderRecord order : orders) {
+            if (order == null || !shouldTreatAsTransporting(order.status())) {
+                result.add(order);
+                continue;
+            }
+            overriddenStatusCounts.merge(order.status().trim(), 1, Integer::sum);
+            if (overriddenSamples.size() < 20) {
+                overriddenSamples.add(middleLayer.instanceIdFor(order) + ":"
+                        + (order.vehicle() == null ? "?" : order.vehicle().plate())
+                        + ":" + order.status().trim());
+            }
+            result.add(new ExternalOrderRecord(
+                    order.orderId(), order.lineId(), order.lines(), order.from(), order.to(), order.vehicle(),
+                    "运输中", order.updatedAt(), order.deleted(), order.upToDate(),
+                    order.lineIndex(), order.vehicleIndex()));
+        }
+        if (!overriddenStatusCounts.isEmpty()) {
+            log.warn("[TownRoad][UPSTREAM_STATUS_DIAGNOSTIC] loading/unloading vehicles forced to transporting: counts={}, total={}, samples={}",
+                    overriddenStatusCounts,
+                    overriddenStatusCounts.values().stream().mapToInt(Integer::intValue).sum(),
+                    overriddenSamples);
+        }
+        return List.copyOf(result);
+    }
+
+    static boolean shouldTreatAsTransporting(String status) {
+        if (status == null || status.isBlank()) return false;
+        String normalized = status.trim().replace(" ", "");
+        if (normalized.contains("完成") || normalized.contains("取消")) return false;
+        return normalized.contains("装载")
+                || normalized.contains("装货")
+                || normalized.contains("装车")
+                || normalized.contains("卸载")
+                || normalized.contains("卸货")
+                || normalized.contains("卸车")
+                || normalized.contains("装卸");
     }
 
     static boolean isEligibleForRealPositionMode(
