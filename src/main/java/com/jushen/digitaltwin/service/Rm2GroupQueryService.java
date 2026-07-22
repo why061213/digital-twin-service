@@ -73,8 +73,10 @@ public class Rm2GroupQueryService {
 
         List<RenderRouteDTO> routes = snapshot.routesByGroupId().getOrDefault(groupId, List.of());
         List<Map<String, Object>> positions = new ArrayList<>();
+        List<Map<String, Object>> effectiveRoutes = new ArrayList<>();
         for (RenderRouteDTO route : routes) {
             Map<String, Object> position = routePushService.getCachedOrSimulatedPosition(route.lineId());
+            effectiveRoutes.add(Rm2RouteResponseAssembler.effectiveRoute(route, position));
             if (position.containsKey("position") || "finished".equals(position.get("status"))) {
                 positions.add(position);
             }
@@ -85,7 +87,7 @@ public class Rm2GroupQueryService {
         response.put("snapshotVersion", snapshot.snapshotVersion());
         response.put("groupId", groupId);
         response.put("coordinateSystem", "GCJ02");
-        response.put("routes", routes);
+        response.put("routes", effectiveRoutes);
         response.put("routeCount", routes.stream()
                 .map(RenderRouteDTO::businessLineId)
                 .filter(lineId -> lineId != null && !lineId.isBlank())
