@@ -119,6 +119,8 @@ dashboard:
     cache-ttl-ms: 86400000
     # 百度、高德回退及偏航重规划共用全局限速，控制在每秒最多 2.5 次。
     min-request-interval-ms: 400
+    # true=货车路线规划，false=小轿车路线规划（默认）
+    use-truck-routing: false
     # 本地库 classpath 路径
     local-path: coord-db
     # API 请求超时（毫秒）

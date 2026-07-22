@@ -24,16 +24,20 @@ public class AmapRoutePlanService {
     private static final Logger log = LoggerFactory.getLogger(AmapRoutePlanService.class);
 
     private static final String API_URL = "https://restapi.amap.com/v5/direction/driving";
+    private static final String TRUCK_API_URL = "https://restapi.amap.com/v4/direction/truck";
 
     private final String key;
+    private final boolean useTruckRouting;
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public AmapRoutePlanService(
-            @Value("${dashboard.route-plan.amap-key:}") String key) {
+            @Value("${dashboard.route-plan.amap-key:}") String key,
+            @Value("${dashboard.route-plan.use-truck-routing:false}") boolean useTruckRouting) {
         this.key = key;
+        this.useTruckRouting = useTruckRouting;
     }
 
     // ================================================================
@@ -76,11 +80,18 @@ public class AmapRoutePlanService {
             return RoutePlanResult.fail("高德 Key 未配置");
         }
         try {
-            String url = API_URL + "?origin=" + origin + "&destination=" + destination
-                    + "&key=" + key + "&show_fields=polyline,cost";
+            String baseUrl = useTruckRouting ? TRUCK_API_URL : API_URL;
+            String url = baseUrl + "?origin=" + origin + "&destination=" + destination
+                    + "&key=" + key;
+            if (useTruckRouting) {
+                // v4 货车 API 参数：show_fields 不支持，使用默认返回
+            } else {
+                url += "&show_fields=polyline,cost";
+            }
             if (!waypoints.isBlank()) url += "&waypoints=" + waypoints;
-            log.info("[AmapRoute] 请求: origin={}, dest={}, waypointCount={}",
-                    origin, destination, waypoints.isBlank() ? 0 : waypoints.split(";").length);
+            log.info("[AmapRoute] 请求{}: origin={}, dest={}, waypointCount={}",
+                    useTruckRouting ? "(货车)" : "", origin, destination,
+                    waypoints.isBlank() ? 0 : waypoints.split(";").length);
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
@@ -95,7 +106,7 @@ public class AmapRoutePlanService {
             }
 
             Map<String, Object> body = objectMapper.readValue(response.body(), Map.class);
-            return parseResult(body);
+            return useTruckRouting ? parseResultV4(body) : parseResult(body);
 
         } catch (Exception e) {
             log.error("[AmapRoute] 请求失败: {}", e.getMessage());
@@ -174,6 +185,63 @@ public class AmapRoutePlanService {
                 totalDistance, totalDuration, toll, steps.size(), dedupedPath.size());
 
         return RoutePlanResult.success(totalDistance, totalDuration, toll, dedupedPath, stepInfos);
+    }
+
+    /** 解析 v4 货车 API 返回（distance/duration 在 path 顶层，不在 cost 子对象中） */
+    @SuppressWarnings("unchecked")
+    private RoutePlanResult parseResultV4(Map<String, Object> body) {
+        String status = String.valueOf(body.getOrDefault("status", ""));
+        if (!"1".equals(status)) {
+            return RoutePlanResult.fail("status=" + status + ", " + body.get("info"));
+        }
+
+        Map<String, Object> route = (Map<String, Object>) body.get("route");
+        if (route == null) return RoutePlanResult.fail("无 route");
+
+        List<Map<String, Object>> paths = (List<Map<String, Object>>) route.get("paths");
+        if (paths == null || paths.isEmpty()) return RoutePlanResult.fail("无 paths");
+
+        Map<String, Object> firstPath = paths.get(0);
+        // v4: distance/duration 直接在 path 顶层
+        int totalDistance = Integer.parseInt(String.valueOf(firstPath.get("distance")));
+        int totalDuration = Integer.parseInt(String.valueOf(firstPath.get("duration")));
+
+        List<Map<String, Object>> steps = (List<Map<String, Object>>) firstPath.get("steps");
+        if (steps == null) steps = List.of();
+
+        List<double[]> fullPath = new ArrayList<>();
+        List<RouteStep> stepInfos = new ArrayList<>();
+
+        for (Map<String, Object> step : steps) {
+            // v4: distance/duration 直接在 step 顶层
+            int distance = Integer.parseInt(String.valueOf(step.get("distance")));
+            int duration = Integer.parseInt(String.valueOf(step.get("duration")));
+
+            String instruction = (String) step.getOrDefault("instruction", "");
+            String polyline = (String) step.getOrDefault("polyline", "");
+            String road = (String) step.getOrDefault("road", "");
+            String action = (String) step.getOrDefault("action", "");
+            String orientation = (String) step.getOrDefault("orientation", "");
+
+            List<double[]> stepCoords = parsePolyline(polyline);
+            if (stepCoords.isEmpty()) continue;
+
+            fullPath.addAll(stepCoords);
+
+            stepInfos.add(new RouteStep(
+                    distance, duration, instruction,
+                    road, action, orientation,
+                    stepCoords.get(0),
+                    stepCoords.get(stepCoords.size() - 1)
+            ));
+        }
+
+        List<double[]> dedupedPath = deduplicatePath(fullPath);
+
+        log.info("[AmapRoute] 货车规划成功: 总距{}m, 总时{}s, 步数{}, 点数{}",
+                totalDistance, totalDuration, steps.size(), dedupedPath.size());
+
+        return RoutePlanResult.success(totalDistance, totalDuration, 0, dedupedPath, stepInfos);
     }
 
     /** 解析 polyline 字符串 "lng1,lat1;lng2,lat2;..." */
@@ -292,7 +360,7 @@ public class AmapRoutePlanService {
     // 测试
     // ================================================================
     public static void main(String[] args) {
-        AmapRoutePlanService service = new AmapRoutePlanService("your-amap-key");
+        AmapRoutePlanService service = new AmapRoutePlanService("your-amap-key", false);
         // 北京天安门 → 北京西站（经纬度用 GCJ-02）
         RoutePlanResult result = service.planRoute(39.908823, 116.397470, 39.894962, 116.322200);
         System.out.println("结果: " + result);

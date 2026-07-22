@@ -105,6 +105,7 @@ com\jushen\digitaltwin\service\RoutePushService$ScheduledRoute.class
 com\jushen\digitaltwin\service\RoutePushService$RouteScope.class
 com\jushen\digitaltwin\townroad\TownRoadDataLayer.class
 com\jushen\digitaltwin\config\WebConfig.class
+com\jushen\digitaltwin\service\RouteProgressProjector.class
 com\jushen\digitaltwin\web\HealthController.class
 com\jushen\digitaltwin\townroad\TownRoadRenderService$DeduplicationResult.class
 com\jushen\digitaltwin\grouping\ProvincePathGroupingStrategy.class
@@ -112,6 +113,7 @@ com\jushen\digitaltwin\config\WebSocketConfig.class
 com\jushen\digitaltwin\grouping\GroupingStrategy.class
 com\jushen\digitaltwin\baidu\BaiduRoutePlanService$RouteStep.class
 com\jushen\digitaltwin\config\WarehouseProperties$ColumnConfig.class
+com\jushen\digitaltwin\service\RouteDeviationPathBuilder.class
 com\jushen\digitaltwin\townroad\TownRoadMiddleLayer$RoutePlanBundle.class
 com\jushen\digitaltwin\bootstrap\DashboardAccessTokenService$SessionRecord.class
 com\jushen\digitaltwin\grouping\OrderAwareRouteInfo.class

@@ -27,16 +27,20 @@ public class BaiduRoutePlanService {
     private static final Logger log = LoggerFactory.getLogger(BaiduRoutePlanService.class);
 
     private static final String API_URL = "https://api.map.baidu.com/directionlite/v1/driving";
+    private static final String TRUCK_API_URL = "https://api.map.baidu.com/logistics_direction/v1/truck";
 
     private final String ak;
+    private final boolean useTruckRouting;
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public BaiduRoutePlanService(
-            @Value("${dashboard.route-plan.baidu-ak:}") String ak) {
+            @Value("${dashboard.route-plan.baidu-ak:}") String ak,
+            @Value("${dashboard.route-plan.use-truck-routing:false}") boolean useTruckRouting) {
         this.ak = ak;
+        this.useTruckRouting = useTruckRouting;
     }
 
     // ================================================================
@@ -86,13 +90,19 @@ public class BaiduRoutePlanService {
             return RoutePlanResult.fail("百度 AK 未配置");
         }
         try {
-            String url = API_URL + "?origin=" + origin + "&destination=" + destination
+            String baseUrl = useTruckRouting ? TRUCK_API_URL : API_URL;
+            String url = baseUrl + "?origin=" + origin + "&destination=" + destination
                     + "&coord_type=gcj02&ret_coordtype=gcj02&ak=" + ak;
+            if (useTruckRouting) {
+                // 默认货车参数：高4m、宽2.5m、重10吨、长12m
+                url += "&height=4.0&width=2.5&weight=10&length=12";
+            }
             if (!waypoints.isBlank()) {
                 url += "&waypoints=" + URLEncoder.encode(waypoints, StandardCharsets.UTF_8);
             }
-            log.info("[BaiduRoute] 请求: origin={}, dest={}, waypointCount={}",
-                    origin, destination, waypoints.isBlank() ? 0 : waypoints.split("\\|").length);
+            log.info("[BaiduRoute] 请求{}: origin={}, dest={}, waypointCount={}",
+                    useTruckRouting ? "(货车)" : "", origin, destination,
+                    waypoints.isBlank() ? 0 : waypoints.split("\\|").length);
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
@@ -286,7 +296,7 @@ public class BaiduRoutePlanService {
     // 测试用 main
     // ================================================================
     public static void main(String[] args) {
-        BaiduRoutePlanService service = new BaiduRoutePlanService("your-baidu-ak");
+        BaiduRoutePlanService service = new BaiduRoutePlanService("your-baidu-ak", false);
         // 北京天安门 → 北京西站
         RoutePlanResult result = service.planRoute(39.908823, 116.397470, 39.894962, 116.322200);
         System.out.println("结果: " + result);

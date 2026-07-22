@@ -74,6 +74,8 @@ E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\RealtimePushService.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\Rm2GroupQueryService.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\RouteCorrectionPathBuilder.java
+E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\RouteDeviationPathBuilder.java
+E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\RouteProgressProjector.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\RoutePushService.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\SimulationDataFactory.java
 E:\jushen\data-showing-web\jushen-digital-twin-service\src\main\java\com\jushen\digitaltwin\service\VehiclePositionCacheService.java
