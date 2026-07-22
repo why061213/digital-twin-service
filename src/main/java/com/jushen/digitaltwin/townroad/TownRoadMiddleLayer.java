@@ -522,29 +522,17 @@ public class TownRoadMiddleLayer {
         RoutePlanningService.PlannedRoute baselineRoute = routePlanBundle == null
                 ? RoutePlanningService.PlannedRoute.unavailable("missing-order-line-plan")
                 : routePlanBundle.baseline();
-        RoutePlanningService.PlannedRoute initializationRoute = routePlanBundle == null
-                ? RoutePlanningService.PlannedRoute.unavailable("missing-order-line-plan")
-                : routePlanBundle.initialization();
         List<double[]> baselineRouteCoordinates = baselineRoute.success()
                 ? baselineRoute.coordinates()
                 : fallbackCoordinates;
-        List<double[]> routeCoordinates = initializationRoute.success()
-                ? initializationRoute.coordinates()
-                : baselineRouteCoordinates;
-        double routeLengthKm = initializationRoute.success()
-                ? initializationRoute.distanceKm()
-                : baselineRoute.success() ? baselineRoute.distanceKm()
+        List<double[]> routeCoordinates = baselineRouteCoordinates;
+        double routeLengthKm = baselineRoute.success() ? baselineRoute.distanceKm()
                 : pathLengthKm(routeCoordinates);
         Long travelDurationMs = null;
-        if (initializationRoute.success() && initializationRoute.durationMs() > 0) {
-            travelDurationMs = initializationRoute.durationMs();
-        } else if (baselineRoute.success() && baselineRoute.durationMs() > 0) {
+        if (baselineRoute.success() && baselineRoute.durationMs() > 0) {
             travelDurationMs = baselineRoute.durationMs();
         }
-        boolean usesVehicleWaypoints = routePlanBundle != null && !routePlanBundle.waypoints().isEmpty();
-        String routeProvider = initializationRoute.success() && usesVehicleWaypoints
-                ? initializationRoute.provider() + "-waypoints"
-                : baselineRoute.success() ? baselineRoute.provider() : "fallback";
+        String routeProvider = baselineRoute.success() ? baselineRoute.provider() : "fallback";
         Double speedKmh = raw.vehicle() == null ? null : raw.vehicle().speedKmh();
 
         List<ProvincePath> candidatePaths = candidateProvincePathsForOrder(
@@ -1150,78 +1138,11 @@ public class TownRoadMiddleLayer {
             ResolvedRouteSeed representative = entry.getValue().get(0);
             RoutePlanningService.PlannedRoute baseline = routePlanningService.plan(
                     representative.fromCoords(), representative.toCoords());
-            List<double[]> orderingRoute = baseline.success()
-                    ? baseline.coordinates()
-                    : List.of(representative.fromCoords(), representative.toCoords());
-            List<double[]> waypoints = orderedVehicleWaypoints(entry.getValue(), orderingRoute);
-            RoutePlanningService.PlannedRoute initialization = waypoints.isEmpty()
-                    ? baseline
-                    : routePlanningService.plan(
-                            representative.fromCoords(), representative.toCoords(), waypoints);
-            if (!initialization.success()) initialization = baseline;
-            result.put(entry.getKey(), new RoutePlanBundle(baseline, initialization, waypoints));
-            log.info("[RoutePlan] order-line routes prepared: key={}, waypointCount={}, baselineProvider={}, initializationProvider={}",
-                    entry.getKey(), waypoints.size(), baseline.provider(), initialization.provider());
+            result.put(entry.getKey(), new RoutePlanBundle(baseline));
+            log.info("[RoutePlan] order-line baseline prepared: key={}, provider={}",
+                    entry.getKey(), baseline.provider());
         }
         return Map.copyOf(result);
-    }
-
-    private List<double[]> orderedVehicleWaypoints(
-            List<ResolvedRouteSeed> seeds,
-            List<double[]> baselineCoordinates
-    ) {
-        List<double[]> sorted = seeds.stream()
-                .map(seed -> seed.raw().vehicle() == null ? null : seed.raw().vehicle().currentCoords())
-                .filter(this::hasCoords)
-                .map(this::copyCoordinate)
-                .sorted(Comparator.comparingDouble(point -> routeProgress(baselineCoordinates, point)))
-                .toList();
-
-        List<double[]> deduped = new ArrayList<>();
-        for (double[] point : sorted) {
-            if (!deduped.isEmpty() && distanceKm(deduped.get(deduped.size() - 1), point) < 0.05) continue;
-            if (distanceKm(baselineCoordinates.get(0), point) < 0.05) continue;
-            if (distanceKm(baselineCoordinates.get(baselineCoordinates.size() - 1), point) < 0.05) continue;
-            deduped.add(point);
-        }
-        if (deduped.size() <= 10) return List.copyOf(deduped);
-
-        List<double[]> sampled = new ArrayList<>(10);
-        for (int i = 0; i < 10; i++) {
-            int index = (int) Math.round(i * (deduped.size() - 1.0) / 9.0);
-            sampled.add(deduped.get(index));
-        }
-        return List.copyOf(sampled);
-    }
-
-    private double routeProgress(List<double[]> coordinates, double[] position) {
-        if (coordinates == null || coordinates.size() < 2 || !hasCoords(position)) return 0;
-        double totalKm = pathLengthKm(coordinates);
-        if (totalKm <= 0) return 0;
-        double nearestDistanceSq = Double.POSITIVE_INFINITY;
-        double distanceAlongKm = 0;
-        double walkedKm = 0;
-        for (int i = 1; i < coordinates.size(); i++) {
-            double[] start = coordinates.get(i - 1);
-            double[] end = coordinates.get(i);
-            double dx = end[0] - start[0];
-            double dy = end[1] - start[1];
-            double lengthSq = dx * dx + dy * dy;
-            if (lengthSq <= 0) continue;
-            double ratio = ((position[0] - start[0]) * dx + (position[1] - start[1]) * dy) / lengthSq;
-            ratio = Math.max(0, Math.min(1, ratio));
-            double projectedLng = start[0] + dx * ratio;
-            double projectedLat = start[1] + dy * ratio;
-            double distanceSq = Math.pow(position[0] - projectedLng, 2)
-                    + Math.pow(position[1] - projectedLat, 2);
-            double segmentKm = distanceKm(start, end);
-            if (distanceSq < nearestDistanceSq) {
-                nearestDistanceSq = distanceSq;
-                distanceAlongKm = walkedKm + segmentKm * ratio;
-            }
-            walkedKm += segmentKm;
-        }
-        return Math.max(0, Math.min(1, distanceAlongKm / totalKm));
     }
 
     private String routePlanKey(
@@ -1256,11 +1177,7 @@ public class TownRoadMiddleLayer {
             double[] toCoords
     ) {}
 
-    private record RoutePlanBundle(
-            RoutePlanningService.PlannedRoute baseline,
-            RoutePlanningService.PlannedRoute initialization,
-            List<double[]> waypoints
-    ) {}
+    private record RoutePlanBundle(RoutePlanningService.PlannedRoute baseline) {}
 
     private NormalizedTownRoadOrder newerOrder(
             NormalizedTownRoadOrder first,

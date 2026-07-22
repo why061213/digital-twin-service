@@ -111,6 +111,10 @@ public class RoutePushService {
     private final Map<String, Deque<Long>> routeDeviationTimes = new ConcurrentHashMap<>();
     private final Map<String, RouteDeviationAlert> routeDeviationAlerts = new ConcurrentHashMap<>();
     private final Map<String, Long> routeCorrectionRevisions = new ConcurrentHashMap<>();
+    /** 订单起终点的原始规划路线始终单独保留，不被车辆偏航后的专属路线覆盖。 */
+    private final Map<String, List<double[]>> baselineRouteCoordinates = new ConcurrentHashMap<>();
+    /** 每辆车只有一条可见偏航分支；后续偏航会更新它，而不是叠加新颜色。 */
+    private final Map<String, List<double[]>> vehicleDeviationCoordinates = new ConcurrentHashMap<>();
     private final String externalPositionToken;
     private final int externalPositionBatchSize;
     private final long vehicleDictionaryRefreshMs;
@@ -1051,28 +1055,38 @@ public class RoutePushService {
                     continue;
                 }
                 if (!recordRouteDeviation(lineId, now, offRouteKm)) continue;
+                List<double[]> baselineCoordinates = baselineRouteCoordinates.getOrDefault(
+                        lineId, route.coordinates());
                 RoutePlanningService.PlannedRoute replanned = routePlanningService.plan(
-                        snapshot.position(), route.getToCoords());
+                        baselineCoordinates.get(0),
+                        baselineCoordinates.get(baselineCoordinates.size() - 1),
+                        List.of(snapshot.position()));
                 if (replanned.success()) {
-                    RouteCorrectionPathBuilder.Result correctedPath = RouteCorrectionPathBuilder.splice(
-                            route.coordinates(), pathProgress, snapshot.position(), replanned.coordinates());
+                    List<double[]> correctedCoordinates = replanned.coordinates();
+                    double correctedProgress = progressOnCoordinates(
+                            correctedCoordinates, snapshot.position(), progress);
+                    double totalDistanceKm = replanned.distanceKm() > 0
+                            ? replanned.distanceKm()
+                            : pathLengthKm(correctedCoordinates);
+                    double completedDistanceKm = correctedProgress * totalDistanceKm;
                     double effectiveSpeedKmh = isProviderSpeed(snapshot.speedKmh())
                             ? snapshot.speedKmh()
                             : normalizedRouteSpeed(route.speedKmh());
-                    long remainingDurationMs = replanned.durationMs() > 0
+                    long durationMs = replanned.durationMs() > 0
                             ? replanned.durationMs()
-                            : travelDurationMs(replanned.distanceKm(), effectiveSpeedKmh);
-                    long completedDurationMs = travelDurationMs(
-                            correctedPath.completedDistanceKm(), effectiveSpeedKmh);
-                    long durationMs = completedDurationMs + remainingDurationMs;
+                            : travelDurationMs(totalDistanceKm, effectiveSpeedKmh);
+                    long completedDurationMs = Math.round(correctedProgress * durationMs);
                     long correctedStartTime = now - completedDurationMs;
+                    List<double[]> deviationCoordinates = RouteDeviationPathBuilder.extract(
+                            baselineCoordinates, correctedCoordinates);
                     ScheduledRoute correctedRoute = new ScheduledRoute(
                             route.lineId(), route.orderId(), route.orderFamilyId(), route.orderName(),
                             route.orderTotalTons(), route.orderVehicleCount(), route.from(), route.to(),
-                            route.startProvince(), route.endProvince(), correctedPath.coordinates(),
-                            pathKey(route.from(), route.to(), correctedPath.coordinates()), correctedStartTime,
-                            correctedPath.totalDistanceKm(), effectiveSpeedKmh, durationMs, route.scope());
+                            route.startProvince(), route.endProvince(), correctedCoordinates,
+                            "vehicle-route::" + lineId, correctedStartTime,
+                            totalDistanceKm, effectiveSpeedKmh, durationMs, route.scope());
                     activeRoutes.replace(lineId, route, correctedRoute);
+                    vehicleDeviationCoordinates.put(lineId, deviationCoordinates);
                     routeCorrectionRevisions.put(lineId, now);
                     lastBroadcastPositions.remove(lineId);
                     if (route.scope() == RouteScope.ROAD) {
@@ -1080,9 +1094,9 @@ public class RoutePushService {
                     }
                     log.warn("[RouteCorrection] replanned remaining route with fixed order endpoints: lineId={}, provider={}, offRouteKm={}, completedKm={}, totalKm={}, progress={}%, durationMs={}",
                             lineId, replanned.provider(), String.format(Locale.ROOT, "%.3f", offRouteKm),
-                            String.format(Locale.ROOT, "%.2f", correctedPath.completedDistanceKm()),
-                            String.format(Locale.ROOT, "%.2f", correctedPath.totalDistanceKm()),
-                            Math.round(correctedPath.progress() * 100), durationMs);
+                            String.format(Locale.ROOT, "%.2f", completedDistanceKm),
+                            String.format(Locale.ROOT, "%.2f", totalDistanceKm),
+                            Math.round(correctedProgress * 100), durationMs);
                     calibrated++;
                 } else {
                     log.warn("[RouteCorrection] replan failed: lineId={}, offRouteKm={}, reason={}",
@@ -1401,7 +1415,8 @@ public class RoutePushService {
         log.warn("[RouteCorrection] deviation event recorded: lineId={}, phase={}, count={}, distanceKm={}",
                 lineId, "critical".equals(severity) ? "alarm" : "warning".equals(severity) ? "warning" : "probe",
                 count, String.format(Locale.ROOT, "%.3f", distanceKm));
-        return true;
+        // 探测阶段只累计证据；达到橙色 warning 或红色 critical 后才调用路线 API。
+        return !"none".equals(severity);
     }
 
     private void applyRouteDeviationAlert(Map<String, Object> message, String lineId, long now) {
@@ -1440,6 +1455,9 @@ public class RoutePushService {
         message.put("routeLengthKm", route.routeLengthKm());
         message.put("travelDurationMs", route.travelDurationMs());
         message.put("pathKey", route.pathKey());
+        message.put("deviationCoordinates", vehicleDeviationCoordinates.getOrDefault(route.lineId(), List.of()));
+        message.put("colorKey", "branch:" + route.lineId());
+        message.put("isRouteBranch", true);
     }
 
     private double routeProgress(ScheduledRoute route, long now) {
@@ -1548,6 +1566,8 @@ public class RoutePushService {
                 routeDeviationTimes.remove(entry.getKey());
                 routeDeviationAlerts.remove(entry.getKey());
                 routeCorrectionRevisions.remove(entry.getKey());
+                baselineRouteCoordinates.remove(entry.getKey());
+                vehicleDeviationCoordinates.remove(entry.getKey());
                 lastBroadcastPositions.remove(entry.getKey());
                 rm2GroupIdByLineId.remove(entry.getKey());
             }
@@ -2102,6 +2122,14 @@ public class RoutePushService {
         return RouteProgressProjector.project(coordinates, position, hintProgress);
     }
 
+    private List<double[]> copyRouteCoordinates(List<double[]> coordinates) {
+        if (coordinates == null) return List.of();
+        return coordinates.stream()
+                .filter(coordinate -> coordinate != null && coordinate.length >= 2)
+                .map(coordinate -> new double[]{coordinate[0], coordinate[1]})
+                .toList();
+    }
+
     private Long parseUpdatedAtMillis(String updatedAt) {
         if (updatedAt == null || updatedAt.isBlank()) return null;
         String value = updatedAt.trim();
@@ -2214,6 +2242,7 @@ public class RoutePushService {
                 RouteScope.TOWN
         );
         activeRoutes.put(lineId, route);
+        baselineRouteCoordinates.put(lineId, copyRouteCoordinates(coordinates));
         log.info("[TownRoad] dispatched town route: {} -> {}, lineId={}, orderId={}, routePoints={}, progress={}%, progressSource={}",
                 from, to, lineId, route.orderId(), coordinates.size(), Math.round(progress * 100), progressSource);
     }
