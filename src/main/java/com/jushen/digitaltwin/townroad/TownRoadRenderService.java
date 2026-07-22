@@ -132,6 +132,8 @@ public class TownRoadRenderService {
             }
         }
         Map<String, Object> positionWarmup = routePushService.warmPositionCacheForLineIds(planningLineIds);
+        // 批量位置先到、订单路线后处理；已有路线也必须立即用本批真实位置覆盖旧时间线。
+        int preCalibrationCount = routePushService.calibratePreparedRoutesFromCache();
         // 注册装载中车辆的初始位置，后续位置刷新时检测是否出发
         for (ExternalOrderRecord order : expandedOrders) {
             if (order == null || order.vehicle() == null) continue;
@@ -153,6 +155,7 @@ public class TownRoadRenderService {
         long middleLayerFinishedAt = System.currentTimeMillis();
         if (traceEnabled) {
             pipeline.put("middleLayer", middleLayerSummary(result, middleLayerFinishedAt - middleLayerStartedAt));
+            pipeline.put("preCalibrationCount", preCalibrationCount);
         }
 
         // 构造 RM2 分组和索引
@@ -727,16 +730,26 @@ public class TownRoadRenderService {
         if (!externalOrderProperties.isIgnoreOrdersWithoutRealPosition()) {
             return true;
         }
-        boolean eligible = routePushService.prepareProviderPositionVehicle(
+        boolean providerVehicleReady = routePushService.prepareProviderPositionVehicle(
                 lineId,
                 vehicle == null ? null : vehicle.plate(),
                 vehicle == null ? null : vehicle.carId()
         );
+        boolean eligible = isEligibleForRealPositionMode(
+                true, providerVehicleReady, routePushService.hasFreshProviderPosition(lineId));
         if (!eligible) {
-            log.info("[TownRoad] ignored order without provider position capability: lineId={}, plate={}",
-                    lineId, vehicle == null ? null : vehicle.plate());
+            log.info("[TownRoad] waiting for fresh provider position: lineId={}, plate={}, providerVehicleReady={}, state=WAITING_POSITION",
+                    lineId, vehicle == null ? null : vehicle.plate(), providerVehicleReady);
         }
         return eligible;
+    }
+
+    static boolean isEligibleForRealPositionMode(
+            boolean ignoreOrdersWithoutRealPosition,
+            boolean providerVehicleReady,
+            boolean hasFreshProviderPosition
+    ) {
+        return !ignoreOrdersWithoutRealPosition || (providerVehicleReady && hasFreshProviderPosition);
     }
 
     public TownRoadMiddleLayer middleLayer() {

@@ -108,6 +108,8 @@ public class RoutePushService {
     private final RouteDeviationClassifier routeDeviationClassifier = new RouteDeviationClassifier();
     private final TruckRoutePatternStore truckRoutePatternStore = new TruckRoutePatternStore();
     private final Map<String, Long> routeCorrectionRevisions = new ConcurrentHashMap<>();
+    /** 当前运行时间线的来源；首次真实定位必须覆盖 waiting/旧随机时间线。 */
+    private final Map<String, String> routeProgressSources = new ConcurrentHashMap<>();
     /** 订单起终点的原始规划路线始终单独保留，不被车辆偏航后的专属路线覆盖。 */
     private final Map<String, List<double[]>> baselineRouteCoordinates = new ConcurrentHashMap<>();
     /** 每辆车只有一条可见偏航分支；后续偏航会更新它，而不是叠加新颜色。 */
@@ -685,13 +687,25 @@ public class RoutePushService {
     }
 
     private String normalizePlateKey(String plate) {
-        return plate == null ? "" : plate.trim().replace(" ", "").toUpperCase(Locale.ROOT);
+        if (plate == null) return "";
+        return plate.trim().toUpperCase(Locale.ROOT)
+                .replaceAll("[\\s.·•・—–_-]", "");
     }
 
     private String normalizePlateBaseKey(String plate) {
-        String normalized = normalizePlateKey(plate);
-        int separatorIndex = normalized.indexOf('-');
-        return separatorIndex > 0 ? normalized.substring(0, separatorIndex) : normalized;
+        if (plate == null) return "";
+        String normalized = plate.trim().toUpperCase(Locale.ROOT);
+        int separatorIndex = firstSeparatorIndex(normalized);
+        return normalizePlateKey(separatorIndex > 0 ? normalized.substring(0, separatorIndex) : normalized);
+    }
+
+    private int firstSeparatorIndex(String value) {
+        int result = -1;
+        for (char separator : new char[]{'-', '—', '–'}) {
+            int index = value.indexOf(separator);
+            if (index > 0 && (result < 0 || index < result)) result = index;
+        }
+        return result;
     }
 
     /**
@@ -922,6 +936,11 @@ public class RoutePushService {
         return positionCache.runBatchRefresh(this::getAccessTokenForExternalSafe, vehicleToLineIds);
     }
 
+    /** 订单快照预热位置后立即校准已有路线，避免等下一轮定时刷新。 */
+    public int calibratePreparedRoutesFromCache() {
+        return calibrateActiveRoutesFromCache(System.currentTimeMillis());
+    }
+
     @Scheduled(
             initialDelayString = "${dashboard.route.position-refresh.initial-delay-ms:10000}",
             fixedDelayString = "${dashboard.route.position-refresh.fixed-delay-ms:30000}"
@@ -1034,12 +1053,16 @@ public class RoutePushService {
                 continue;
             }
 
-            double pathProgress = progressOnCoordinates(route.matchingCoordinates(), snapshot.position(), progress);
+            boolean firstRealCalibration = !"real-provider".equals(routeProgressSources.get(lineId));
+            double hintProgress = calibrationHintProgress(routeProgressSources.get(lineId), progress);
+            double pathProgress = progressOnCoordinates(
+                    route.matchingCoordinates(), snapshot.position(), hintProgress);
             double[] currentRouteProjected = coordinateAtProgress(route.matchingCoordinates(), pathProgress);
             double offCurrentRouteKm = distanceKm(currentRouteProjected, snapshot.position());
             List<double[]> baselineCoordinates = baselineRouteCoordinates.getOrDefault(
                     lineId, route.matchingCoordinates());
-            double baselineProgress = progressOnCoordinates(baselineCoordinates, snapshot.position(), progress);
+            double baselineProgress = progressOnCoordinates(
+                    baselineCoordinates, snapshot.position(), hintProgress);
             double[] projected = coordinateAtProgress(baselineCoordinates, baselineProgress);
             double offRouteKm = distanceKm(projected, snapshot.position());
             if (offRouteKm > MAX_CALIBRATION_OFF_ROUTE_KM) {
@@ -1050,10 +1073,12 @@ public class RoutePushService {
                         lineId, route, snapshot.fetchedAt(), offRouteKm, deviationConfirmationRefresh);
                 if (confirmedSnapshot == null) continue;
                 snapshot = confirmedSnapshot;
-                pathProgress = progressOnCoordinates(route.matchingCoordinates(), snapshot.position(), progress);
+                pathProgress = progressOnCoordinates(
+                        route.matchingCoordinates(), snapshot.position(), firstRealCalibration ? -1 : progress);
                 currentRouteProjected = coordinateAtProgress(route.matchingCoordinates(), pathProgress);
                 offCurrentRouteKm = distanceKm(currentRouteProjected, snapshot.position());
-                baselineProgress = progressOnCoordinates(baselineCoordinates, snapshot.position(), progress);
+                baselineProgress = progressOnCoordinates(
+                        baselineCoordinates, snapshot.position(), firstRealCalibration ? -1 : progress);
                 projected = coordinateAtProgress(baselineCoordinates, baselineProgress);
                 offRouteKm = distanceKm(projected, snapshot.position());
                 if (offRouteKm <= MAX_CALIBRATION_OFF_ROUTE_KM) {
@@ -1068,6 +1093,7 @@ public class RoutePushService {
                         && offCurrentRouteKm <= MAX_CALIBRATION_OFF_ROUTE_KM) {
                     // 车辆仍沿上次修正路线行驶：更新分类证据，不重复调用规划 API。
                     routeCorrectionRevisions.put(lineId, now);
+                    routeProgressSources.put(lineId, "real-provider");
                     lastBroadcastPositions.remove(lineId);
                     calibrated++;
                     continue;
@@ -1108,6 +1134,7 @@ public class RoutePushService {
                             "vehicle-route::" + lineId, correctedStartTime,
                             totalDistanceKm, effectiveSpeedKmh, durationMs, route.scope());
                     activeRoutes.replace(lineId, route, correctedRoute);
+                    routeProgressSources.put(lineId, "real-provider");
                     vehicleDeviationCoordinates.put(lineId,
                             RoutePlanningService.PlannedRoute.simplifyForRendering(deviationCoordinates, 240));
                     routeCorrectionRevisions.put(lineId, now);
@@ -1145,6 +1172,7 @@ public class RoutePushService {
                     startTime, route.routeLengthKm(), effectiveSpeedKmh, travelDurationMs, route.scope()
             );
             activeRoutes.replace(lineId, route, calibratedRoute);
+            routeProgressSources.put(lineId, "real-provider");
             calibrated++;
         }
         return calibrated;
@@ -1628,6 +1656,7 @@ public class RoutePushService {
                 lastRouteReplanAt.remove(entry.getKey());
                 routeDeviationClassifier.remove(entry.getKey());
                 routeCorrectionRevisions.remove(entry.getKey());
+                routeProgressSources.remove(entry.getKey());
                 baselineRouteCoordinates.remove(entry.getKey());
                 vehicleDeviationCoordinates.remove(entry.getKey());
                 lastBroadcastPositions.remove(entry.getKey());
@@ -1736,6 +1765,20 @@ public class RoutePushService {
                 log.warn("Vehicle list contains no matching vehicle_name: lineId={}, queryPlate={}, normalizedPlate={}",
                         lineId, effectivePlate, normalizePlateKey(effectivePlate));
             }
+            if (vehicleRef != null) return;
+            // 车牌查询失败时，candidateCarId 仍可能是供应商真实 ID，继续按车辆字典校验。
+            if (!candidate.isBlank() && !isPlateLike(candidate)) {
+                ensureVehicleDictionary();
+                VehicleRef candidateRef = vehicleById.get(candidate);
+                if (candidateRef != null) {
+                    lineIdCarIdMap.put(lineId, candidateRef.vehicleId());
+                    if (candidateRef.vehicleName() != null && !candidateRef.vehicleName().isBlank()) {
+                        lineIdPlateMap.put(lineId, normalizePlateDisplay(candidateRef.vehicleName()));
+                    }
+                    log.info("Resolved provider vehicle by candidateCarId fallback: lineId={}, vehicle_id={}",
+                            lineId, candidateRef.vehicleId());
+                }
+            }
             return;
         }
 
@@ -1743,9 +1786,11 @@ public class RoutePushService {
         if (!candidate.isBlank()) {
             ensureVehicleDictionary();
             VehicleRef vehicleRef = vehicleById.get(candidate);
-            lineIdCarIdMap.put(lineId, candidate);
-            if (vehicleRef != null && vehicleRef.vehicleName() != null) {
-                lineIdPlateMap.put(lineId, normalizePlateDisplay(vehicleRef.vehicleName()));
+            if (vehicleRef != null) {
+                lineIdCarIdMap.put(lineId, vehicleRef.vehicleId());
+                if (vehicleRef.vehicleName() != null) {
+                    lineIdPlateMap.put(lineId, normalizePlateDisplay(vehicleRef.vehicleName()));
+                }
             }
         }
     }
@@ -2093,6 +2138,7 @@ public class RoutePushService {
         );
 
         activeRoutes.put(lineId, route);
+        routeProgressSources.put(lineId, progressSource);
         baselineRouteCoordinates.put(lineId, copyRouteCoordinates(matchingCoordinates));
         Map<String, Object> message = routeMessage(route, true);
         webSocketHandler.broadcast(message);
@@ -2105,7 +2151,7 @@ public class RoutePushService {
         if ("已完成".equals(status)) return "completed-status";
         if (initialExternalPosition != null) return "real-provider";
         if (currentCoords != null && currentCoords.length >= 2) return "order-current-coords";
-        return "simulated-random";
+        return "waiting-position";
     }
 
     private List<double[]> sanitizeRouteCoordinates(double[] fromCoords, double[] toCoords, List<double[]> routeCoordinates) {
@@ -2163,7 +2209,8 @@ public class RoutePushService {
         if ("已完成".equals(status)) return 1.0;
 
         if (currentCoords == null || currentCoords.length < 2) {
-            return ThreadLocalRandom.current().nextDouble(0.1, 0.9);
+            // 正式订单没有真实位置时不得伪造历史进度；严格模式会保持 WAITING_POSITION、不注册路线。
+            return 0;
         }
 
         double baseProgress = progressOnCoordinates(coordinates, currentCoords);
@@ -2178,6 +2225,10 @@ public class RoutePushService {
 
     private double progressOnCoordinates(List<double[]> coordinates, double[] position) {
         return progressOnCoordinates(coordinates, position, -1);
+    }
+
+    static double calibrationHintProgress(String progressSource, double timelineProgress) {
+        return "real-provider".equals(progressSource) ? timelineProgress : -1;
     }
 
     /**
@@ -2313,6 +2364,7 @@ public class RoutePushService {
                 RouteScope.TOWN
         );
         activeRoutes.put(lineId, route);
+        routeProgressSources.put(lineId, progressSource);
         baselineRouteCoordinates.put(lineId, copyRouteCoordinates(matchingCoordinates));
         log.info("[TownRoad] dispatched town route: {} -> {}, lineId={}, orderId={}, routePoints={}, progress={}%, progressSource={}",
                 from, to, lineId, route.orderId(), coordinates.size(), Math.round(progress * 100), progressSource);
