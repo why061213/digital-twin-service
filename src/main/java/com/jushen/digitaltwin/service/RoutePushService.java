@@ -1111,10 +1111,9 @@ public class RoutePushService {
                         pathProgress, offRouteKm);
                 if (routeCorrectionRevisions.containsKey(lineId)
                         && offCurrentRouteKm <= MAX_CALIBRATION_OFF_ROUTE_KM) {
-                    // 车辆仍沿上次修正路线行驶：更新分类证据，不重复调用规划 API。
-                    routeCorrectionRevisions.put(lineId, now);
+                    // 车辆仍沿上次修正路线行驶：只更新分类证据，不改变路线几何版本。
+                    // routeRevision 仅在实际重规划时递增，否则前端会误判为换线并重建车辆模型，造成闪回起点。
                     routeProgressSources.put(lineId, "real-provider");
-                    lastBroadcastPositions.remove(lineId);
                     calibrated++;
                     continue;
                 }
