@@ -16,4 +16,12 @@ class TownRoadRenderServiceEligibilityTest {
         assertThat(TownRoadRenderService.isEligibleForRealPositionMode(false, false, false)).isTrue();
     }
 
+    @Test
+    void confirmedAndInferredTransitAreBothRuntimeDispatchable() {
+        assertThat(TownRoadRenderService.isTransitPipelineStatus("在途-1")).isTrue();
+        assertThat(TownRoadRenderService.isTransitPipelineStatus("在途-2")).isTrue();
+        assertThat(TownRoadRenderService.isTransitPipelineStatus("运输中")).isTrue();
+        assertThat(TownRoadRenderService.isTransitPipelineStatus("待装载")).isFalse();
+    }
+
 }

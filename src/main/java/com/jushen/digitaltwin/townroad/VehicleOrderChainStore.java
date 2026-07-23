@@ -132,7 +132,7 @@ public class VehicleOrderChainStore {
                 completedCount, otherCount, matchedVehicles.size(),
                 vehicleOrderAddedCount, affectedPlates.size(),
                 loadedDateStrings(), root.toString(), dailyFilePath(today).toString());
-        log.warn("[VehicleOrderHistory][PIPELINE_CUT] diff stored and downstream stopped: {}", result);
+        log.info("[VehicleOrderHistory] diff stored: {}", result);
         return result;
     }
 

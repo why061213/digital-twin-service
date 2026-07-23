@@ -115,30 +115,31 @@ public class TownRoadRenderService {
             pipeline.put("input", inputSummary(rawOrders));
         }
 
+        VehicleOrderChainPipelineContext vehicleOrderChainContext = null;
+        List<ExternalOrderRecord> downstreamInput = rawOrders == null ? List.of() : rawOrders;
+        boolean downstreamInputAlreadyExpanded = false;
         if (externalOrderProperties.isVehicleOrderChainExperimentEnabled()) {
             List<ExternalOrderRecord> expanded = middleLayer.expandVehicleInstances(
                     rawOrders == null ? List.of() : rawOrders);
             VehicleOrderChainStore.IngestResult stored = vehicleOrderChainStore.ingest(expanded);
             VehicleOrderEligibilityService.EligibilityReport eligibility =
                     vehicleOrderEligibilityService.analyzeLatestVehicleOrders();
-            Map<String, Object> response = new LinkedHashMap<>();
-            response.put("ok", true);
-            response.put("type", "vehicle_order_chain_store");
-            response.put("message", "new middle layer stored data; downstream pipeline intentionally stopped");
-            response.put("pipelineCut", true);
-            response.put("inputRawCount", inputRawCount);
-            response.put("expandedVehicleRecordCount", expanded.size());
-            response.put("store", stored);
-            response.put("eligibility", eligibility);
-            response.put("elapsedMs", System.currentTimeMillis() - startedAt);
-            if (traceEnabled) response.put("pipeline", pipeline);
-            this.lastResult = Collections.unmodifiableMap(response);
-            log.warn("[VehicleOrderChain][PIPELINE_CUT] route planning, grouping, runtime registration and publishing were skipped");
-            return this.lastResult;
+            List<ExternalOrderRecord> eligibleOrders = eligibility.enabled()
+                    ? eligibleVehicleOrdersForPipeline(eligibility)
+                    : expanded;
+            downstreamInput = eligibleOrders;
+            downstreamInputAlreadyExpanded = true;
+            vehicleOrderChainContext = new VehicleOrderChainPipelineContext(
+                    stored, eligibility, expanded.size(), eligibleOrders.size());
+            if (traceEnabled) {
+                pipeline.put("vehicleOrderChain", vehicleOrderChainSummary(vehicleOrderChainContext));
+            }
+            log.info("[VehicleOrderChain] downstream pipeline connected: expanded={}, eligible={}, decisions={}",
+                    expanded.size(), eligibleOrders.size(), eligibility.decisions().size());
         }
 
         // 入口去重：同订单+同线路+同车牌号，保留 updatedAt 最晚的记录
-        DeduplicationResult deduplication = deduplicateOrders(rawOrders);
+        DeduplicationResult deduplication = deduplicateOrders(downstreamInput);
         List<ExternalOrderRecord> dedupedOrders = deduplication.orders();
         if (deduplication.removedCount() > 0) {
             log.info("入口去重: input={}, unique={}, removed={}, duplicateKeys={}, samples={}",
@@ -149,17 +150,25 @@ public class TownRoadRenderService {
             pipeline.put("deduplication", deduplication.toMap());
         }
 
-        List<ExternalOrderRecord> expandedOrders = middleLayer.expandVehicleInstances(dedupedOrders);
-        Set<String> planningLineIds = new LinkedHashSet<>();
-        for (ExternalOrderRecord order : expandedOrders) {
-            if (order == null || order.vehicle() == null) continue;
-            String instanceId = middleLayer.instanceIdFor(order);
-            if (routePushService.prepareProviderPositionVehicle(
-                    instanceId, order.vehicle().plate(), order.vehicle().carId())) {
-                planningLineIds.add(instanceId);
+        List<ExternalOrderRecord> expandedOrders = downstreamInputAlreadyExpanded
+                ? dedupedOrders
+                : middleLayer.expandVehicleInstances(dedupedOrders);
+        Map<String, Object> positionWarmup;
+        if (vehicleOrderChainContext != null && vehicleOrderChainContext.eligibility().enabled()) {
+            // 车辆链判定阶段已经批量预热了供应商位置，直接复用，避免重复请求。
+            positionWarmup = vehicleOrderChainContext.eligibility().positionWarmup();
+        } else {
+            Set<String> planningLineIds = new LinkedHashSet<>();
+            for (ExternalOrderRecord order : expandedOrders) {
+                if (order == null || order.vehicle() == null) continue;
+                String instanceId = middleLayer.instanceIdFor(order);
+                if (routePushService.prepareProviderPositionVehicle(
+                        instanceId, order.vehicle().plate(), order.vehicle().carId())) {
+                    planningLineIds.add(instanceId);
+                }
             }
+            positionWarmup = routePushService.warmPositionCacheForLineIds(planningLineIds);
         }
-        Map<String, Object> positionWarmup = routePushService.warmPositionCacheForLineIds(planningLineIds);
         // 批量位置先到、订单路线后处理；已有路线也必须立即用本批真实位置覆盖旧时间线。
         int preCalibrationCount = routePushService.calibratePreparedRoutesFromCache();
         // 注册装载中车辆的初始位置，后续位置刷新时检测是否出发
@@ -297,6 +306,15 @@ public class TownRoadRenderService {
         response.put("rm2Groups", rm2Groups.size());
         response.put("deduplication", deduplication.toMap());
         response.put("rm2PositionWarmup", positionWarmup);
+        if (vehicleOrderChainContext != null) {
+            response.put("vehicleOrderChainExperiment", true);
+            response.put("pipelineCut", false);
+            response.put("inputRawCount", inputRawCount);
+            response.put("expandedVehicleRecordCount", vehicleOrderChainContext.expandedVehicleRecordCount());
+            response.put("downstreamEligibleCount", vehicleOrderChainContext.downstreamEligibleCount());
+            response.put("store", vehicleOrderChainContext.store());
+            response.put("eligibility", vehicleOrderChainContext.eligibility());
+        }
 
         int skippedByStatus = normalizedCount - shortHaulCount - skippedNotRenderable - skippedLongHaul;
         Map<String, Object> accounting = new LinkedHashMap<>();
@@ -337,6 +355,63 @@ public class TownRoadRenderService {
     // ---------------------------------------------------------------
     // 指纹与变化检测
     // ---------------------------------------------------------------
+
+    private List<ExternalOrderRecord> eligibleVehicleOrdersForPipeline(
+            VehicleOrderEligibilityService.EligibilityReport eligibility
+    ) {
+        Map<String, VehicleOrderEligibilityService.VehicleDecision> eligibleByInstanceId =
+                new LinkedHashMap<>();
+        for (VehicleOrderEligibilityService.VehicleDecision decision : eligibility.decisions()) {
+            if (decision != null && decision.groupEligible()
+                    && decision.lineId() != null && !decision.lineId().isBlank()) {
+                eligibleByInstanceId.put(decision.lineId(), decision);
+            }
+        }
+
+        List<ExternalOrderRecord> result = new ArrayList<>();
+        for (VehicleOrderChainStore.StoredOrder stored : vehicleOrderChainStore.recentStoredOrders()) {
+            if (stored == null || stored.record() == null) continue;
+            ExternalOrderRecord order = stored.record();
+            String instanceId = middleLayer.instanceIdFor(order);
+            VehicleOrderEligibilityService.VehicleDecision decision = eligibleByInstanceId.get(instanceId);
+            if (decision == null || !safeEquals(decision.orderId(), order.orderId())) continue;
+            result.add(withEffectiveVehicleChainStatus(order, decision));
+        }
+        return List.copyOf(result);
+    }
+
+    private ExternalOrderRecord withEffectiveVehicleChainStatus(
+            ExternalOrderRecord order,
+            VehicleOrderEligibilityService.VehicleDecision decision
+    ) {
+        String effectiveStatus = order.status();
+        String reason = decision.reason() == null ? "" : decision.reason();
+        // 在途-1/2 的区别保留在车辆状态链和 eligibility 诊断中；
+        // 进入原后续协议时统一映射为“运输中”，避免破坏旧前端和调度统计。
+        if ("DEPARTED".equals(decision.decision()) || reason.contains("在途-2")
+                || "TRANSPORTING".equals(decision.decision()) || reason.contains("在途-1")) {
+            effectiveStatus = "运输中";
+        }
+        if (safeEquals(effectiveStatus, order.status())) return order;
+        return new ExternalOrderRecord(
+                order.orderId(), order.lineId(), order.lines(), order.from(), order.to(), order.vehicle(),
+                effectiveStatus, order.updatedAt(), order.deleted(), order.upToDate(),
+                order.lineIndex(), order.vehicleIndex());
+    }
+
+    private Map<String, Object> vehicleOrderChainSummary(VehicleOrderChainPipelineContext context) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("pipelineCut", false);
+        summary.put("expandedVehicleRecordCount", context.expandedVehicleRecordCount());
+        summary.put("downstreamEligibleCount", context.downstreamEligibleCount());
+        summary.put("store", context.store());
+        summary.put("eligibility", context.eligibility());
+        return summary;
+    }
+
+    private boolean safeEquals(String left, String right) {
+        return left == null ? right == null : left.equals(right);
+    }
 
     /**
      * 完整渲染字段 SHA-256，取前 16 位 hex。
@@ -727,7 +802,8 @@ public class TownRoadRenderService {
         if (shortHaulOrders == null || shortHaulOrders.isEmpty()) return 0;
         int registered = 0;
         for (NormalizedTownRoadOrder order : shortHaulOrders) {
-            if (order == null || !"运输中".equals(order.status()) || order.from() == null || order.to() == null) continue;
+            if (order == null || !isTransitPipelineStatus(order.status())
+                    || order.from() == null || order.to() == null) continue;
             double[] fromCoords = order.from().coords();
             double[] toCoords = order.to().coords();
             if (fromCoords == null || toCoords == null || fromCoords.length < 2 || toCoords.length < 2) continue;
@@ -748,6 +824,13 @@ public class TownRoadRenderService {
             registered++;
         }
         return registered;
+    }
+
+    static boolean isTransitPipelineStatus(String status) {
+        if (status == null) return false;
+        String normalized = status.trim().replace(" ", "");
+        return normalized.contains("运输中") || normalized.contains("运行中")
+                || normalized.equals("在途-1") || normalized.equals("在途-2");
     }
 
     private boolean shouldIncludeOrderForRealPositionMode(NormalizedTownRoadOrder order) {
@@ -801,4 +884,11 @@ public class TownRoadRenderService {
             return map;
         }
     }
+
+    private record VehicleOrderChainPipelineContext(
+            VehicleOrderChainStore.IngestResult store,
+            VehicleOrderEligibilityService.EligibilityReport eligibility,
+            int expandedVehicleRecordCount,
+            int downstreamEligibleCount
+    ) {}
 }
