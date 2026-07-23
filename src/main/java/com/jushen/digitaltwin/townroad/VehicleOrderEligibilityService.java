@@ -46,18 +46,18 @@ public class VehicleOrderEligibilityService {
 
     public EligibilityReport analyzeLatestVehicleOrders() {
         Instant now = Instant.now();
-        if (!properties.isIgnoreOrdersWithoutRealPosition()) {
-            EligibilityReport disabled = new EligibilityReport(
-                    now.toString(), false, Map.of("skipped", true), Map.of("skipped", true),
-                    0, 0, 0, List.of(), null);
-            return disabled;
-        }
-
-        Map<String, Object> directory = routePushService.refreshProviderVehicleDirectoryNow();
         List<VehicleOrderChainStore.StoredOrder> history = orderStore.recentStoredOrders();
         List<VehicleOrderChainStore.StoredOrder> currentSnapshot = orderStore.latestObservedStoredOrders();
         List<VehicleTripRuntimeService.VehicleTripRuntime> trips = tripRuntimeService.reconcile(
                 currentSnapshot == null || currentSnapshot.isEmpty() ? history : currentSnapshot);
+        if (!properties.isIgnoreOrdersWithoutRealPosition()) {
+            EligibilityReport disabled = new EligibilityReport(
+                    now.toString(), false, Map.of("skipped", true), Map.of("skipped", true),
+                    trips.size(), 0, 0, List.of(), null);
+            return disabled;
+        }
+
+        Map<String, Object> directory = routePushService.refreshProviderVehicleDirectoryNow();
 
         Set<String> preparedLineIds = new LinkedHashSet<>();
         for (VehicleTripRuntimeService.VehicleTripRuntime trip : trips) {
