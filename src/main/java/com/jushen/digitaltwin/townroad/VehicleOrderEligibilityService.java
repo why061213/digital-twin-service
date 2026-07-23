@@ -112,6 +112,30 @@ public class VehicleOrderEligibilityService {
                     "NO_REAL_POSITION", "vehicle-directory-or-fresh-position-missing", position, null, null);
         }
 
+        trip = tripRuntimeService.evaluateDynamicInsertions(trip, position.position());
+        VehicleTripTopologyService.TripStop target = tripRuntimeService.currentTargetStop(trip);
+        if (target != null && target.action() == VehicleTripTopologyService.StopAction.PICKUP
+                && trip.pendingPickupOrderIds().contains(target.orderInstanceId())) {
+            VehicleOrderChainStore.StoredOrder targetOrder = trip.ordersByInstanceId().get(target.orderInstanceId());
+            WaitingOrderTrajectoryClassifier.Classification immediate =
+                    WaitingOrderTrajectoryClassifier.classify(position.position(), target.coordinates(), List.of());
+            boolean alreadyCarrying = !trip.onboardOrderIds().isEmpty();
+            if (immediate.state() == WaitingOrderTrajectoryClassifier.State.LOADING) {
+                return decision(trip, current, instanceId, providerVehicleId, alreadyCarrying,
+                        "LOADING", "current-target-pickup-radius", position, null, immediate);
+            }
+            if (trip.phase() == VehicleTripRuntimeService.TripPhase.AT_PICKUP) {
+                if (targetOrder != null) orderStore.recordSuspectedInTransit(targetOrder.record());
+                return decision(trip, current, instanceId, providerVehicleId, true,
+                        "DEPARTED", "departed-current-target-pickup", position, null, immediate);
+            }
+            if (alreadyCarrying) {
+                return decision(trip, current, instanceId, providerVehicleId, true,
+                        "EN_ROUTE_TO_PICKUP", "onboard-orders-with-confirmed-pickup-ahead",
+                        position, null, immediate);
+            }
+        }
+
         String status = normalizeStatus(order.status());
         Instant orderTime = parseBusinessTime(order.updatedAt());
         if (isCompleted(status)) {
@@ -198,8 +222,22 @@ public class VehicleOrderEligibilityService {
             WaitingOrderTrajectoryClassifier.Classification analysis
     ) {
         ExternalOrderRecord record = current.record();
+        VehicleTripTopologyService.TripStop target = tripRuntimeService.currentTargetStop(trip);
         VehicleTripRuntimeService.VehicleTripRuntime effectiveTrip =
-                tripRuntimeService.applyEligibilityEvidence(trip, decision);
+                tripRuntimeService.applyEligibilityEvidence(
+                        trip,
+                        target == null ? null : target.stopId(),
+                        target == null ? trip.anchorOrderInstanceId() : target.orderInstanceId(),
+                        decision,
+                        position == null ? null : position.position());
+        VehicleTripTopologyService.TripLeg currentLeg = effectiveTrip.topology().legs().stream()
+                .filter(leg -> leg.legId().equals(effectiveTrip.currentLegId()))
+                .findFirst().orElse(null);
+        VehicleTripTopologyService.TripStop effectiveTarget =
+                tripRuntimeService.currentTargetStop(effectiveTrip);
+        double[] legOrigin = currentLeg != null && !currentLeg.coordinates().isEmpty()
+                ? currentLeg.coordinates().get(0) : position == null ? null : position.position();
+        double[] legDestination = effectiveTarget == null ? null : effectiveTarget.coordinates();
         return new VehicleDecision(
                 current.vehicleKey(), record.orderId(), instanceId, record.status(), record.updatedAt(),
                 providerVehicleId, eligible, decision, reason,
@@ -213,7 +251,13 @@ public class VehicleOrderEligibilityService {
                 effectiveTrip.tripId(), effectiveTrip.phase(), effectiveTrip.orderInstanceIds(),
                 effectiveTrip.pendingPickupOrderIds(), effectiveTrip.onboardOrderIds(),
                 effectiveTrip.completedOrderIds(), effectiveTrip.nextCandidates(),
-                effectiveTrip.orderMembers(), effectiveTrip.queuedOrderIds());
+                effectiveTrip.orderMembers(), effectiveTrip.queuedOrderIds(),
+                effectiveTrip.runtimeLineId(), effectiveTrip.currentLegId(), effectiveTrip.planVersion(),
+                effectiveTarget == null ? null : effectiveTarget.stopId(),
+                effectiveTarget == null ? null : effectiveTarget.orderInstanceId(),
+                effectiveTarget == null ? null : effectiveTarget.action().name(),
+                legOrigin, legDestination,
+                effectiveTarget == null ? null : effectiveTarget.locationName());
     }
 
     private VehicleOrderChainStore.StoredOrder previousCompletedOrder(
@@ -324,6 +368,38 @@ public class VehicleOrderEligibilityService {
             Set<String> completedOrderIds,
             List<String> nextCandidates,
             Map<String, VehicleTripRuntimeService.TripMemberState> tripOrderMembers,
-            Set<String> queuedOrderIds
-    ) {}
+            Set<String> queuedOrderIds,
+            String runtimeLineId,
+            String currentLegId,
+            long planVersion,
+            String targetStopId,
+            String targetOrderInstanceId,
+            String targetAction,
+            double[] currentLegOriginPosition,
+            double[] currentLegDestinationPosition,
+            String currentLegDestination
+    ) {
+        public VehicleDecision(
+                String vehicleKey, String orderId, String lineId, String orderStatus,
+                String orderUpdatedAt, String providerVehicleId, boolean groupEligible,
+                String decision, String reason, double[] currentPosition,
+                String previousOrderId, String previousDestination, double[] previousDestinationPosition,
+                String loadingOrigin, double[] loadingOriginPosition,
+                WaitingOrderTrajectoryClassifier.Classification waitingAnalysis,
+                String tripId, VehicleTripRuntimeService.TripPhase tripPhase,
+                List<String> tripOrderInstanceIds, Set<String> pendingPickupOrderIds,
+                Set<String> onboardOrderIds, Set<String> completedOrderIds,
+                List<String> nextCandidates,
+                Map<String, VehicleTripRuntimeService.TripMemberState> tripOrderMembers,
+                Set<String> queuedOrderIds
+        ) {
+            this(vehicleKey, orderId, lineId, orderStatus, orderUpdatedAt, providerVehicleId,
+                    groupEligible, decision, reason, currentPosition, previousOrderId,
+                    previousDestination, previousDestinationPosition, loadingOrigin,
+                    loadingOriginPosition, waitingAnalysis, tripId, tripPhase,
+                    tripOrderInstanceIds, pendingPickupOrderIds, onboardOrderIds,
+                    completedOrderIds, nextCandidates, tripOrderMembers, queuedOrderIds,
+                    null, null, 0L, null, null, null, null, null, null);
+        }
+    }
 }

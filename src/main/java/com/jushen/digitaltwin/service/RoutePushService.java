@@ -937,6 +937,25 @@ public class RoutePushService {
                 : null;
     }
 
+    /** 将同一次真实定位挂到 Trip 运行路线，避免稳定运行身份再次访问供应商接口。 */
+    public synchronized boolean aliasFreshProviderPosition(
+            String sourceLineId,
+            String targetLineId,
+            String plate,
+            String candidateCarId
+    ) {
+        if (sourceLineId == null || targetLineId == null || targetLineId.isBlank()) return false;
+        PositionSnapshot source = freshProviderPosition(sourceLineId);
+        if (source == null || !prepareProviderPositionVehicle(targetLineId, plate, candidateCarId)) return false;
+        positionCache.putPosition(targetLineId, new PositionSnapshot(
+                targetLineId, source.vehicleId(), source.vehicleName(), source.plate(),
+                source.lng(), source.lat(), source.speedKmh(), source.driverName(), source.address(),
+                source.stateStr(), source.alarmStr(), source.alarmSeverity(), source.online(),
+                source.directionDeg(), source.directionLabel(), source.providerTime(), source.fetchedAt(),
+                source.source(), source.stale()));
+        return true;
+    }
+
     public boolean hasProviderVehicleId(String lineId) {
         String vehicleId = lineIdCarIdMap.get(lineId);
         return vehicleId != null && !vehicleId.isBlank();

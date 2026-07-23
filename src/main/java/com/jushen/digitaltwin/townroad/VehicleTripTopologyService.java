@@ -22,15 +22,41 @@ public class VehicleTripTopologyService {
             Set<String> completedOrderIds,
             TripTopology previous
     ) {
+        return build(orders, memberStates, onboardOrderIds, completedOrderIds, previous, null, null);
+    }
+
+    public TripTopology build(
+            Map<String, VehicleOrderChainStore.StoredOrder> orders,
+            Map<String, VehicleTripRuntimeService.TripMemberState> memberStates,
+            Set<String> onboardOrderIds,
+            Set<String> completedOrderIds,
+            TripTopology previous,
+            double[] currentPosition,
+            String forcedFirstStopId
+    ) {
         List<TripStop> stops = buildStops(orders, memberStates, onboardOrderIds, completedOrderIds, previous);
         List<TripNode> nodes = mergeNodes(stops, DEFAULT_NODE_MERGE_RADIUS_KM,
                 previous == null ? List.of() : previous.nodes());
-        List<String> plannedStopIds = planStops(stops, onboardOrderIds);
-        List<TripLeg> legs = buildLegs(plannedStopIds, stops, onboardOrderIds);
-        String signature = String.join(">", plannedStopIds);
+        List<String> plannedStopIds = planStops(stops, onboardOrderIds, currentPosition, forcedFirstStopId);
+        List<TripLeg> legs = reusePlannedLegs(
+                buildLegs(plannedStopIds, stops, onboardOrderIds, currentPosition), previous);
+        String signature = String.join(">", plannedStopIds) + "@" + stablePositionKey(currentPosition);
         long version = previous == null ? 1L
                 : signature.equals(previous.planSignature()) ? previous.planVersion() : previous.planVersion() + 1L;
         return new TripTopology(stops, nodes, plannedStopIds, legs, version, signature);
+    }
+
+    private List<TripLeg> reusePlannedLegs(List<TripLeg> legs, TripTopology previous) {
+        if (previous == null || previous.legs() == null || previous.legs().isEmpty()) return legs;
+        Map<String, TripLeg> previousBySegment = new LinkedHashMap<>();
+        for (TripLeg leg : previous.legs()) previousBySegment.put(leg.segmentKey(), leg);
+        return legs.stream().map(leg -> {
+            TripLeg old = previousBySegment.get(leg.segmentKey());
+            return old != null && old.coordinates() != null && old.coordinates().size() > 2
+                    ? new TripLeg(leg.legId(), leg.fromStopId(), leg.toStopId(), leg.purpose(),
+                    old.coordinates(), old.distanceKm(), old.durationMs(), leg.state(), leg.segmentKey())
+                    : leg;
+        }).toList();
     }
 
     private List<TripStop> buildStops(
@@ -88,8 +114,28 @@ public class VehicleTripTopologyService {
     }
 
     private VisitState monotonicState(VisitState previous, VisitState derived) {
-        if (previous == VisitState.VISITED) return VisitState.VISITED;
-        return derived;
+        if (previous == null) return derived;
+        return previous.ordinal() >= derived.ordinal() ? previous : derived;
+    }
+
+    public TripTopology withVisitState(TripTopology topology, String stopId, VisitState state) {
+        if (topology == null || stopId == null || state == null) return topology;
+        List<TripStop> stops = topology.stops().stream()
+                .map(stop -> stopId.equals(stop.stopId())
+                        ? new TripStop(stop.stopId(), stop.orderInstanceId(), stop.orderId(), stop.action(),
+                        stop.locationName(), stop.coordinates(), stop.timeWindow(), stop.cargoDelta(),
+                        monotonicState(stop.visitState(), state))
+                        : stop)
+                .toList();
+        Map<String, TripStop> byId = new LinkedHashMap<>();
+        for (TripStop stop : stops) byId.put(stop.stopId(), stop);
+        List<TripNode> nodes = topology.nodes().stream()
+                .map(node -> new TripNode(node.nodeId(), node.stops().stream()
+                        .map(stop -> byId.getOrDefault(stop.stopId(), stop)).toList(),
+                        node.coordinates(), node.internalVisitSequence()))
+                .toList();
+        return new TripTopology(stops, nodes, topology.plannedStopIds(), topology.legs(),
+                topology.planVersion(), topology.planSignature());
     }
 
     private List<TripNode> mergeNodes(List<TripStop> stops, double radiusKm, List<TripNode> previousNodes) {
@@ -134,7 +180,12 @@ public class VehicleTripTopologyService {
     }
 
     /** 本地贪心拓扑排序：Delivery 只有在同订单 Pickup 已访问/已排入计划后才合法。 */
-    private List<String> planStops(List<TripStop> stops, Set<String> onboardOrderIds) {
+    private List<String> planStops(
+            List<TripStop> stops,
+            Set<String> onboardOrderIds,
+            double[] currentPosition,
+            String forcedFirstStopId
+    ) {
         Map<String, TripStop> remaining = new LinkedHashMap<>();
         Set<String> pickedOrders = new LinkedHashSet<>(onboardOrderIds);
         for (TripStop stop : stops) {
@@ -145,7 +196,7 @@ public class VehicleTripTopologyService {
             }
         }
         List<String> plan = new ArrayList<>();
-        double[] cursor = null;
+        double[] cursor = hasCoordinates(currentPosition) ? currentPosition : null;
         while (!remaining.isEmpty()) {
             List<TripStop> legal = remaining.values().stream()
                     .filter(stop -> stop.action() == StopAction.PICKUP
@@ -153,7 +204,8 @@ public class VehicleTripTopologyService {
                     .toList();
             if (legal.isEmpty()) break;
             final double[] current = cursor;
-            TripStop selected = legal.stream().min(Comparator
+            TripStop forced = forcedFirstStopId == null ? null : remaining.get(forcedFirstStopId);
+            TripStop selected = forced != null && legal.contains(forced) ? forced : legal.stream().min(Comparator
                     .comparingDouble((TripStop stop) -> current == null ? 0d : distanceOrMax(current, stop.coordinates()))
                     .thenComparing(stop -> stop.action() == StopAction.PICKUP ? 0 : 1)
                     .thenComparing(TripStop::stopId)).orElseThrow();
@@ -168,21 +220,36 @@ public class VehicleTripTopologyService {
     private List<TripLeg> buildLegs(
             List<String> plannedStopIds,
             List<TripStop> stops,
-            Set<String> onboardOrderIds
+            Set<String> onboardOrderIds,
+            double[] currentPosition
     ) {
         Map<String, TripStop> byId = new LinkedHashMap<>();
         for (TripStop stop : stops) byId.put(stop.stopId(), stop);
         List<String> executionSequence = new ArrayList<>();
-        stops.stream()
-                .filter(stop -> stop.action() == StopAction.PICKUP)
-                .filter(stop -> stop.visitState() == VisitState.VISITED)
-                .filter(stop -> onboardOrderIds.contains(stop.orderInstanceId()))
-                .map(TripStop::stopId)
-                .sorted()
-                .reduce((first, second) -> second)
-                .ifPresent(executionSequence::add);
+        if (!hasCoordinates(currentPosition)) {
+            stops.stream()
+                    .filter(stop -> stop.action() == StopAction.PICKUP)
+                    .filter(stop -> stop.visitState() == VisitState.VISITED)
+                    .filter(stop -> onboardOrderIds.contains(stop.orderInstanceId()))
+                    .map(TripStop::stopId)
+                    .sorted()
+                    .reduce((first, second) -> second)
+                    .ifPresent(executionSequence::add);
+        }
         executionSequence.addAll(plannedStopIds);
         List<TripLeg> legs = new ArrayList<>();
+        if (hasCoordinates(currentPosition) && !plannedStopIds.isEmpty()) {
+            TripStop to = byId.get(plannedStopIds.get(0));
+            if (to != null && hasCoordinates(to.coordinates())) {
+                String segmentKey = stablePositionKey(currentPosition) + "->" + stableLocationKey(to);
+                legs.add(new TripLeg(
+                        "leg-" + Integer.toUnsignedString(segmentKey.hashCode(), 16),
+                        "CURRENT_POSITION", to.stopId(), purpose(null, to),
+                        List.of(currentPosition.clone(), to.coordinates().clone()),
+                        haversineKm(currentPosition, to.coordinates()), null,
+                        LegState.EN_ROUTE, segmentKey));
+            }
+        }
         for (int index = 1; index < executionSequence.size(); index++) {
             TripStop from = byId.get(executionSequence.get(index - 1));
             TripStop to = byId.get(executionSequence.get(index));
@@ -200,8 +267,18 @@ public class VehicleTripTopologyService {
 
     private String purpose(TripStop from, TripStop to) {
         if (to.action() == StopAction.PICKUP) return "COLLECTING";
-        if (from.action() == StopAction.DELIVERY) return "DISTRIBUTING";
+        if (from != null && from.action() == StopAction.DELIVERY) return "DISTRIBUTING";
         return "LINEHAUL";
+    }
+
+    private String stablePositionKey(double[] coordinates) {
+        if (!hasCoordinates(coordinates)) return "ORIGIN";
+        return Math.round(coordinates[0] * 100_000d) + ":" + Math.round(coordinates[1] * 100_000d);
+    }
+
+    public TripStop stopById(TripTopology topology, String stopId) {
+        if (topology == null || stopId == null) return null;
+        return topology.stops().stream().filter(stop -> stopId.equals(stop.stopId())).findFirst().orElse(null);
     }
 
     private String stableLocationKey(TripStop stop) {

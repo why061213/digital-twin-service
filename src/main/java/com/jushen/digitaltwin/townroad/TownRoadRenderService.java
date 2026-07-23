@@ -51,6 +51,7 @@ public class TownRoadRenderService {
     private volatile Set<String> previousRm2GroupIds = Set.of();
     /** 上一版 lineId→groupId 索引，用于反查 changedGroupIds */
     private volatile Map<String, String> previousGroupIdByLineId = Map.of();
+    private volatile Map<String, VehicleOrderEligibilityService.VehicleDecision> tripDecisionByLineId = Map.of();
     /** 上一版快照内容指纹 */
     private volatile String previousFingerprint = "";
 
@@ -369,14 +370,23 @@ public class TownRoadRenderService {
         }
 
         List<ExternalOrderRecord> result = new ArrayList<>();
+        Map<String, VehicleOrderEligibilityService.VehicleDecision> decisionsByRuntimeLine = new LinkedHashMap<>();
         for (VehicleOrderChainStore.StoredOrder stored : vehicleOrderChainStore.recentStoredOrders()) {
             if (stored == null || stored.record() == null) continue;
             ExternalOrderRecord order = stored.record();
             String instanceId = middleLayer.instanceIdFor(order);
             VehicleOrderEligibilityService.VehicleDecision decision = eligibleByInstanceId.get(instanceId);
             if (decision == null || !safeEquals(decision.orderId(), order.orderId())) continue;
-            result.add(withEffectiveVehicleChainStatus(order, decision));
+            ExternalOrderRecord effective = withEffectiveVehicleChainStatus(order, decision);
+            result.add(effective);
+            String runtimeInstanceId = middleLayer.instanceIdFor(effective);
+            routePushService.aliasFreshProviderPosition(
+                    instanceId, runtimeInstanceId,
+                    effective.vehicle() == null ? null : effective.vehicle().plate(),
+                    effective.vehicle() == null ? null : effective.vehicle().carId());
+            decisionsByRuntimeLine.put(runtimeInstanceId, decision);
         }
+        this.tripDecisionByLineId = Map.copyOf(decisionsByRuntimeLine);
         return List.copyOf(result);
     }
 
@@ -392,11 +402,44 @@ public class TownRoadRenderService {
                 || "TRANSPORTING".equals(decision.decision()) || reason.contains("在途-1")) {
             effectiveStatus = "运输中";
         }
+        if (decision.runtimeLineId() != null
+                && decision.currentLegOriginPosition() != null
+                && decision.currentLegDestinationPosition() != null) {
+            ExternalOrderRecord.Location template = targetLocation(decision, order);
+            ExternalOrderRecord.Location from = new ExternalOrderRecord.Location(
+                    "车辆当前位置", template == null ? null : template.province(),
+                    template == null ? null : template.city(), template == null ? null : template.district(),
+                    template == null ? null : template.adcode(), decision.currentLegOriginPosition());
+            ExternalOrderRecord.Location to = new ExternalOrderRecord.Location(
+                    decision.currentLegDestination(), template == null ? null : template.province(),
+                    template == null ? null : template.city(), template == null ? null : template.district(),
+                    template == null ? null : template.adcode(), decision.currentLegDestinationPosition());
+            ExternalOrderRecord.Vehicle vehicle = order.vehicle() == null ? null : new ExternalOrderRecord.Vehicle(
+                    order.vehicle().plate(), order.vehicle().carId(), order.vehicle().cargo(),
+                    order.vehicle().cargoWeight(), order.vehicle().cargoUnit(),
+                    decision.currentPosition(), order.vehicle().speedKmh());
+            return new ExternalOrderRecord(
+                    decision.tripId(), decision.runtimeLineId(), null, from, to, vehicle,
+                    effectiveStatus, order.updatedAt(), order.deleted(), order.upToDate(), 0, 0);
+        }
         if (safeEquals(effectiveStatus, order.status())) return order;
         return new ExternalOrderRecord(
                 order.orderId(), order.lineId(), order.lines(), order.from(), order.to(), order.vehicle(),
                 effectiveStatus, order.updatedAt(), order.deleted(), order.upToDate(),
                 order.lineIndex(), order.vehicleIndex());
+    }
+
+    private ExternalOrderRecord.Location targetLocation(
+            VehicleOrderEligibilityService.VehicleDecision decision,
+            ExternalOrderRecord fallbackOrder
+    ) {
+        for (VehicleOrderChainStore.StoredOrder stored : vehicleOrderChainStore.recentStoredOrders()) {
+            if (stored == null || !safeEquals(stored.key(), decision.targetOrderInstanceId())) continue;
+            ExternalOrderRecord targetOrder = stored.record();
+            if (targetOrder == null) break;
+            return "PICKUP".equals(decision.targetAction()) ? targetOrder.from() : targetOrder.to();
+        }
+        return fallbackOrder.to() == null ? fallbackOrder.from() : fallbackOrder.to();
     }
 
     private Map<String, Object> vehicleOrderChainSummary(VehicleOrderChainPipelineContext context) {
@@ -737,6 +780,17 @@ public class TownRoadRenderService {
             meta.put("baselineCoordinates", baselineCoordinates);
             meta.put("initializationUsesVehicleWaypoints",
                     String.valueOf(meta.getOrDefault("routeProvider", "")).endsWith("-waypoints"));
+        }
+        VehicleOrderEligibilityService.VehicleDecision tripDecision = tripDecisionByLineId.get(route.lineId());
+        if (tripDecision != null) {
+            meta.put("tripId", tripDecision.tripId());
+            meta.put("visualKey", tripDecision.tripId());
+            meta.put("runtimeLineId", tripDecision.runtimeLineId());
+            meta.put("currentLegId", tripDecision.currentLegId());
+            meta.put("planVersion", tripDecision.planVersion());
+            meta.put("targetStopId", tripDecision.targetStopId());
+            meta.put("targetOrderInstanceId", tripDecision.targetOrderInstanceId());
+            meta.put("targetAction", tripDecision.targetAction());
         }
         return new RenderRouteDTO(
                 route.lineId(), route.orderId(), route.businessLineId(),

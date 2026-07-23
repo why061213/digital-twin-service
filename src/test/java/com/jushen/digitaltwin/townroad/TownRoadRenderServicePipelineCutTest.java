@@ -73,10 +73,16 @@ class TownRoadRenderServicePipelineCutTest {
         ArgumentCaptor<List<ExternalOrderRecord>> pipelineInput = ArgumentCaptor.forClass(List.class);
         verify(middleLayer).processSnapshot(pipelineInput.capture());
         assertThat(pipelineInput.getValue()).extracting(ExternalOrderRecord::orderId)
-                .containsExactly("confirmed", "inferred");
+                .containsExactly("trip-粤A10001", "trip-粤A10002");
+        assertThat(pipelineInput.getValue()).extracting(ExternalOrderRecord::lineId)
+                .containsExactly("trip::trip-粤A10001", "trip::trip-粤A10002");
+        assertThat(pipelineInput.getValue()).extracting(order -> order.from().coords())
+                .allSatisfy(coords -> assertThat(coords).containsExactly(113.0, 23.0));
         assertThat(pipelineInput.getValue()).extracting(ExternalOrderRecord::status)
                 .containsExactly("运输中", "运输中");
         verify(routePush, never()).warmPositionCacheForLineIds(anySet());
+        verify(routePush).aliasFreshProviderPosition(
+                "line-confirmed", "trip::trip-粤A10001", "粤A10001", "vehicle-confirmed");
     }
 
     private VehicleOrderEligibilityService.VehicleDecision decision(
@@ -91,7 +97,10 @@ class TownRoadRenderServicePipelineCutTest {
                 null, null, null, order.from().name(), order.from().coords(), null,
                 "trip-" + order.vehicle().plate(), VehicleTripRuntimeService.TripPhase.LINEHAUL,
                 List.of(order.orderId()), Set.of(), Set.of(order.orderId()), Set.of(), List.of(order.orderId()),
-                Map.of(order.orderId(), VehicleTripRuntimeService.TripMemberState.CONFIRMED), Set.of());
+                Map.of(order.orderId(), VehicleTripRuntimeService.TripMemberState.CONFIRMED), Set.of(),
+                "trip::trip-" + order.vehicle().plate(), "leg-current", 2L,
+                order.orderId() + "::DELIVERY", order.orderId(), "DELIVERY",
+                order.vehicle().currentCoords(), order.to().coords(), order.to().name());
     }
 
     private VehicleOrderChainStore.StoredOrder stored(ExternalOrderRecord order, long sequence) {

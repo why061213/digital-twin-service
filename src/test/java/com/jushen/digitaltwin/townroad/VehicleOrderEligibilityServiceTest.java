@@ -144,9 +144,11 @@ class VehicleOrderEligibilityServiceTest {
         VehicleOrderEligibilityService.VehicleDecision decision = report.decisions().get(0);
         assertThat(decision.orderId()).isEqualTo("transporting");
         assertThat(decision.tripOrderInstanceIds()).hasSize(2);
-        assertThat(decision.tripPhase()).isEqualTo(VehicleTripRuntimeService.TripPhase.LINEHAUL);
+        assertThat(decision.tripPhase()).isEqualTo(VehicleTripRuntimeService.TripPhase.COLLECTING);
         assertThat(decision.tripOrderMembers().get(waiting.key()))
-                .isEqualTo(VehicleTripRuntimeService.TripMemberState.CANDIDATE);
+                .isEqualTo(VehicleTripRuntimeService.TripMemberState.CONFIRMED);
+        assertThat(decision.targetOrderInstanceId()).isEqualTo(waiting.key());
+        assertThat(decision.currentLegOriginPosition()).containsExactly(113.2, 23.0);
         assertThat(decision.groupEligible()).isTrue();
     }
 
