@@ -16,14 +16,4 @@ class TownRoadRenderServiceEligibilityTest {
         assertThat(TownRoadRenderService.isEligibleForRealPositionMode(false, false, false)).isTrue();
     }
 
-    @Test
-    void diagnosticSwitchRecognizesLoadingAndUnloadingStatusesOnly() {
-        assertThat(TownRoadRenderService.shouldTreatAsTransporting("待装载")).isTrue();
-        assertThat(TownRoadRenderService.shouldTreatAsTransporting("装货中")).isTrue();
-        assertThat(TownRoadRenderService.shouldTreatAsTransporting("卸载中")).isTrue();
-        assertThat(TownRoadRenderService.shouldTreatAsTransporting("车辆装卸中")).isTrue();
-        assertThat(TownRoadRenderService.shouldTreatAsTransporting("运输中")).isFalse();
-        assertThat(TownRoadRenderService.shouldTreatAsTransporting("卸货完成")).isFalse();
-        assertThat(TownRoadRenderService.shouldTreatAsTransporting("已取消")).isFalse();
-    }
 }

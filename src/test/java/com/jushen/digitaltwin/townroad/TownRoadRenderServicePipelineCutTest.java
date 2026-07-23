@@ -24,6 +24,7 @@ class TownRoadRenderServicePipelineCutTest {
         RoutePushService routePush = mock(RoutePushService.class);
         DailyOrderStatisticsService statistics = mock(DailyOrderStatisticsService.class);
         VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        VehicleOrderEligibilityService eligibility = mock(VehicleOrderEligibilityService.class);
         TownRoadExternalOrderProperties properties = new TownRoadExternalOrderProperties();
         properties.setVehicleOrderChainExperimentEnabled(true);
         ExternalOrderRecord record = mock(ExternalOrderRecord.class);
@@ -33,12 +34,13 @@ class TownRoadRenderServicePipelineCutTest {
                 1, 1, List.of("2026-07-21", "2026-07-22"), "store", "daily"));
         TownRoadRenderService service = new TownRoadRenderService(
                 client, middleLayer, websocket, geocode, resolver, routePush,
-                properties, statistics, store);
+                properties, statistics, store, eligibility);
 
         Map<String, Object> response = service.processAndBroadcast(List.of(record));
 
         assertThat(response.get("pipelineCut")).isEqualTo(true);
         assertThat(response.get("type")).isEqualTo("vehicle_order_chain_store");
+        verify(eligibility).analyzeLatestVehicleOrders();
         verify(middleLayer, never()).processSnapshot(org.mockito.ArgumentMatchers.anyList());
         verify(routePush, never()).warmPositionCacheForLineIds(org.mockito.ArgumentMatchers.anySet());
         verify(websocket, never()).broadcastToScopeSubscribers(

@@ -40,10 +40,7 @@ public class TownRoadExternalOrderProperties {
      */
     private boolean ignoreOrdersWithoutRealPosition = false;
 
-    /**
-     * 上游状态诊断开关：开启后把装载/卸载中的车辆临时按“运输中”走完整运行链路。
-     * 仅用于核对上游状态是否错误，验证结束后应关闭。
-     */
+    /** 开启后自动分析“待装载”车辆处于前往装载点、装载中还是已经出发。 */
     private boolean treatLoadingUnloadingAsTransporting = false;
 
     /** 新中间层实验：完成日订单 diff 和车辆轻量索引后立即截断所有后续处理。 */
@@ -155,6 +152,11 @@ public class TownRoadExternalOrderProperties {
     }
 
     public boolean isTreatLoadingUnloadingAsTransporting() {
+        return treatLoadingUnloadingAsTransporting;
+    }
+
+    /** 代码语义别名；保留旧配置键，避免现有部署配置失效。 */
+    public boolean isAutoClassifyWaitingOrders() {
         return treatLoadingUnloadingAsTransporting;
     }
 

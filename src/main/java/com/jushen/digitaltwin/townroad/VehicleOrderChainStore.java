@@ -136,6 +136,19 @@ public class VehicleOrderChainStore {
         return recentOrdersByKey.values().stream().map(StoredOrder::record).toList();
     }
 
+    /** 当前今昨窗口的去重记录，包含本地首次/最后观测时间，供车辆订单链判定使用。 */
+    public synchronized List<StoredOrder> recentStoredOrders() {
+        ensureRecentHistoryLoaded();
+        return List.copyOf(recentOrdersByKey.values());
+    }
+
+    /** 判定结果属于实验诊断数据，不混入纯订单日库和车辆轻量索引。 */
+    public synchronized String writeEligibilityAnalysis(VehicleOrderEligibilityService.EligibilityReport report) {
+        Path path = root.resolve("analysis").resolve(LocalDate.now(clock) + ".json");
+        writeJson(path, report);
+        return path.toString();
+    }
+
     private void ensureRecentHistoryLoaded() {
         LocalDate today = LocalDate.now(clock);
         if (today.equals(loadedForDate)) return;

@@ -39,6 +39,7 @@ public class TownRoadRenderService {
     private final TownRoadExternalOrderProperties externalOrderProperties;
     private final DailyOrderStatisticsService dailyOrderStatisticsService;
     private final VehicleOrderChainStore vehicleOrderChainStore;
+    private final VehicleOrderEligibilityService vehicleOrderEligibilityService;
     private volatile long lastBroadcastDailyKpiRevision = -1;
     private Map<String, Object> lastResult = Map.of();
     /** RM2 原子快照 */
@@ -68,7 +69,8 @@ public class TownRoadRenderService {
             RoutePushService routePushService,
             TownRoadExternalOrderProperties externalOrderProperties,
             DailyOrderStatisticsService dailyOrderStatisticsService,
-            VehicleOrderChainStore vehicleOrderChainStore
+            VehicleOrderChainStore vehicleOrderChainStore,
+            VehicleOrderEligibilityService vehicleOrderEligibilityService
     ) {
         this.townRoadExternalOrderClient = townRoadExternalOrderClient;
         this.middleLayer = middleLayer;
@@ -79,6 +81,7 @@ public class TownRoadRenderService {
         this.externalOrderProperties = externalOrderProperties;
         this.dailyOrderStatisticsService = dailyOrderStatisticsService;
         this.vehicleOrderChainStore = vehicleOrderChainStore;
+        this.vehicleOrderEligibilityService = vehicleOrderEligibilityService;
         routePushService.setOnLoadingVehicleDeparted(this::onLoadingVehicleDeparted);
     }
 
@@ -116,6 +119,8 @@ public class TownRoadRenderService {
             List<ExternalOrderRecord> expanded = middleLayer.expandVehicleInstances(
                     rawOrders == null ? List.of() : rawOrders);
             VehicleOrderChainStore.IngestResult stored = vehicleOrderChainStore.ingest(expanded);
+            VehicleOrderEligibilityService.EligibilityReport eligibility =
+                    vehicleOrderEligibilityService.analyzeLatestVehicleOrders();
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("ok", true);
             response.put("type", "vehicle_order_chain_store");
@@ -124,6 +129,7 @@ public class TownRoadRenderService {
             response.put("inputRawCount", inputRawCount);
             response.put("expandedVehicleRecordCount", expanded.size());
             response.put("store", stored);
+            response.put("eligibility", eligibility);
             response.put("elapsedMs", System.currentTimeMillis() - startedAt);
             if (traceEnabled) response.put("pipeline", pipeline);
             this.lastResult = Collections.unmodifiableMap(response);
@@ -144,7 +150,6 @@ public class TownRoadRenderService {
         }
 
         List<ExternalOrderRecord> expandedOrders = middleLayer.expandVehicleInstances(dedupedOrders);
-        expandedOrders = applyLoadingUnloadingDiagnosticOverride(expandedOrders);
         Set<String> planningLineIds = new LinkedHashSet<>();
         for (ExternalOrderRecord order : expandedOrders) {
             if (order == null || order.vehicle() == null) continue;
@@ -765,54 +770,6 @@ public class TownRoadRenderService {
                     lineId, vehicle == null ? null : vehicle.plate(), providerVehicleReady);
         }
         return eligible;
-    }
-
-    private List<ExternalOrderRecord> applyLoadingUnloadingDiagnosticOverride(
-            List<ExternalOrderRecord> orders
-    ) {
-        if (!externalOrderProperties.isTreatLoadingUnloadingAsTransporting()
-                || orders == null || orders.isEmpty()) {
-            return orders == null ? List.of() : orders;
-        }
-        Map<String, Integer> overriddenStatusCounts = new LinkedHashMap<>();
-        List<String> overriddenSamples = new ArrayList<>();
-        List<ExternalOrderRecord> result = new ArrayList<>(orders.size());
-        for (ExternalOrderRecord order : orders) {
-            if (order == null || !shouldTreatAsTransporting(order.status())) {
-                result.add(order);
-                continue;
-            }
-            overriddenStatusCounts.merge(order.status().trim(), 1, Integer::sum);
-            if (overriddenSamples.size() < 20) {
-                overriddenSamples.add(middleLayer.instanceIdFor(order) + ":"
-                        + (order.vehicle() == null ? "?" : order.vehicle().plate())
-                        + ":" + order.status().trim());
-            }
-            result.add(new ExternalOrderRecord(
-                    order.orderId(), order.lineId(), order.lines(), order.from(), order.to(), order.vehicle(),
-                    "运输中", order.updatedAt(), order.deleted(), order.upToDate(),
-                    order.lineIndex(), order.vehicleIndex()));
-        }
-        if (!overriddenStatusCounts.isEmpty()) {
-            log.warn("[TownRoad][UPSTREAM_STATUS_DIAGNOSTIC] loading/unloading vehicles forced to transporting: counts={}, total={}, samples={}",
-                    overriddenStatusCounts,
-                    overriddenStatusCounts.values().stream().mapToInt(Integer::intValue).sum(),
-                    overriddenSamples);
-        }
-        return List.copyOf(result);
-    }
-
-    static boolean shouldTreatAsTransporting(String status) {
-        if (status == null || status.isBlank()) return false;
-        String normalized = status.trim().replace(" ", "");
-        if (normalized.contains("完成") || normalized.contains("取消")) return false;
-        return normalized.contains("装载")
-                || normalized.contains("装货")
-                || normalized.contains("装车")
-                || normalized.contains("卸载")
-                || normalized.contains("卸货")
-                || normalized.contains("卸车")
-                || normalized.contains("装卸");
     }
 
     static boolean isEligibleForRealPositionMode(

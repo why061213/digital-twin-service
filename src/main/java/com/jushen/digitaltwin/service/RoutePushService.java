@@ -603,6 +603,26 @@ public class RoutePushService {
         return vehicleByNormalizedPlate.get(normalizePlateKey(plate));
     }
 
+    /** 每轮严格真实定位筛选只主动刷新一次供应商车辆目录。 */
+    public synchronized Map<String, Object> refreshProviderVehicleDirectoryNow() {
+        refreshVehicleDictionary();
+        return Map.of(
+                "vehicleCount", vehicleById.size(),
+                "plateIndexCount", vehicleByNormalizedPlate.size(),
+                "loadedAtMs", vehicleDictionaryLoadedAt
+        );
+    }
+
+    /** 返回已为订单实例解析出的供应商车辆 ID，不触发额外网络请求。 */
+    public String providerVehicleIdForLineId(String lineId) {
+        return lineId == null ? null : lineIdCarIdMap.get(lineId);
+    }
+
+    /** 复用现有令牌缓存，供同一后端内的历史轨迹客户端使用。 */
+    public String externalAccessTokenForOrderAnalysis() {
+        return getAccessTokenForExternalSafe();
+    }
+
     private void ensureVehicleDictionary() {
         long now = System.currentTimeMillis();
         boolean refreshDue = vehicleDictionaryRefreshMs > 0
