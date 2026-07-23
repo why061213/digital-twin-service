@@ -13,6 +13,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class VehicleOrderEligibilityServiceTest {
@@ -92,14 +93,49 @@ class VehicleOrderEligibilityServiceTest {
         assertThat(decision.reason()).isEqualTo("vehicle-order-chain-status:在途-2");
     }
 
+    @Test
+    void disabledWaitingAnalysisStillGroupsConfirmedAndRecordedTransitOnly() {
+        Instant now = Instant.now();
+        VehicleOrderChainStore.StoredOrder confirmed = stored(
+                record("confirmed", "粤A40001", "运输中", now.minusSeconds(60), 113.0), 1);
+        VehicleOrderChainStore.StoredOrder inferred = stored(
+                record("inferred", "粤A40002", "待装载", now.minusSeconds(60), 113.0), 2);
+        VehicleOrderChainStore.StoredOrder waiting = stored(
+                record("waiting", "粤A40003", "待装载", now.minusSeconds(60), 113.0), 3);
+        List<VehicleOrderChainStore.StoredOrder> orders = List.of(confirmed, inferred, waiting);
+        Fixture fixture = fixture(orders, false);
+        for (VehicleOrderChainStore.StoredOrder stored : orders) {
+            when(fixture.routePush.providerVehicleIdForLineId(stored.orderId()))
+                    .thenReturn("provider-" + stored.orderId());
+            when(fixture.routePush.freshProviderPosition(stored.orderId())).thenReturn(
+                    PositionSnapshot.fromProvider(stored.orderId(), "provider-" + stored.orderId(),
+                            stored.vehicleKey(), stored.vehicleKey(), 113.09, 23.0, 20));
+        }
+        when(fixture.store.recordedTransitStatus(inferred.record())).thenReturn("在途-2");
+
+        VehicleOrderEligibilityService.EligibilityReport report = fixture.service.analyzeLatestVehicleOrders();
+
+        assertThat(report.groupEligibleCount()).isEqualTo(2);
+        assertThat(decision(report, "confirmed").groupEligible()).isTrue();
+        assertThat(decision(report, "inferred").groupEligible()).isTrue();
+        assertThat(decision(report, "waiting").groupEligible()).isFalse();
+        assertThat(decision(report, "waiting").reason())
+                .isEqualTo("waiting-auto-classification-disabled");
+        verifyNoInteractions(fixture.trajectory);
+    }
+
     private Fixture fixture(List<VehicleOrderChainStore.StoredOrder> orders) {
+        return fixture(orders, true);
+    }
+
+    private Fixture fixture(List<VehicleOrderChainStore.StoredOrder> orders, boolean autoClassifyWaiting) {
         RoutePushService routePush = mock(RoutePushService.class);
         TownRoadMiddleLayer middleLayer = mock(TownRoadMiddleLayer.class);
         VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
         ProviderTrajectoryClient trajectory = mock(ProviderTrajectoryClient.class);
         TownRoadExternalOrderProperties properties = new TownRoadExternalOrderProperties();
         properties.setIgnoreOrdersWithoutRealPosition(true);
-        properties.setTreatLoadingUnloadingAsTransporting(true);
+        properties.setTreatLoadingUnloadingAsTransporting(autoClassifyWaiting);
         when(routePush.refreshProviderVehicleDirectoryNow()).thenReturn(Map.of("vehicleCount", orders.size()));
         when(routePush.prepareProviderPositionVehicle(any(), any(), any())).thenReturn(true);
         when(routePush.warmPositionCacheForLineIds(anySet())).thenReturn(Map.of("refreshed", orders.size()));
