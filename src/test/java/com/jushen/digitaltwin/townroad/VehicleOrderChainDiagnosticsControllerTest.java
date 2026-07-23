@@ -16,10 +16,20 @@ class VehicleOrderChainDiagnosticsControllerTest {
                 "2026-07-23T01:00:00Z", "store", 1, 0, 1, 0, 0,
                 new VehicleOrderChainStore.IntervalStatistics(null, null, null, null, null, null), List.of());
         when(store.transitMetrics()).thenReturn(expected);
+        VehicleTripRuntimeService tripRuntimeService = mock(VehicleTripRuntimeService.class);
 
         VehicleOrderChainStore.TransitMetrics actual =
-                new VehicleOrderChainDiagnosticsController(store).transitMetrics();
+                new VehicleOrderChainDiagnosticsController(store, tripRuntimeService).transitMetrics();
 
         assertThat(actual).isSameAs(expected);
+    }
+
+    @Test
+    void exposesCurrentTripRuntimeWithoutMutation() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        VehicleTripRuntimeService tripRuntimeService = mock(VehicleTripRuntimeService.class);
+        when(tripRuntimeService.currentTrips()).thenReturn(List.of());
+
+        assertThat(new VehicleOrderChainDiagnosticsController(store, tripRuntimeService).trips()).isEmpty();
     }
 }

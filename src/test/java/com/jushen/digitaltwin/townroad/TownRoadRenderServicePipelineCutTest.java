@@ -8,6 +8,7 @@ import org.mockito.ArgumentCaptor;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -87,7 +88,9 @@ class TownRoadRenderServicePipelineCutTest {
         return new VehicleOrderEligibilityService.VehicleDecision(
                 order.vehicle().plate(), order.orderId(), order.lineId(), order.status(), order.updatedAt(),
                 order.vehicle().carId(), eligible, state, reason, order.vehicle().currentCoords(),
-                null, null, null, order.from().name(), order.from().coords(), null);
+                null, null, null, order.from().name(), order.from().coords(), null,
+                "trip-" + order.vehicle().plate(), VehicleTripRuntimeService.TripPhase.LINEHAUL,
+                List.of(order.orderId()), Set.of(), Set.of(order.orderId()), Set.of(), List.of(order.orderId()));
     }
 
     private VehicleOrderChainStore.StoredOrder stored(ExternalOrderRecord order, long sequence) {

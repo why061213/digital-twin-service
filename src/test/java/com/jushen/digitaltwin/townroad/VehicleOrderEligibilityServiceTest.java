@@ -124,6 +124,30 @@ class VehicleOrderEligibilityServiceTest {
         verifyNoInteractions(fixture.trajectory);
     }
 
+    @Test
+    void sameVehicleMultipleOrdersAreKeptInOneTripAndTransportingOrderBecomesAnchor() {
+        Instant now = Instant.now();
+        VehicleOrderChainStore.StoredOrder waiting = stored(
+                record("waiting", "粤A50001", "待装载", now.minusSeconds(30), 113.0), 1);
+        VehicleOrderChainStore.StoredOrder transporting = stored(
+                record("transporting", "粤A50001", "运输中", now.minusSeconds(60), 113.1), 2);
+        Fixture fixture = fixture(List.of(waiting, transporting));
+        when(fixture.routePush.providerVehicleIdForLineId("transporting")).thenReturn("50001");
+        when(fixture.routePush.freshProviderPosition("transporting")).thenReturn(
+                PositionSnapshot.fromProvider("transporting", "50001", "粤A50001", "粤A50001",
+                        113.2, 23.0, 30));
+
+        VehicleOrderEligibilityService.EligibilityReport report = fixture.service.analyzeLatestVehicleOrders();
+
+        assertThat(report.latestVehicleCount()).isEqualTo(1);
+        assertThat(report.decisions()).hasSize(1);
+        VehicleOrderEligibilityService.VehicleDecision decision = report.decisions().get(0);
+        assertThat(decision.orderId()).isEqualTo("transporting");
+        assertThat(decision.tripOrderInstanceIds()).hasSize(2);
+        assertThat(decision.tripPhase()).isEqualTo(VehicleTripRuntimeService.TripPhase.COLLECTING);
+        assertThat(decision.groupEligible()).isTrue();
+    }
+
     private Fixture fixture(List<VehicleOrderChainStore.StoredOrder> orders) {
         return fixture(orders, true);
     }
@@ -143,8 +167,10 @@ class VehicleOrderEligibilityServiceTest {
                 ((ExternalOrderRecord) invocation.getArgument(0)).orderId());
         when(store.recentStoredOrders()).thenReturn(orders);
         when(store.writeEligibilityAnalysis(any())).thenReturn("analysis.json");
+        VehicleTripRuntimeService tripRuntimeService = new VehicleTripRuntimeService(store);
         return new Fixture(
-                new VehicleOrderEligibilityService(routePush, middleLayer, properties, store, trajectory),
+                new VehicleOrderEligibilityService(
+                        routePush, middleLayer, properties, store, trajectory, tripRuntimeService),
                 routePush, trajectory, store);
     }
 

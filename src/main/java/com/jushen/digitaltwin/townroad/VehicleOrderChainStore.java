@@ -48,6 +48,7 @@ public class VehicleOrderChainStore {
     private final Map<LocalDate, Map<String, StoredOrder>> dailyOrders = new LinkedHashMap<>();
     private final Map<String, StoredOrder> recentOrdersByKey = new LinkedHashMap<>();
     private final Map<String, Map<String, VehicleOrderEntry>> vehicleEntriesByPlate = new LinkedHashMap<>();
+    private final Set<String> latestIngestKeys = new LinkedHashSet<>();
     private LocalDate loadedForDate;
 
     @Autowired
@@ -75,6 +76,8 @@ public class VehicleOrderChainStore {
         LocalDate today = LocalDate.now(clock);
         List<ExternalOrderRecord> safeRecords = records == null ? List.of() : records;
         Map<String, ExternalOrderRecord> latestBatchRecords = deduplicateLatest(safeRecords);
+        latestIngestKeys.clear();
+        latestIngestKeys.addAll(latestBatchRecords.keySet());
         Map<String, StoredOrder> todayOrders = dailyOrders.computeIfAbsent(today, ignored -> new LinkedHashMap<>());
 
         int addedCount = 0;
@@ -148,6 +151,15 @@ public class VehicleOrderChainStore {
     public synchronized List<StoredOrder> recentStoredOrders() {
         ensureRecentHistoryLoaded();
         return List.copyOf(recentOrdersByKey.values());
+    }
+
+    /** 最近一次上游快照实际出现的订单，避免把今昨库中已消失的旧未完成订单并入当前任务簇。 */
+    public synchronized List<StoredOrder> latestObservedStoredOrders() {
+        ensureRecentHistoryLoaded();
+        return latestIngestKeys.stream()
+                .map(recentOrdersByKey::get)
+                .filter(java.util.Objects::nonNull)
+                .toList();
     }
 
     /** 轨迹证据判定车辆已离开装载点时，追加“疑似在途”事件。 */

@@ -195,6 +195,22 @@ class VehicleOrderChainStoreTest {
         assertThat(result.matchedVehicleCount()).isEqualTo(1);
     }
 
+    @Test
+    void latestObservedOrdersContainOnlyRecordsPresentInLatestUpstreamSnapshot() {
+        ObjectMapper objectMapper = new ObjectMapper();
+        VehicleOrderChainStore store = store(objectMapper, temporaryDirectory, "2026-07-22T08:00:00Z");
+        store.ingest(List.of(
+                record("order-1", "route-1", "粤A12345", "待装载", "2026-07-22T07:00:00Z"),
+                record("order-2", "route-2", "粤A12345", "运输中", "2026-07-22T07:00:00Z")));
+
+        store.ingest(List.of(
+                record("order-2", "route-2", "粤A12345", "运输中", "2026-07-22T07:00:00Z")));
+
+        assertThat(store.recentStoredOrders()).hasSize(2);
+        assertThat(store.latestObservedStoredOrders()).extracting(VehicleOrderChainStore.StoredOrder::orderId)
+                .containsExactly("order-2");
+    }
+
     private VehicleOrderChainStore store(
             ObjectMapper objectMapper,
             Path root,
