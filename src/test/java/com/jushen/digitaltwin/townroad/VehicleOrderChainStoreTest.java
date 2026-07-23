@@ -143,6 +143,13 @@ class VehicleOrderChainStoreTest {
         store.ingest(List.of(waiting));
         assertThat(store.recordSuspectedInTransit(waiting)).isTrue();
         assertThat(store.recordSuspectedInTransit(waiting)).isFalse();
+
+        VehicleOrderChainStore.IngestResult repeatedExternalWaiting = store.ingest(List.of(waiting));
+        assertThat(repeatedExternalWaiting.unchangedCount()).isEqualTo(1);
+        assertThat(repeatedExternalWaiting.updatedCount()).isZero();
+        assertThat(repeatedExternalWaiting.vehicleOrderAddedCount()).isZero();
+        assertThat(store.recordedTransitStatus(waiting)).isEqualTo("在途-2");
+
         store.ingest(List.of(record(
                 "order-1", "route-1", "粤A12345", "运输中", "2026-07-22T09:00:00Z")));
 

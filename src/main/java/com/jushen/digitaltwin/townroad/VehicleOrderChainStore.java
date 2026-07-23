@@ -92,6 +92,8 @@ public class VehicleOrderChainStore {
             affectedPlates.add(plate);
             if (isCompleted(record)) completedCount++; else otherCount++;
 
+            // 纯订单快照 diff 只比较上游订单；车辆库中的“在途-2”是本地推断事件，
+            // 不得因上游仍返回同一条“待装载”而触发订单更新或覆盖推断状态。
             StoredOrder current = recentOrdersByKey.get(key);
             if (current != null && compareRecordTime(record, current.record()) < 0) {
                 staleCount++;
