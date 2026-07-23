@@ -155,11 +155,31 @@ class VehicleOrderChainStoreTest {
 
         assertThat(store.recordedTransitStatus(waiting)).isEqualTo("在途-1");
 
+        ExternalOrderRecord secondWaiting = record(
+                "order-2", "route-2", "粤A12345", "待装载", "2026-07-22T07:40:00Z");
+        store.ingest(List.of(secondWaiting));
+        store.recordSuspectedInTransit(secondWaiting);
+
+        VehicleOrderChainStore.TransitMetrics metrics = store.transitMetrics();
+        assertThat(metrics.suspectedTransitCount()).isEqualTo(2);
+        assertThat(metrics.upstreamConfirmedCount()).isEqualTo(1);
+        assertThat(metrics.awaitingUpstreamConfirmationCount()).isEqualTo(1);
+        assertThat(metrics.measurableIntervalCount()).isEqualTo(1);
+        assertThat(metrics.confirmationInterval().averageMinutes()).isEqualTo(60d);
+        assertThat(metrics.details()).filteredOn(detail -> detail.orderId().equals("order-1"))
+                .singleElement()
+                .satisfies(detail -> {
+                    assertThat(detail.plate()).isEqualTo("粤A12345");
+                    assertThat(detail.upstreamConfirmed()).isTrue();
+                    assertThat(detail.confirmationIntervalSeconds()).isEqualTo(3600L);
+                    assertThat(detail.timeOrderValid()).isTrue();
+                });
+
         Path vehiclePath = temporaryDirectory.resolve("vehicles/粤/A/12345.json");
         VehicleOrderChainStore.VehicleFile vehicleFile = objectMapper.readValue(
                 vehiclePath.toFile(), VehicleOrderChainStore.VehicleFile.class);
         assertThat(vehicleFile.orders()).extracting(VehicleOrderChainStore.VehicleOrderEntry::status)
-                .containsExactly("待装载", "在途-2", "在途-1");
+                .containsExactly("待装载", "待装载", "在途-2", "在途-2", "在途-1");
     }
 
     @Test

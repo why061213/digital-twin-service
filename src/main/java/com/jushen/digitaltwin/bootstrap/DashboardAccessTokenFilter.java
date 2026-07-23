@@ -35,7 +35,8 @@ public class DashboardAccessTokenFilter extends OncePerRequestFilter {
         return "OPTIONS".equalsIgnoreCase(request.getMethod())
                 || !path.startsWith("/api/")
                 || path.startsWith("/api/bootstrap/")
-                || path.startsWith("/api/auth/");
+                || path.startsWith("/api/auth/")
+                || path.startsWith("/api/public/vehicle-order-chain/");
     }
 
     @Override

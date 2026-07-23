@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 /**
  * 新中间层实验使用的两份本地库。
@@ -170,6 +172,120 @@ public class VehicleOrderChainStore {
             return STATUS_TRANSIT_INFERRED;
         }
         return null;
+    }
+
+    /** 扫描持久化车辆状态链，统计在途-2 及后续在途-1 的时间差。 */
+    public synchronized TransitMetrics transitMetrics() {
+        Path vehiclesRoot = root.resolve("vehicles");
+        List<SuspectedTransitDetail> details = new ArrayList<>();
+        if (Files.isDirectory(vehiclesRoot)) {
+            try (Stream<Path> paths = Files.walk(vehiclesRoot)) {
+                for (Path path : paths.filter(Files::isRegularFile)
+                        .filter(item -> item.getFileName().toString().endsWith(".json")).toList()) {
+                    collectTransitMetrics(vehiclesRoot, path, details);
+                }
+            } catch (Exception exception) {
+                throw new IllegalStateException("无法扫描车辆状态链: " + vehiclesRoot, exception);
+            }
+        }
+
+        details.sort(Comparator
+                .comparing((SuspectedTransitDetail detail) -> parseTime(detail.suspectedAt()) == null)
+                .thenComparing(detail -> parseTime(detail.suspectedAt()) == null
+                        ? Long.MIN_VALUE : -parseTime(detail.suspectedAt()))
+                .thenComparing(SuspectedTransitDetail::plate)
+                .thenComparing(SuspectedTransitDetail::orderId));
+
+        List<Long> validIntervals = details.stream()
+                .map(SuspectedTransitDetail::confirmationIntervalSeconds)
+                .filter(value -> value != null && value >= 0)
+                .toList();
+        long confirmedCount = details.stream().filter(SuspectedTransitDetail::upstreamConfirmed).count();
+        long invalidTimeOrderCount = details.stream()
+                .filter(SuspectedTransitDetail::upstreamConfirmed)
+                .filter(detail -> !Boolean.TRUE.equals(detail.timeOrderValid()))
+                .count();
+        Long minSeconds = validIntervals.stream().min(Long::compareTo).orElse(null);
+        Long maxSeconds = validIntervals.stream().max(Long::compareTo).orElse(null);
+        Double averageSeconds = validIntervals.isEmpty() ? null
+                : validIntervals.stream().mapToLong(Long::longValue).average().orElse(0d);
+        IntervalStatistics intervals = new IntervalStatistics(
+                minSeconds,
+                maxSeconds,
+                minSeconds == null ? null : roundToTwoDecimals(minSeconds / 60d),
+                maxSeconds == null ? null : roundToTwoDecimals(maxSeconds / 60d),
+                averageSeconds == null ? null : roundToTwoDecimals(averageSeconds),
+                averageSeconds == null ? null : roundToTwoDecimals(averageSeconds / 60d)
+        );
+        return new TransitMetrics(
+                Instant.ofEpochMilli(clock.millis()).toString(),
+                root.toString(),
+                details.size(),
+                confirmedCount,
+                details.size() - confirmedCount,
+                validIntervals.size(),
+                invalidTimeOrderCount,
+                intervals,
+                List.copyOf(details)
+        );
+    }
+
+    private void collectTransitMetrics(
+            Path vehiclesRoot,
+            Path path,
+            List<SuspectedTransitDetail> details
+    ) {
+        try {
+            VehicleFile file = objectMapper.readValue(path.toFile(), VehicleFile.class);
+            if (file == null || file.orders() == null) return;
+            Map<String, List<VehicleOrderEntry>> byOrderId = new LinkedHashMap<>();
+            for (VehicleOrderEntry entry : file.orders()) {
+                if (entry == null || safe(entry.orderId()).isBlank()) continue;
+                byOrderId.computeIfAbsent(safe(entry.orderId()), ignored -> new ArrayList<>()).add(entry);
+            }
+            String plate = plateFromVehicleFile(vehiclesRoot, path);
+            for (Map.Entry<String, List<VehicleOrderEntry>> order : byOrderId.entrySet()) {
+                VehicleOrderEntry suspected = statusEntry(order.getValue(), STATUS_TRANSIT_INFERRED);
+                if (suspected == null) continue;
+                VehicleOrderEntry confirmed = statusEntry(order.getValue(), STATUS_TRANSIT_CONFIRMED);
+                Long suspectedMs = parseTime(suspected.time());
+                Long confirmedMs = confirmed == null ? null : parseTime(confirmed.time());
+                Long intervalSeconds = suspectedMs == null || confirmedMs == null
+                        ? null : Duration.ofMillis(confirmedMs - suspectedMs).toSeconds();
+                Boolean timeOrderValid = confirmed == null ? null
+                        : intervalSeconds != null && intervalSeconds >= 0;
+                details.add(new SuspectedTransitDetail(
+                        plate,
+                        order.getKey(),
+                        suspected.from(),
+                        suspected.to(),
+                        suspected.time(),
+                        confirmed == null ? null : confirmed.time(),
+                        confirmed != null,
+                        intervalSeconds,
+                        intervalSeconds == null ? null : roundToTwoDecimals(intervalSeconds / 60d),
+                        timeOrderValid
+                ));
+            }
+        } catch (Exception exception) {
+            log.warn("[VehicleOrderHistory] skip unreadable vehicle state file: path={}", path, exception);
+        }
+    }
+
+    private VehicleOrderEntry statusEntry(List<VehicleOrderEntry> entries, String status) {
+        if (entries == null) return null;
+        return entries.stream().filter(entry -> status.equals(entry.status())).findFirst().orElse(null);
+    }
+
+    private String plateFromVehicleFile(Path vehiclesRoot, Path path) {
+        Path relative = vehiclesRoot.relativize(path);
+        if (relative.getNameCount() < 3) return "UNKNOWN";
+        String suffix = relative.getName(2).toString().replaceFirst("\\.json$", "");
+        return relative.getName(0) + relative.getName(1).toString() + suffix;
+    }
+
+    private double roundToTwoDecimals(double value) {
+        return Math.round(value * 100d) / 100d;
     }
 
     /** 判定结果属于实验诊断数据，不混入纯订单日库和车辆轻量索引。 */
@@ -513,6 +629,40 @@ public class VehicleOrderChainStore {
     ) {}
 
     public record VehicleFile(List<VehicleOrderEntry> orders) {}
+
+    public record TransitMetrics(
+            String generatedAt,
+            String storeRoot,
+            int suspectedTransitCount,
+            long upstreamConfirmedCount,
+            long awaitingUpstreamConfirmationCount,
+            int measurableIntervalCount,
+            long invalidTimeOrderCount,
+            IntervalStatistics confirmationInterval,
+            List<SuspectedTransitDetail> details
+    ) {}
+
+    public record IntervalStatistics(
+            Long minSeconds,
+            Long maxSeconds,
+            Double minMinutes,
+            Double maxMinutes,
+            Double averageSeconds,
+            Double averageMinutes
+    ) {}
+
+    public record SuspectedTransitDetail(
+            String plate,
+            String orderId,
+            String from,
+            String to,
+            String suspectedAt,
+            String upstreamConfirmedAt,
+            boolean upstreamConfirmed,
+            Long confirmationIntervalSeconds,
+            Double confirmationIntervalMinutes,
+            Boolean timeOrderValid
+    ) {}
 
     /** 车辆索引中的订单状态事件严格只保留这五个业务字段。 */
     public record VehicleOrderEntry(
