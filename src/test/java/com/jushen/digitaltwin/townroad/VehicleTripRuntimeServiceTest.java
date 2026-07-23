@@ -1,7 +1,10 @@
 package com.jushen.digitaltwin.townroad;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 
@@ -10,6 +13,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class VehicleTripRuntimeServiceTest {
+    @TempDir
+    Path temporaryDirectory;
+
     @Test
     void keepsAllCurrentOrdersButSelectsOneStableTransportingAnchor() {
         VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
@@ -57,6 +63,84 @@ class VehicleTripRuntimeServiceTest {
         assertThat(trip.onboardOrderIds()).containsExactly(key(waiting));
         assertThat(trip.pendingPickupOrderIds()).isEmpty();
         assertThat(trip.phase()).isEqualTo(VehicleTripRuntimeService.TripPhase.LINEHAUL);
+    }
+
+    @Test
+    void orderFirstSeenMuchLaterIsQueuedInsteadOfChangingCurrentTripPlan() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        ExternalOrderRecord current = record("order-1", "line-1", "运输中");
+        ExternalOrderRecord future = record("order-next", "line-next", "待装载");
+
+        VehicleTripRuntimeService.VehicleTripRuntime trip = new VehicleTripRuntimeService(store).reconcile(List.of(
+                stored(current, 1_000), stored(future, 31L * 60L * 1_000L))).get(0);
+
+        assertThat(trip.orderMembers().get(key(current)))
+                .isEqualTo(VehicleTripRuntimeService.TripMemberState.CONFIRMED);
+        assertThat(trip.orderMembers().get(key(future)))
+                .isEqualTo(VehicleTripRuntimeService.TripMemberState.QUEUED);
+        assertThat(trip.queuedOrderIds()).containsExactly(key(future));
+        assertThat(trip.topology().stops()).extracting(VehicleTripTopologyService.TripStop::orderInstanceId)
+                .doesNotContain(key(future));
+    }
+
+    @Test
+    void queuedOrderOpensNewTripOnlyAfterPreviousTripLeavesCurrentSnapshot() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        ExternalOrderRecord current = record("order-1", "line-1", "运输中");
+        ExternalOrderRecord future = record("order-next", "line-next", "待装载");
+        VehicleTripRuntimeService service = new VehicleTripRuntimeService(store);
+        VehicleTripRuntimeService.VehicleTripRuntime first = service.reconcile(List.of(
+                stored(current, 1_000), stored(future, 31L * 60L * 1_000L))).get(0);
+
+        VehicleTripRuntimeService.VehicleTripRuntime next = service.reconcile(List.of(
+                stored(future, 31L * 60L * 1_000L))).get(0);
+
+        assertThat(next.tripId()).isNotEqualTo(first.tripId());
+        assertThat(next.orderMembers().get(key(future)))
+                .isEqualTo(VehicleTripRuntimeService.TripMemberState.CONFIRMED);
+        assertThat(next.queuedOrderIds()).isEmpty();
+    }
+
+    @Test
+    void stalePositionDoesNotRollbackConfirmedDeparture() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        ExternalOrderRecord waiting = record("order-1", "line-1", "待装载");
+        VehicleTripRuntimeService service = new VehicleTripRuntimeService(store);
+        VehicleTripRuntimeService.VehicleTripRuntime trip = service.reconcile(List.of(stored(waiting, 10))).get(0);
+        VehicleTripRuntimeService.VehicleTripRuntime loading = service.applyEligibilityEvidence(trip, "LOADING");
+        assertThat(loading.currentNodeId()).isNotBlank();
+        assertThat(loading.currentLegId()).isNull();
+        trip = service.applyEligibilityEvidence(loading, "DEPARTED");
+
+        VehicleTripRuntimeService.VehicleTripRuntime stale = service.applyEligibilityEvidence(trip, "NO_REAL_POSITION");
+
+        assertThat(stale.onboardOrderIds()).containsExactly(key(waiting));
+        assertThat(stale.phase()).isEqualTo(VehicleTripRuntimeService.TripPhase.LINEHAUL);
+        assertThat(stale.positionQuality()).isEqualTo(VehicleTripRuntimeService.PositionQuality.STALE);
+        assertThat(stale.currentLegId()).isNotBlank();
+    }
+
+    @Test
+    void restartRestoresTripIdentityPlanVersionAndMonotonicOnboardState() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        when(store.runtimeRootPath()).thenReturn(temporaryDirectory);
+        ExternalOrderRecord waiting = record("order-1", "line-1", "待装载");
+        List<VehicleOrderChainStore.StoredOrder> snapshot = List.of(stored(waiting, 10));
+        ObjectMapper objectMapper = new ObjectMapper();
+        VehicleTripRuntimeService beforeRestart = new VehicleTripRuntimeService(
+                store, new VehicleTripTopologyService(), objectMapper);
+        VehicleTripRuntimeService.VehicleTripRuntime departed = beforeRestart.applyEligibilityEvidence(
+                beforeRestart.reconcile(snapshot).get(0), "DEPARTED");
+
+        VehicleTripRuntimeService afterRestart = new VehicleTripRuntimeService(
+                store, new VehicleTripTopologyService(), objectMapper);
+        VehicleTripRuntimeService.VehicleTripRuntime restored = afterRestart.reconcile(snapshot).get(0);
+
+        assertThat(restored.tripId()).isEqualTo(departed.tripId());
+        assertThat(restored.runtimeLineId()).isEqualTo(departed.runtimeLineId());
+        assertThat(restored.planVersion()).isGreaterThanOrEqualTo(departed.planVersion());
+        assertThat(restored.onboardOrderIds()).containsExactly(key(waiting));
+        assertThat(restored.phase()).isEqualTo(VehicleTripRuntimeService.TripPhase.LINEHAUL);
     }
 
     private VehicleOrderChainStore.StoredOrder stored(ExternalOrderRecord record, long observedAt) {

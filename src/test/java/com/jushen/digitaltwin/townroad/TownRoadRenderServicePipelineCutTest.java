@@ -90,7 +90,8 @@ class TownRoadRenderServicePipelineCutTest {
                 order.vehicle().carId(), eligible, state, reason, order.vehicle().currentCoords(),
                 null, null, null, order.from().name(), order.from().coords(), null,
                 "trip-" + order.vehicle().plate(), VehicleTripRuntimeService.TripPhase.LINEHAUL,
-                List.of(order.orderId()), Set.of(), Set.of(order.orderId()), Set.of(), List.of(order.orderId()));
+                List.of(order.orderId()), Set.of(), Set.of(order.orderId()), Set.of(), List.of(order.orderId()),
+                Map.of(order.orderId(), VehicleTripRuntimeService.TripMemberState.CONFIRMED), Set.of());
     }
 
     private VehicleOrderChainStore.StoredOrder stored(ExternalOrderRecord order, long sequence) {

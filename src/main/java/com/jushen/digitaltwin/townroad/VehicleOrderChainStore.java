@@ -162,6 +162,10 @@ public class VehicleOrderChainStore {
                 .toList();
     }
 
+    Path runtimeRootPath() {
+        return root;
+    }
+
     /** 轨迹证据判定车辆已离开装载点时，追加“疑似在途”事件。 */
     public synchronized boolean recordSuspectedInTransit(ExternalOrderRecord record) {
         if (record == null) return false;

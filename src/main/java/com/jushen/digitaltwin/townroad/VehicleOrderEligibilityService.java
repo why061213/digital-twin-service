@@ -212,7 +212,8 @@ public class VehicleOrderEligibilityService {
                 analysis,
                 effectiveTrip.tripId(), effectiveTrip.phase(), effectiveTrip.orderInstanceIds(),
                 effectiveTrip.pendingPickupOrderIds(), effectiveTrip.onboardOrderIds(),
-                effectiveTrip.completedOrderIds(), effectiveTrip.nextCandidates());
+                effectiveTrip.completedOrderIds(), effectiveTrip.nextCandidates(),
+                effectiveTrip.orderMembers(), effectiveTrip.queuedOrderIds());
     }
 
     private VehicleOrderChainStore.StoredOrder previousCompletedOrder(
@@ -321,6 +322,8 @@ public class VehicleOrderEligibilityService {
             Set<String> pendingPickupOrderIds,
             Set<String> onboardOrderIds,
             Set<String> completedOrderIds,
-            List<String> nextCandidates
+            List<String> nextCandidates,
+            Map<String, VehicleTripRuntimeService.TripMemberState> tripOrderMembers,
+            Set<String> queuedOrderIds
     ) {}
 }

@@ -144,7 +144,9 @@ class VehicleOrderEligibilityServiceTest {
         VehicleOrderEligibilityService.VehicleDecision decision = report.decisions().get(0);
         assertThat(decision.orderId()).isEqualTo("transporting");
         assertThat(decision.tripOrderInstanceIds()).hasSize(2);
-        assertThat(decision.tripPhase()).isEqualTo(VehicleTripRuntimeService.TripPhase.COLLECTING);
+        assertThat(decision.tripPhase()).isEqualTo(VehicleTripRuntimeService.TripPhase.LINEHAUL);
+        assertThat(decision.tripOrderMembers().get(waiting.key()))
+                .isEqualTo(VehicleTripRuntimeService.TripMemberState.CANDIDATE);
         assertThat(decision.groupEligible()).isTrue();
     }
 
