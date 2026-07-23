@@ -94,23 +94,33 @@ class VehicleOrderChainStoreTest {
     }
 
     @Test
-    void vehicleFileOnlyAppendsMissingOrdersWithFourBusinessFields() throws Exception {
+    void vehicleFileAppendsDistinctStatusEventsWithFiveBusinessFields() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper();
         VehicleOrderChainStore store = store(objectMapper, temporaryDirectory, "2026-07-22T08:00:00Z");
 
         store.ingest(List.of(record("order-1", "route-1", "粤A12345", "待装载", null)));
         VehicleOrderChainStore.IngestResult statusChanged = store.ingest(List.of(
                 record("order-1", "route-1", "粤A12345", "运行中", "2026-07-22T09:00:00Z")));
-        assertThat(statusChanged.vehicleOrderAddedCount()).isZero();
+        assertThat(statusChanged.vehicleOrderAddedCount()).isEqualTo(1);
 
         Path vehiclePath = temporaryDirectory.resolve("vehicles/粤/A/12345.json");
         JsonNode firstVehicleFile = objectMapper.readTree(vehiclePath.toFile());
-        assertThat(firstVehicleFile.path("orders")).hasSize(1);
+        assertThat(firstVehicleFile.path("orders")).hasSize(2);
         Set<String> fields = new HashSet<>();
         firstVehicleFile.path("orders").get(0).fieldNames().forEachRemaining(fields::add);
-        assertThat(fields).containsExactlyInAnyOrder("orderId", "from", "to", "time");
+        assertThat(fields).containsExactlyInAnyOrder("orderId", "from", "to", "time", "status");
         assertThat(firstVehicleFile.path("orders").get(0).path("time").asText())
                 .isEqualTo("2026-07-22T08:00:00Z");
+        assertThat(firstVehicleFile.path("orders")).extracting(node -> node.path("status").asText())
+                .containsExactly("待装载", "在途-1");
+
+        VehicleOrderChainStore.IngestResult repeatedStatus = store.ingest(List.of(
+                record("order-1", "route-1", "粤A12345", "运输中", "2026-07-22T10:00:00Z")));
+        assertThat(repeatedStatus.vehicleOrderAddedCount()).isZero();
+
+        VehicleOrderChainStore.IngestResult completed = store.ingest(List.of(
+                record("order-1", "route-1", "粤A12345", "已完成", "2026-07-22T10:30:00Z")));
+        assertThat(completed.vehicleOrderAddedCount()).isEqualTo(1);
 
         VehicleOrderChainStore.IngestResult secondOrder = store.ingest(List.of(
                 record("order-2", "route-2", "粤A12345", "待装载", "2026-07-22T11:00:00Z")));
@@ -118,7 +128,31 @@ class VehicleOrderChainStoreTest {
         VehicleOrderChainStore.VehicleFile vehicleFile = objectMapper.readValue(
                 vehiclePath.toFile(), VehicleOrderChainStore.VehicleFile.class);
         assertThat(vehicleFile.orders()).extracting(VehicleOrderChainStore.VehicleOrderEntry::orderId)
-                .containsExactly("order-1", "order-2");
+                .containsExactly("order-1", "order-1", "order-1", "order-2");
+        assertThat(vehicleFile.orders()).extracting(VehicleOrderChainStore.VehicleOrderEntry::status)
+                .containsExactly("待装载", "在途-1", "已完成", "待装载");
+    }
+
+    @Test
+    void inferredTransitIsPreservedWhenUpstreamLaterConfirmsTransit() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        VehicleOrderChainStore store = store(objectMapper, temporaryDirectory, "2026-07-22T08:00:00Z");
+        ExternalOrderRecord waiting = record(
+                "order-1", "route-1", "粤A12345", "待装载", "2026-07-22T07:30:00Z");
+
+        store.ingest(List.of(waiting));
+        assertThat(store.recordSuspectedInTransit(waiting)).isTrue();
+        assertThat(store.recordSuspectedInTransit(waiting)).isFalse();
+        store.ingest(List.of(record(
+                "order-1", "route-1", "粤A12345", "运输中", "2026-07-22T09:00:00Z")));
+
+        assertThat(store.recordedTransitStatus(waiting)).isEqualTo("在途-1");
+
+        Path vehiclePath = temporaryDirectory.resolve("vehicles/粤/A/12345.json");
+        VehicleOrderChainStore.VehicleFile vehicleFile = objectMapper.readValue(
+                vehiclePath.toFile(), VehicleOrderChainStore.VehicleFile.class);
+        assertThat(vehicleFile.orders()).extracting(VehicleOrderChainStore.VehicleOrderEntry::status)
+                .containsExactly("待装载", "在途-2", "在途-1");
     }
 
     @Test

@@ -12,6 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class VehicleOrderEligibilityServiceTest {
@@ -68,6 +69,27 @@ class VehicleOrderEligibilityServiceTest {
         assertThat(decision.previousOrderId()).isEqualTo("previous");
         assertThat(decision.decision()).isEqualTo("DEPARTED");
         assertThat(decision.groupEligible()).isTrue();
+        verify(fixture.store).recordSuspectedInTransit(current.record());
+    }
+
+    @Test
+    void recordedInferredTransitRemainsGroupEligibleWithoutRepeatingTrajectoryAnalysis() {
+        Instant now = Instant.now();
+        VehicleOrderChainStore.StoredOrder current = stored(
+                record("current", "粤A30001", "待装载", now.minusSeconds(60), 113.0), 1);
+        Fixture fixture = fixture(List.of(current));
+        when(fixture.routePush.providerVehicleIdForLineId("current")).thenReturn("30001");
+        when(fixture.routePush.freshProviderPosition("current")).thenReturn(
+                PositionSnapshot.fromProvider("current", "30001", "粤A30001", "粤A30001",
+                        113.09, 23.0, 20));
+        when(fixture.store.recordedTransitStatus(current.record())).thenReturn("在途-2");
+
+        VehicleOrderEligibilityService.VehicleDecision decision = decision(
+                fixture.service.analyzeLatestVehicleOrders(), "current");
+
+        assertThat(decision.groupEligible()).isTrue();
+        assertThat(decision.decision()).isEqualTo("TRANSPORTING_RECORDED");
+        assertThat(decision.reason()).isEqualTo("vehicle-order-chain-status:在途-2");
     }
 
     private Fixture fixture(List<VehicleOrderChainStore.StoredOrder> orders) {
@@ -87,7 +109,7 @@ class VehicleOrderEligibilityServiceTest {
         when(store.writeEligibilityAnalysis(any())).thenReturn("analysis.json");
         return new Fixture(
                 new VehicleOrderEligibilityService(routePush, middleLayer, properties, store, trajectory),
-                routePush, trajectory);
+                routePush, trajectory, store);
     }
 
     private VehicleOrderEligibilityService.VehicleDecision decision(
@@ -136,6 +158,7 @@ class VehicleOrderEligibilityServiceTest {
     private record Fixture(
             VehicleOrderEligibilityService service,
             RoutePushService routePush,
-            ProviderTrajectoryClient trajectory
+            ProviderTrajectoryClient trajectory,
+            VehicleOrderChainStore store
     ) {}
 }

@@ -122,6 +122,12 @@ public class VehicleOrderEligibilityService {
             return decision(current, instanceId, providerVehicleId, true,
                     "TRANSPORTING", "latest-order-is-transporting", position, null, null);
         }
+        String recordedTransitStatus = orderStore.recordedTransitStatus(order);
+        if (recordedTransitStatus != null) {
+            return decision(current, instanceId, providerVehicleId, true,
+                    "TRANSPORTING_RECORDED", "vehicle-order-chain-status:" + recordedTransitStatus,
+                    position, null, null);
+        }
         if (!isWaiting(status)) {
             return decision(current, instanceId, providerVehicleId, false,
                     "UNKNOWN", "unsupported-latest-order-status", position, null, null);
@@ -163,6 +169,9 @@ public class VehicleOrderEligibilityService {
         WaitingOrderTrajectoryClassifier.Classification classification =
                 WaitingOrderTrajectoryClassifier.classify(
                         position.position(), loading, trajectory.points(), previousCompletedAt, now);
+        if (classification.state() == WaitingOrderTrajectoryClassifier.State.DEPARTED) {
+            orderStore.recordSuspectedInTransit(order);
+        }
         return decision(current, instanceId, providerVehicleId, classification.groupEligible(),
                 classification.state().name(), classification.reason(), position, previous, classification);
     }

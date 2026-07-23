@@ -28,12 +28,16 @@ import java.util.Set;
  * 新中间层实验使用的两份本地库。
  *
  * <p>纯订单库按自然日分片，只把今天和昨天载入内存，并以“订单+路线+车辆”为键做快照 diff。
- * 车辆库是追加式轻量索引，每个订单只保存订单号、起点、终点和首次记录时间。</p>
+ * 车辆库是追加式轻量索引，每个订单只保存订单号、起点、终点、状态和该状态的首次记录时间。</p>
  */
 @Service
 public class VehicleOrderChainStore {
     private static final Logger log = LoggerFactory.getLogger(VehicleOrderChainStore.class);
     private static final int SCHEMA_VERSION = 2;
+    private static final String STATUS_WAITING = "待装载";
+    private static final String STATUS_TRANSIT_CONFIRMED = "在途-1";
+    private static final String STATUS_TRANSIT_INFERRED = "在途-2";
+    private static final String STATUS_COMPLETED = "已完成";
 
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -109,7 +113,7 @@ public class VehicleOrderChainStore {
                 if (current == null) addedCount++; else updatedCount++;
             }
 
-            if (appendMissingVehicleOrder(plate, record, observedAt)) {
+            if (appendExternalVehicleStatus(plate, record, observedAt)) {
                 vehicleOrderAddedCount++;
                 changedVehicleFiles.add(plate);
             }
@@ -140,6 +144,30 @@ public class VehicleOrderChainStore {
     public synchronized List<StoredOrder> recentStoredOrders() {
         ensureRecentHistoryLoaded();
         return List.copyOf(recentOrdersByKey.values());
+    }
+
+    /** 轨迹证据判定车辆已离开装载点时，追加“疑似在途”事件。 */
+    public synchronized boolean recordSuspectedInTransit(ExternalOrderRecord record) {
+        if (record == null) return false;
+        String plate = vehicleKey(record);
+        boolean changed = appendVehicleStatus(
+                plate, record, STATUS_TRANSIT_INFERRED, clock.millis(), false);
+        if (changed) writeVehicleFile(plate);
+        return changed;
+    }
+
+    /** 返回该车该订单已记录的在途级别，外部确认的在途-1优先。 */
+    public synchronized String recordedTransitStatus(ExternalOrderRecord record) {
+        if (record == null || safe(record.orderId()).isBlank()) return null;
+        Map<String, VehicleOrderEntry> entries = loadVehicleEntries(vehicleKey(record));
+        String orderId = safe(record.orderId());
+        if (entries.containsKey(vehicleEventKey(orderId, STATUS_TRANSIT_CONFIRMED))) {
+            return STATUS_TRANSIT_CONFIRMED;
+        }
+        if (entries.containsKey(vehicleEventKey(orderId, STATUS_TRANSIT_INFERRED))) {
+            return STATUS_TRANSIT_INFERRED;
+        }
+        return null;
     }
 
     /** 判定结果属于实验诊断数据，不混入纯订单日库和车辆轻量索引。 */
@@ -218,22 +246,58 @@ public class VehicleOrderChainStore {
         }
     }
 
-    private boolean appendMissingVehicleOrder(
+    private boolean appendExternalVehicleStatus(
             String plate,
             ExternalOrderRecord record,
             long observedAt
     ) {
+        String status = externalVehicleStatus(record == null ? null : record.status());
+        if (status == null) return false;
+        return appendVehicleStatus(plate, record, status, observedAt, true);
+    }
+
+    private boolean appendVehicleStatus(
+            String plate,
+            ExternalOrderRecord record,
+            String status,
+            long observedAt,
+            boolean useUpstreamTime
+    ) {
         String orderId = safe(record.orderId());
         if (orderId.isBlank()) return false;
         Map<String, VehicleOrderEntry> entries = loadVehicleEntries(plate);
-        if (entries.containsKey(orderId)) return false;
-        entries.put(orderId, new VehicleOrderEntry(
+        String eventKey = vehicleEventKey(orderId, status);
+        if (entries.containsKey(eventKey)) return false;
+
+        // 旧版文件没有 status：该订单再次被观测时，用当前可确认状态就地升级。
+        VehicleOrderEntry legacy = entries.remove(vehicleEventKey(orderId, null));
+        entries.put(eventKey, new VehicleOrderEntry(
                 orderId,
-                locationDisplay(record.from()),
-                locationDisplay(record.to()),
-                normalizedOrderTime(record.updatedAt(), observedAt)
+                legacy == null ? locationDisplay(record.from()) : legacy.from(),
+                legacy == null ? locationDisplay(record.to()) : legacy.to(),
+                legacy == null
+                        ? normalizedOrderTime(useUpstreamTime ? record.updatedAt() : null, observedAt)
+                        : legacy.time(),
+                status
         ));
         return true;
+    }
+
+    private String externalVehicleStatus(String rawStatus) {
+        String status = safe(rawStatus).replace(" ", "");
+        if (status.contains("已完成") || status.equals("完成")) return STATUS_COMPLETED;
+        if (status.contains("运输中") || status.contains("运行中") || status.contains("在途")) {
+            return STATUS_TRANSIT_CONFIRMED;
+        }
+        if (status.contains("待装载") || status.contains("待装货")
+                || status.contains("装载中") || status.contains("装货中")) {
+            return STATUS_WAITING;
+        }
+        return null;
+    }
+
+    private String vehicleEventKey(String orderId, String status) {
+        return safe(orderId) + "|" + safe(status);
     }
 
     private Map<String, VehicleOrderEntry> loadVehicleEntries(String plate) {
@@ -246,7 +310,9 @@ public class VehicleOrderChainStore {
                 VehicleFile file = objectMapper.readValue(path.toFile(), VehicleFile.class);
                 if (file != null && file.orders() != null) {
                     for (VehicleOrderEntry entry : file.orders()) {
-                        if (entry != null && entry.orderId() != null) entries.putIfAbsent(entry.orderId(), entry);
+                        if (entry != null && entry.orderId() != null) {
+                            entries.putIfAbsent(vehicleEventKey(entry.orderId(), entry.status()), entry);
+                        }
                     }
                 }
             } catch (Exception exception) {
@@ -265,7 +331,8 @@ public class VehicleOrderChainStore {
                 .comparing((VehicleOrderEntry entry) -> parseTime(entry.time()) == null)
                 .thenComparing(entry -> parseTime(entry.time()) == null
                         ? Long.MAX_VALUE : parseTime(entry.time()))
-                .thenComparing(VehicleOrderEntry::orderId));
+                .thenComparing(VehicleOrderEntry::orderId)
+                .thenComparing(entry -> safe(entry.status())));
         writeJson(vehicleFilePath(plate), new VehicleFile(List.copyOf(sorted)));
     }
 
@@ -445,11 +512,12 @@ public class VehicleOrderChainStore {
 
     public record VehicleFile(List<VehicleOrderEntry> orders) {}
 
-    /** 车辆索引中的订单项严格只保留这四个业务字段。 */
+    /** 车辆索引中的订单状态事件严格只保留这五个业务字段。 */
     public record VehicleOrderEntry(
             String orderId,
             String from,
             String to,
-            String time
+            String time,
+            String status
     ) {}
 }
