@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 import java.nio.file.Path;
 import java.time.Clock;
@@ -20,6 +21,20 @@ class VehicleOrderChainStoreTest {
 
     @TempDir
     Path temporaryDirectory;
+
+    @Test
+    void springCanCreateStoreWithDesignatedProductionConstructor() {
+        TownRoadExternalOrderProperties properties = new TownRoadExternalOrderProperties();
+        properties.setVehicleOrderChainStorePath(temporaryDirectory.toString());
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.registerBean(ObjectMapper.class, () -> new ObjectMapper());
+            context.registerBean(TownRoadExternalOrderProperties.class, () -> properties);
+            context.register(VehicleOrderChainStore.class);
+            context.refresh();
+
+            assertThat(context.getBean(VehicleOrderChainStore.class)).isNotNull();
+        }
+    }
 
     @Test
     void storesDailyLatestRecordAndUpdatesOnlyWhenSnapshotDiffers() throws Exception {

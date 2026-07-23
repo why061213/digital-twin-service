@@ -3,6 +3,7 @@ package com.jushen.digitaltwin.townroad;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -43,6 +44,7 @@ public class VehicleOrderChainStore {
     private final Map<String, Map<String, VehicleOrderEntry>> vehicleEntriesByPlate = new LinkedHashMap<>();
     private LocalDate loadedForDate;
 
+    @Autowired
     public VehicleOrderChainStore(ObjectMapper objectMapper, TownRoadExternalOrderProperties properties) {
         this(objectMapper, properties, Clock.systemDefaultZone());
     }
