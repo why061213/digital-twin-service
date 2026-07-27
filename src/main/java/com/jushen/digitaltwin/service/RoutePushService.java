@@ -74,6 +74,7 @@ public class RoutePushService {
     private final Map<String, Integer> zeroSpeedCounters = new ConcurrentHashMap<>();
     private final Map<String, BroadcastPositionState> lastBroadcastPositions = new ConcurrentHashMap<>();
     private final Map<String, String> rm2GroupIdByLineId = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, Object>> tripRuntimeMetadataByLineId = new ConcurrentHashMap<>();
     private final AtomicLong positionSequence = new AtomicLong();
     private volatile String rm2SnapshotVersion = "0";
     private static final double MAX_PROVIDER_SPEED_KMH = 140.0;
@@ -879,12 +880,28 @@ public class RoutePushService {
         addProviderPositionDetails(message, cached);
         if (simulated) addSimulatedDirectionDetails(message, route.coordinates(), progress);
         addRouteCorrectionDetails(message, route);
+        addTripRuntimeMetadata(message, lineId);
         message.put("sequence", positionSequence.incrementAndGet());
         return message;
     }
 
     public String rm2SnapshotVersion() {
         return rm2SnapshotVersion;
+    }
+
+    /** 将后端 Trip 状态附着到持续推送的位置帧；空值表示该路线不属于 Trip。 */
+    public void setTripRuntimeMetadata(String lineId, Map<String, Object> metadata) {
+        if (lineId == null || lineId.isBlank()) return;
+        if (metadata == null || metadata.isEmpty()) {
+            tripRuntimeMetadataByLineId.remove(lineId);
+            return;
+        }
+        tripRuntimeMetadataByLineId.put(lineId, Map.copyOf(metadata));
+    }
+
+    private void addTripRuntimeMetadata(Map<String, Object> message, String lineId) {
+        Map<String, Object> metadata = tripRuntimeMetadataByLineId.get(lineId);
+        if (metadata != null) message.putAll(metadata);
     }
 
     /** 供 RM2 快照复用运行池已经确定的速度、距离和预测时长。 */
@@ -1469,6 +1486,7 @@ public class RoutePushService {
         addProviderPositionDetails(message, cached);
         if (simulated) addSimulatedDirectionDetails(message, route.coordinates(), progress);
         addRouteCorrectionDetails(message, route);
+        addTripRuntimeMetadata(message, route.lineId());
         message.put("sequence", positionSequence.incrementAndGet());
         return message;
     }
@@ -1657,7 +1675,14 @@ public class RoutePushService {
                 String.valueOf(position.get("online")),
                 String.valueOf(position.get("directionDeg")),
                 String.valueOf(position.get("directionLabel")),
-                String.valueOf(position.get("routeRevision")));
+                String.valueOf(position.get("routeRevision")),
+                String.valueOf(position.get("tripPhase")),
+                String.valueOf(position.get("tripDecision")),
+                String.valueOf(position.get("positionQuality")),
+                String.valueOf(position.get("targetAction")),
+                String.valueOf(position.get("pendingOrderCount")),
+                String.valueOf(position.get("onboardOrderCount")),
+                String.valueOf(position.get("completedOrderCount")));
         BroadcastPositionState previous = lastBroadcastPositions.get(lineId);
         BroadcastPositionState current = new BroadcastPositionState(
                 coordinate, speed, status, stale, detailsSignature, now);
@@ -1699,6 +1724,7 @@ public class RoutePushService {
                 vehicleDeviationCoordinates.remove(entry.getKey());
                 lastBroadcastPositions.remove(entry.getKey());
                 rm2GroupIdByLineId.remove(entry.getKey());
+                tripRuntimeMetadataByLineId.remove(entry.getKey());
             }
             return expired;
         });

@@ -64,6 +64,10 @@ dashboard:
       # 新中间层实验分支：只做今昨订单日库 diff 与车辆轻量索引，随后截断后续程序。
       vehicle-order-chain-experiment-enabled: true
       vehicle-order-chain-store-path: runtime-data/vehicle-order-chain
+      # Trip 到离站使用独立迟滞半径，不复用 5km 的拓扑节点融合半径。
+      trip-arrival-radius-km: 0.5
+      trip-departure-radius-km: 0.8
+      trip-minimum-dwell-ms: 60000
   route:
     # 所有档位都使用正常车辆时间尺度；代码层还会把异常配置限制在可信速度内。
     simulation-profile: real

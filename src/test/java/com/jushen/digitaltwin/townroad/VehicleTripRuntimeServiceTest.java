@@ -238,6 +238,31 @@ class VehicleTripRuntimeServiceTest {
     }
 
     @Test
+    void passingWithinFiveKilometersCannotCompleteLoadingOrDelivery() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        ExternalOrderRecord onboard = record("order-1", "line-1", "运输中",
+                new double[]{113.0, 23.0}, new double[]{115.0, 23.0});
+        VehicleTripRuntimeService service = new VehicleTripRuntimeService(store);
+        VehicleTripRuntimeService.VehicleTripRuntime trip = service.reconcile(
+                List.of(stored(onboard, 1_000))).get(0);
+        Instant first = Instant.parse("2026-07-27T00:00:00Z");
+
+        // 距卸货点约 4km：处于旧 5km 节点融合范围内，但不属于新的 500m 到站范围。
+        VehicleTripRuntimeService.TargetPresenceObservation nearPass = service.observeCurrentTarget(
+                trip, new double[]{115.039, 23.0}, first);
+        VehicleTripRuntimeService.TargetPresenceObservation laterPass = service.observeCurrentTarget(
+                trip, new double[]{115.030, 23.0}, first.plusSeconds(90));
+        VehicleTripRuntimeService.TargetPresenceObservation gone = service.observeCurrentTarget(
+                trip, new double[]{115.20, 23.0}, first.plusSeconds(180));
+
+        assertThat(nearPass.state()).isEqualTo(VehicleTripRuntimeService.TargetPresenceState.EN_ROUTE);
+        assertThat(laterPass.state()).isEqualTo(VehicleTripRuntimeService.TargetPresenceState.EN_ROUTE);
+        assertThat(gone.state()).isEqualTo(VehicleTripRuntimeService.TargetPresenceState.EN_ROUTE);
+        assertThat(trip.onboardOrderIds()).containsExactly(key(onboard));
+        assertThat(trip.completedOrderIds()).isEmpty();
+    }
+
+    @Test
     void stalePositionDoesNotRollbackConfirmedDeparture() {
         VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
         ExternalOrderRecord waiting = record("order-1", "line-1", "待装载");

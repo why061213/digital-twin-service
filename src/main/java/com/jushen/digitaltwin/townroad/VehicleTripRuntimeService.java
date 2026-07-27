@@ -35,12 +35,15 @@ public class VehicleTripRuntimeService {
     private static final double MAX_INSERTION_DETOUR_KM = 30d;
     private static final double MAX_INSERTION_DETOUR_RATIO = 0.20d;
     private static final double DIRECTION_TOLERANCE_KM = 10d;
-    private static final long MIN_VALID_DWELL_MS = 60_000L;
+    private static final long ABSOLUTE_MIN_VALID_DWELL_MS = 60_000L;
     private final VehicleOrderChainStore orderStore;
     private final VehicleTripTopologyService topologyService;
     private final RoutePlanningService routePlanningService;
     private final ObjectMapper objectMapper;
     private final Path tripsRoot;
+    private final double arrivalRadiusKm;
+    private final double departureRadiusKm;
+    private final long minimumDwellMs;
     private final Set<String> restoreAttempted = new LinkedHashSet<>();
     private final Map<String, VehicleTripRuntime> currentByVehicle = new LinkedHashMap<>();
     private final Map<String, StopPresenceEvidence> stopPresenceByTripStop = new LinkedHashMap<>();
@@ -50,13 +53,18 @@ public class VehicleTripRuntimeService {
             VehicleOrderChainStore orderStore,
             VehicleTripTopologyService topologyService,
             ObjectMapper objectMapper,
-            RoutePlanningService routePlanningService
+            RoutePlanningService routePlanningService,
+            TownRoadExternalOrderProperties properties
     ) {
         this.orderStore = orderStore;
         this.topologyService = topologyService;
         this.objectMapper = objectMapper;
         this.routePlanningService = routePlanningService;
         this.tripsRoot = orderStore.runtimeRootPath().resolve("trips");
+        this.arrivalRadiusKm = validArrivalRadius(properties);
+        this.departureRadiusKm = validDepartureRadius(properties, arrivalRadiusKm);
+        this.minimumDwellMs = Math.max(ABSOLUTE_MIN_VALID_DWELL_MS,
+                properties == null ? ABSOLUTE_MIN_VALID_DWELL_MS : properties.getTripMinimumDwellMs());
     }
 
     VehicleTripRuntimeService(
@@ -64,7 +72,7 @@ public class VehicleTripRuntimeService {
             VehicleTripTopologyService topologyService,
             ObjectMapper objectMapper
     ) {
-        this(orderStore, topologyService, objectMapper, null);
+        this(orderStore, topologyService, objectMapper, null, new TownRoadExternalOrderProperties());
     }
 
     VehicleTripRuntimeService(VehicleOrderChainStore orderStore) {
@@ -73,6 +81,9 @@ public class VehicleTripRuntimeService {
         this.objectMapper = null;
         this.routePlanningService = null;
         this.tripsRoot = null;
+        this.arrivalRadiusKm = 0.5d;
+        this.departureRadiusKm = 0.8d;
+        this.minimumDwellMs = ABSOLUTE_MIN_VALID_DWELL_MS;
     }
 
     VehicleTripRuntimeService(
@@ -85,6 +96,19 @@ public class VehicleTripRuntimeService {
         this.routePlanningService = routePlanningService;
         this.objectMapper = null;
         this.tripsRoot = null;
+        this.arrivalRadiusKm = 0.5d;
+        this.departureRadiusKm = 0.8d;
+        this.minimumDwellMs = ABSOLUTE_MIN_VALID_DWELL_MS;
+    }
+
+    private double validArrivalRadius(TownRoadExternalOrderProperties properties) {
+        double configured = properties == null ? 0.5d : properties.getTripArrivalRadiusKm();
+        return Double.isFinite(configured) && configured > 0d ? configured : 0.5d;
+    }
+
+    private double validDepartureRadius(TownRoadExternalOrderProperties properties, double arrival) {
+        double configured = properties == null ? 0.8d : properties.getTripDepartureRadiusKm();
+        return Double.isFinite(configured) && configured > arrival ? configured : Math.max(0.8d, arrival + 0.1d);
     }
 
     public synchronized List<VehicleTripRuntime> reconcile(
@@ -158,17 +182,23 @@ public class VehicleTripRuntimeService {
         String key = trip.tripId() + "|" + target.stopId();
         long at = (observedAt == null ? Instant.now() : observedAt).toEpochMilli();
         StopPresenceEvidence previous = stopPresenceByTripStop.get(key);
-        if (distanceKm <= VehicleTripTopologyService.DEFAULT_NODE_MERGE_RADIUS_KM) {
+        boolean insideArrival = distanceKm <= arrivalRadiusKm;
+        boolean insideHysteresis = previous != null && distanceKm < departureRadiusKm;
+        if (insideArrival || insideHysteresis) {
             StopPresenceEvidence evidence = previous == null
                     ? new StopPresenceEvidence(at, at, 1, false)
                     : new StopPresenceEvidence(previous.enteredAtMs(), at, previous.sampleCount() + 1,
                     previous.dwellConfirmed()
-                            || (previous.sampleCount() + 1 >= 2 && at - previous.enteredAtMs() >= MIN_VALID_DWELL_MS));
+                            || (previous.sampleCount() + 1 >= 2 && at - previous.enteredAtMs() >= minimumDwellMs));
             stopPresenceByTripStop.put(key, evidence);
             TargetPresenceState state = evidence.dwellConfirmed()
                     ? TargetPresenceState.DWELLING : TargetPresenceState.ARRIVED;
             return new TargetPresenceObservation(
                     state, target, distanceKm, evidence.sampleCount(), at - evidence.enteredAtMs());
+        }
+        // 只有越过更大的离站半径才离站；迟滞区不会把边界抖动误判为离开。
+        if (distanceKm < departureRadiusKm) {
+            return new TargetPresenceObservation(TargetPresenceState.EN_ROUTE, target, distanceKm, 0, 0L);
         }
         stopPresenceByTripStop.remove(key);
         if (previous != null && previous.dwellConfirmed()) {

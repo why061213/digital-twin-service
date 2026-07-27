@@ -44,7 +44,8 @@ public class AmapGeocodeClient {
     private final LocalCoordDb localCoordDb;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
-    private final Map<String, ExternalOrderRecord.Location> reverseCache = new ConcurrentHashMap<>();
+    /** 约 5km 网格缓存行政区；坐标始终使用本次 GPS，不能随缓存锚点冻结。 */
+    private final Map<String, AdministrativeArea> reverseCache = new ConcurrentHashMap<>();
 
     /** 上一次调用 API 的时间，用于限速 */
     private long lastCallAt = 0;
@@ -150,9 +151,9 @@ public class AmapGeocodeClient {
     /** 按真实 GPS 反查行政区；失败时返回 null，调用方不得复制目标节点行政区。 */
     public synchronized ExternalOrderRecord.Location reverseGeocode(double[] coordinates) {
         if (coordinates == null || coordinates.length < 2) return null;
-        String cacheKey = String.format(java.util.Locale.ROOT, "%.4f,%.4f", coordinates[0], coordinates[1]);
-        ExternalOrderRecord.Location cached = reverseCache.get(cacheKey);
-        if (cached != null) return cached;
+        String cacheKey = reverseGridKey(coordinates);
+        AdministrativeArea cached = reverseCache.get(cacheKey);
+        if (cached != null) return cached.at(coordinates);
         String key = properties.getAmapKey();
         if (key == null || key.isBlank()) return null;
         try {
@@ -180,14 +181,33 @@ public class AmapGeocodeClient {
             String district = text(component.path("district"));
             String adcode = text(component.path("adcode"));
             String name = text(regeocode.path("formatted_address"));
-            ExternalOrderRecord.Location location = new ExternalOrderRecord.Location(
-                    name == null ? "车辆当前位置" : name, province, city, district, adcode,
-                    coordinates.clone());
-            reverseCache.put(cacheKey, location);
-            return location;
+            AdministrativeArea area = new AdministrativeArea(
+                    name == null ? "车辆当前位置" : name, province, city, district, adcode);
+            reverseCache.put(cacheKey, area);
+            return area.at(coordinates);
         } catch (Exception exception) {
             log.warn("[Amap] reverse geocode failed for {}: {}", cacheKey, exception.getMessage());
             return null;
+        }
+    }
+
+    private String reverseGridKey(double[] coordinates) {
+        double gridDegrees = 0.05d;
+        long lngCell = (long) Math.floor(coordinates[0] / gridDegrees);
+        long latCell = (long) Math.floor(coordinates[1] / gridDegrees);
+        return lngCell + ":" + latCell;
+    }
+
+    private record AdministrativeArea(
+            String name,
+            String province,
+            String city,
+            String district,
+            String adcode
+    ) {
+        private ExternalOrderRecord.Location at(double[] coordinates) {
+            return new ExternalOrderRecord.Location(
+                    name, province, city, district, adcode, coordinates.clone());
         }
     }
 

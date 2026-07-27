@@ -485,7 +485,8 @@ public class TownRoadRenderService {
                         .append(r.from()).append('|')
                         .append(r.to()).append('|')
                         .append(r.role()).append('|')
-                        .append(r.coordinateSystem()).append('|');
+                        .append(r.coordinateSystem()).append('|')
+                        .append(metaFingerprint(r.meta())).append('|');
             }
         }
         try {
@@ -788,14 +789,7 @@ public class TownRoadRenderService {
         }
         VehicleOrderEligibilityService.VehicleDecision tripDecision = tripDecisionByLineId.get(route.lineId());
         if (tripDecision != null) {
-            meta.put("tripId", tripDecision.tripId());
-            meta.put("visualKey", tripDecision.tripId());
-            meta.put("runtimeLineId", tripDecision.runtimeLineId());
-            meta.put("currentLegId", tripDecision.currentLegId());
-            meta.put("planVersion", tripDecision.planVersion());
-            meta.put("targetStopId", tripDecision.targetStopId());
-            meta.put("targetOrderInstanceId", tripDecision.targetOrderInstanceId());
-            meta.put("targetAction", tripDecision.targetAction());
+            meta.putAll(tripMetadata(tripDecision));
         }
         return new RenderRouteDTO(
                 route.lineId(), route.orderId(), route.businessLineId(),
@@ -807,6 +801,31 @@ public class TownRoadRenderService {
                 route.coordinateSystem(), route.updatedAt(), route.routeSignature(),
                 Collections.unmodifiableMap(meta)
         );
+    }
+
+    private Map<String, Object> tripMetadata(VehicleOrderEligibilityService.VehicleDecision decision) {
+        if (decision == null) return Map.of();
+        Map<String, Object> meta = new LinkedHashMap<>();
+        putIfNotNull(meta, "tripId", decision.tripId());
+        putIfNotNull(meta, "visualKey", decision.tripId());
+        putIfNotNull(meta, "runtimeLineId", decision.runtimeLineId());
+        putIfNotNull(meta, "currentLegId", decision.currentLegId());
+        meta.put("planVersion", decision.planVersion());
+        putIfNotNull(meta, "tripPhase", decision.tripPhase() == null ? null : decision.tripPhase().name());
+        putIfNotNull(meta, "tripDecision", decision.decision());
+        putIfNotNull(meta, "positionQuality",
+                decision.positionQuality() == null ? null : decision.positionQuality().name());
+        putIfNotNull(meta, "targetStopId", decision.targetStopId());
+        putIfNotNull(meta, "targetOrderInstanceId", decision.targetOrderInstanceId());
+        putIfNotNull(meta, "targetAction", decision.targetAction());
+        meta.put("pendingOrderCount", decision.pendingPickupOrderIds().size());
+        meta.put("onboardOrderCount", decision.onboardOrderIds().size());
+        meta.put("completedOrderCount", decision.completedOrderIds().size());
+        return Collections.unmodifiableMap(meta);
+    }
+
+    private void putIfNotNull(Map<String, Object> target, String key, Object value) {
+        if (value != null) target.put(key, value);
     }
 
     private boolean isPublishableRm2Route(RenderRouteDTO route) {
@@ -868,6 +887,8 @@ public class TownRoadRenderService {
             if (fromCoords == null || toCoords == null || fromCoords.length < 2 || toCoords.length < 2) continue;
 
             ExternalOrderRecord.Vehicle vehicle = order.vehicle();
+            routePushService.setTripRuntimeMetadata(
+                    order.instanceId(), tripMetadata(tripDecisionByLineId.get(order.instanceId())));
             routePushService.dispatchTownRoute(
                     order.instanceId(),
                     order.orderId() != null ? order.orderId() : order.instanceId(),
@@ -883,6 +904,17 @@ public class TownRoadRenderService {
             registered++;
         }
         return registered;
+    }
+
+    private String metaFingerprint(Map<String, Object> meta) {
+        if (meta == null || meta.isEmpty()) return "";
+        return List.of(
+                        "tripId", "visualKey", "currentLegId", "planVersion", "tripPhase",
+                        "tripDecision", "positionQuality", "targetAction", "pendingOrderCount",
+                        "onboardOrderCount", "completedOrderCount")
+                .stream()
+                .map(key -> key + "=" + String.valueOf(meta.get(key)))
+                .collect(java.util.stream.Collectors.joining(","));
     }
 
     static boolean isTransitPipelineStatus(String status) {

@@ -40,11 +40,13 @@ public class VehicleOrderChainStore {
     private static final String STATUS_TRANSIT_CONFIRMED = "在途-1";
     private static final String STATUS_TRANSIT_INFERRED = "在途-2";
     private static final String STATUS_COMPLETED = "已完成";
+    private static final Duration TRACKING_HISTORY_RETENTION = Duration.ofHours(48);
 
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final Path root;
     private final Path recordsRoot;
+    private final Path trackingIndexPath;
     private final Map<LocalDate, Map<String, StoredOrder>> dailyOrders = new LinkedHashMap<>();
     private final Map<String, StoredOrder> recentOrdersByKey = new LinkedHashMap<>();
     private final Map<String, Map<String, VehicleOrderEntry>> vehicleEntriesByPlate = new LinkedHashMap<>();
@@ -67,6 +69,7 @@ public class VehicleOrderChainStore {
         this.root = Path.of(configuredPath == null || configuredPath.isBlank()
                 ? "runtime-data/vehicle-order-chain" : configuredPath).toAbsolutePath().normalize();
         this.recordsRoot = root.resolve("records");
+        this.trackingIndexPath = root.resolve("tracking-active-index.json");
         ensureRecentHistoryLoaded();
     }
 
@@ -78,7 +81,11 @@ public class VehicleOrderChainStore {
         Map<String, ExternalOrderRecord> latestBatchRecords = deduplicateLatest(safeRecords);
         latestIngestKeys.clear();
         latestIngestKeys.addAll(latestBatchRecords.keySet());
-        Map<String, StoredOrder> todayOrders = dailyOrders.computeIfAbsent(today, ignored -> new LinkedHashMap<>());
+        Map<String, StoredOrder> todayOrders = dailyOrders.computeIfAbsent(today, ignored -> readDailyOrders(today));
+        if (todayOrders.isEmpty() && Files.isRegularFile(dailyFilePath(today))) {
+            // 活跃索引启动时未载入完整审计日库；首次写入前再懒加载，避免覆盖历史记录。
+            todayOrders.putAll(readDailyOrders(today));
+        }
 
         int addedCount = 0;
         int updatedCount = 0;
@@ -128,6 +135,7 @@ public class VehicleOrderChainStore {
 
         if (addedCount + updatedCount > 0) writeDailyDatabase(today, todayOrders);
         for (String plate : changedVehicleFiles) writeVehicleFile(plate);
+        writeTrackingIndex();
 
         Set<String> matchedVehicles = matchedVehicleKeys();
         IngestResult result = new IngestResult(
@@ -160,6 +168,12 @@ public class VehicleOrderChainStore {
                 .map(recentOrdersByKey::get)
                 .filter(java.util.Objects::nonNull)
                 .toList();
+    }
+
+    /** 车辆 Trip 只消费活跃索引，不再扫描纯审计日库中的全部历史完成单。 */
+    public synchronized List<StoredOrder> activeTrackingStoredOrders() {
+        ensureRecentHistoryLoaded();
+        return trackingRelevantOrders(recentOrdersByKey.values());
     }
 
     Path runtimeRootPath() {
@@ -317,24 +331,70 @@ public class VehicleOrderChainStore {
         dailyOrders.clear();
         recentOrdersByKey.clear();
         LocalDate yesterday = today.minusDays(1);
-        loadDailyDatabase(yesterday);
-        loadDailyDatabase(today);
+        if (!loadTrackingIndex(today)) {
+            loadDailyDatabase(yesterday);
+            loadDailyDatabase(today);
+            writeTrackingIndex();
+        } else {
+            dailyOrders.put(yesterday, new LinkedHashMap<>());
+            dailyOrders.put(today, new LinkedHashMap<>());
+        }
         loadedForDate = today;
         log.info("[VehicleOrderHistory] startup history loaded: dates={}, records={}",
                 loadedDateStrings(), recentOrdersByKey.size());
     }
 
-    private void loadDailyDatabase(LocalDate date) {
-        Path path = dailyFilePath(date);
-        Map<String, StoredOrder> orders = new LinkedHashMap<>();
-        if (Files.isRegularFile(path)) {
-            try {
-                DailyOrderFile file = objectMapper.readValue(path.toFile(), DailyOrderFile.class);
-                if (file != null && file.orders() != null) orders.putAll(file.orders());
-            } catch (Exception exception) {
-                throw new IllegalStateException("无法读取日期订单库: " + path, exception);
+    private boolean loadTrackingIndex(LocalDate today) {
+        if (!Files.isRegularFile(trackingIndexPath)) return false;
+        try {
+            TrackingOrderIndex index = objectMapper.readValue(trackingIndexPath.toFile(), TrackingOrderIndex.class);
+            if (index == null || index.schemaVersion() != SCHEMA_VERSION
+                    || index.generatedDate() == null || !today.toString().equals(index.generatedDate())
+                    || index.orders() == null) return false;
+            recentOrdersByKey.putAll(index.orders());
+            return true;
+        } catch (Exception exception) {
+            log.warn("[VehicleOrderHistory] active tracking index unavailable, falling back to daily files: {}",
+                    trackingIndexPath, exception);
+            return false;
+        }
+    }
+
+    private void writeTrackingIndex() {
+        List<StoredOrder> relevant = trackingRelevantOrders(recentOrdersByKey.values());
+        Map<String, StoredOrder> indexed = new LinkedHashMap<>();
+        for (StoredOrder order : relevant) indexed.put(order.key(), order);
+        writeJson(trackingIndexPath, new TrackingOrderIndex(
+                SCHEMA_VERSION, LocalDate.now(clock).toString(),
+                Instant.ofEpochMilli(clock.millis()).toString(), indexed));
+    }
+
+    private List<StoredOrder> trackingRelevantOrders(java.util.Collection<StoredOrder> orders) {
+        long cutoff = clock.millis() - TRACKING_HISTORY_RETENTION.toMillis();
+        Set<String> vehiclesWithOpenOrders = orders.stream()
+                .filter(order -> !"COMPLETED".equals(order.category()))
+                .map(StoredOrder::vehicleKey)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        Map<String, StoredOrder> latestCompletedByVehicle = new LinkedHashMap<>();
+        List<StoredOrder> result = new ArrayList<>();
+        for (StoredOrder order : orders) {
+            if (!"COMPLETED".equals(order.category())) {
+                result.add(order);
+                continue;
+            }
+            if (order.lastObservedAtMs() < cutoff && !vehiclesWithOpenOrders.contains(order.vehicleKey())) continue;
+            StoredOrder current = latestCompletedByVehicle.get(order.vehicleKey());
+            if (current == null || compareStoredOrder(order, current) > 0) {
+                latestCompletedByVehicle.put(order.vehicleKey(), order);
             }
         }
+        result.addAll(latestCompletedByVehicle.values());
+        result.sort(Comparator.comparingLong(StoredOrder::firstObservedAtMs).thenComparing(StoredOrder::key));
+        return List.copyOf(result);
+    }
+
+    private void loadDailyDatabase(LocalDate date) {
+        Map<String, StoredOrder> orders = readDailyOrders(date);
         dailyOrders.put(date, orders);
         for (Map.Entry<String, StoredOrder> entry : orders.entrySet()) {
             StoredOrder current = recentOrdersByKey.get(entry.getKey());
@@ -342,6 +402,19 @@ public class VehicleOrderChainStore {
             if (current == null || compareStoredOrder(candidate, current) >= 0) {
                 recentOrdersByKey.put(entry.getKey(), candidate);
             }
+        }
+    }
+
+    private Map<String, StoredOrder> readDailyOrders(LocalDate date) {
+        Path path = dailyFilePath(date);
+        Map<String, StoredOrder> orders = new LinkedHashMap<>();
+        if (!Files.isRegularFile(path)) return orders;
+        try {
+            DailyOrderFile file = objectMapper.readValue(path.toFile(), DailyOrderFile.class);
+            if (file != null && file.orders() != null) orders.putAll(file.orders());
+            return orders;
+        } catch (Exception exception) {
+            throw new IllegalStateException("无法读取日期订单库: " + path, exception);
         }
     }
 
@@ -630,6 +703,13 @@ public class VehicleOrderChainStore {
             String updatedAt,
             List<String> completedOrderKeys,
             List<String> otherOrderKeys,
+            Map<String, StoredOrder> orders
+    ) {}
+
+    public record TrackingOrderIndex(
+            int schemaVersion,
+            String generatedDate,
+            String updatedAt,
             Map<String, StoredOrder> orders
     ) {}
 

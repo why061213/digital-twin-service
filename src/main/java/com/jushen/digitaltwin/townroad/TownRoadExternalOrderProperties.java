@@ -47,6 +47,13 @@ public class TownRoadExternalOrderProperties {
     private boolean vehicleOrderChainExperimentEnabled = false;
     private String vehicleOrderChainStorePath = "runtime-data/vehicle-order-chain";
 
+    /** Trip 到站半径；必须与拓扑节点融合半径解耦。 */
+    private double tripArrivalRadiusKm = 0.5;
+    /** Trip 离站半径；大于到站半径形成迟滞区，避免边界抖动。 */
+    private double tripDepartureRadiusKm = 0.8;
+    /** 有效装卸停留时间，运行时最低强制为 60 秒。 */
+    private long tripMinimumDwellMs = 60_000;
+
     public String getPostUrl() {
         return postUrl;
     }
@@ -178,5 +185,29 @@ public class TownRoadExternalOrderProperties {
 
     public void setVehicleOrderChainStorePath(String vehicleOrderChainStorePath) {
         this.vehicleOrderChainStorePath = vehicleOrderChainStorePath;
+    }
+
+    public double getTripArrivalRadiusKm() {
+        return tripArrivalRadiusKm;
+    }
+
+    public void setTripArrivalRadiusKm(double tripArrivalRadiusKm) {
+        this.tripArrivalRadiusKm = tripArrivalRadiusKm;
+    }
+
+    public double getTripDepartureRadiusKm() {
+        return tripDepartureRadiusKm;
+    }
+
+    public void setTripDepartureRadiusKm(double tripDepartureRadiusKm) {
+        this.tripDepartureRadiusKm = tripDepartureRadiusKm;
+    }
+
+    public long getTripMinimumDwellMs() {
+        return tripMinimumDwellMs;
+    }
+
+    public void setTripMinimumDwellMs(long tripMinimumDwellMs) {
+        this.tripMinimumDwellMs = tripMinimumDwellMs;
     }
 }

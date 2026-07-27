@@ -108,7 +108,17 @@ class TownRoadRenderServicePipelineCutTest {
                 .containsEntry("visualKey", synthetic.orderId())
                 .containsKey("currentLegId")
                 .containsEntry("targetOrderInstanceId", stored.get(1).key())
-                .containsEntry("targetAction", "PICKUP");
+                .containsEntry("targetAction", "PICKUP")
+                .containsEntry("tripPhase", "COLLECTING")
+                .containsEntry("tripDecision", "EN_ROUTE_TO_PICKUP")
+                .containsEntry("positionQuality", "FRESH")
+                .containsEntry("pendingOrderCount", 1)
+                .containsEntry("onboardOrderCount", 1)
+                .containsEntry("completedOrderCount", 0);
+        verify(routePush).setTripRuntimeMetadata(
+                org.mockito.ArgumentMatchers.eq(synthetic.lineId()),
+                org.mockito.ArgumentMatchers.argThat(runtimeMeta ->
+                        "EN_ROUTE_TO_PICKUP".equals(runtimeMeta.get("tripDecision"))));
         verify(routePush).dispatchTownRoute(
                 org.mockito.ArgumentMatchers.eq(synthetic.lineId()),
                 any(), any(), any(), any(), any(), any(), anyList(), anyList(), any(),
@@ -198,6 +208,7 @@ class TownRoadRenderServicePipelineCutTest {
                 order.vehicle().carId(), eligible, state, reason, order.vehicle().currentCoords(),
                 null, null, null, order.from().name(), order.from().coords(), null,
                 "trip-" + order.vehicle().plate(), VehicleTripRuntimeService.TripPhase.LINEHAUL,
+                VehicleTripRuntimeService.PositionQuality.FRESH,
                 List.of(order.orderId()), Set.of(), Set.of(order.orderId()), Set.of(), List.of(order.orderId()),
                 Map.of(order.orderId(), VehicleTripRuntimeService.TripMemberState.CONFIRMED), Set.of(),
                 "trip::trip-" + order.vehicle().plate(), "leg-current", 2L,

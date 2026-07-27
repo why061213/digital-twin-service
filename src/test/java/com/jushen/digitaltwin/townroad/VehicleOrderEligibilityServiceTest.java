@@ -41,7 +41,7 @@ class VehicleOrderEligibilityServiceTest {
         assertThat(decision(report, "old-completed").decision()).isEqualTo("COMPLETED_EXPIRED");
         assertThat(decision(report, "recent-completed").groupEligible()).isTrue();
         assertThat(decision(report, "transporting").groupEligible()).isTrue();
-        assertThat(decision(report, "loading").decision()).isEqualTo("ARRIVED");
+        assertThat(decision(report, "loading").decision()).isEqualTo("EN_ROUTE_TO_PICKUP");
     }
 
     @Test
@@ -152,6 +152,36 @@ class VehicleOrderEligibilityServiceTest {
         assertThat(decision.groupEligible()).isTrue();
     }
 
+    @Test
+    void localFinalDeliveryCompletionBlocksStaleUpstreamTransportingRoute() {
+        Instant enteredAt = Instant.parse("2026-07-27T00:00:00Z");
+        VehicleOrderChainStore.StoredOrder transporting = stored(
+                record("transporting", "粤A60001", "运输中", enteredAt.minusSeconds(60), 113.0), 1);
+        Fixture fixture = fixture(List.of(transporting));
+        when(fixture.routePush.providerVehicleIdForLineId("transporting")).thenReturn("60001");
+        when(fixture.routePush.freshProviderPosition("transporting")).thenReturn(
+                snapshot("transporting", "60001", 112.70, 23.30, enteredAt),
+                snapshot("transporting", "60001", 112.701, 23.30, enteredAt.plusSeconds(61)),
+                snapshot("transporting", "60001", 112.72, 23.30, enteredAt.plusSeconds(120)),
+                snapshot("transporting", "60001", 112.73, 23.30, enteredAt.plusSeconds(180)));
+
+        assertThat(decision(fixture.service.analyzeLatestVehicleOrders(), "transporting").decision())
+                .isEqualTo("ARRIVED");
+        assertThat(decision(fixture.service.analyzeLatestVehicleOrders(), "transporting").decision())
+                .isEqualTo("UNLOADING");
+        VehicleOrderEligibilityService.VehicleDecision completed = decision(
+                fixture.service.analyzeLatestVehicleOrders(), "transporting");
+        VehicleOrderEligibilityService.VehicleDecision staleUpstream = decision(
+                fixture.service.analyzeLatestVehicleOrders(), "transporting");
+
+        assertThat(completed.decision()).isEqualTo("TRIP_COMPLETED_LOCAL");
+        assertThat(completed.groupEligible()).isFalse();
+        assertThat(completed.onboardOrderIds()).isEmpty();
+        assertThat(completed.completedOrderIds()).containsExactly(transporting.key());
+        assertThat(staleUpstream.decision()).isEqualTo("TRIP_COMPLETED_LOCAL");
+        assertThat(staleUpstream.groupEligible()).isFalse();
+    }
+
     private Fixture fixture(List<VehicleOrderChainStore.StoredOrder> orders) {
         return fixture(orders, true);
     }
@@ -219,6 +249,19 @@ class VehicleOrderEligibilityServiceTest {
 
     private ProviderTrajectoryClient.TrackPoint point(Instant time, double lng) {
         return new ProviderTrajectoryClient.TrackPoint(time, lng, 23.0);
+    }
+
+    private PositionSnapshot snapshot(
+            String lineId,
+            String vehicleId,
+            double lng,
+            double lat,
+            Instant providerTime
+    ) {
+        return new PositionSnapshot(
+                lineId, vehicleId, vehicleId, "粤A60001", lng, lat, 10d,
+                null, null, null, null, "none", true, null, null,
+                providerTime, providerTime, "real", false);
     }
 
     private record Fixture(

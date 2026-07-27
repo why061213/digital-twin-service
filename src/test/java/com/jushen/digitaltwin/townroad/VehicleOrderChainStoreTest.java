@@ -211,6 +211,32 @@ class VehicleOrderChainStoreTest {
                 .containsExactly("order-2");
     }
 
+    @Test
+    void activeTrackingIndexLoadsOnlyOpenOrdersAndLatestCompletedContext() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        VehicleOrderChainStore store = store(objectMapper, temporaryDirectory, "2026-07-22T12:00:00Z");
+        store.ingest(List.of(
+                record("completed-1", "route-1", "粤A12345", "已完成", "2026-07-22T08:00:00Z"),
+                record("completed-2", "route-2", "粤A12345", "已完成", "2026-07-22T09:00:00Z"),
+                record("open", "route-3", "粤A12345", "待装载", "2026-07-22T10:00:00Z")));
+
+        Path indexPath = temporaryDirectory.resolve("tracking-active-index.json");
+        VehicleOrderChainStore.TrackingOrderIndex index = objectMapper.readValue(
+                indexPath.toFile(), VehicleOrderChainStore.TrackingOrderIndex.class);
+        assertThat(index.orders().values()).extracting(VehicleOrderChainStore.StoredOrder::orderId)
+                .containsExactlyInAnyOrder("completed-2", "open");
+
+        VehicleOrderChainStore restarted = store(objectMapper, temporaryDirectory, "2026-07-22T13:00:00Z");
+        assertThat(restarted.activeTrackingStoredOrders())
+                .extracting(VehicleOrderChainStore.StoredOrder::orderId)
+                .containsExactly("completed-2", "open");
+        // 纯审计日库仍完整保留三条记录，不被活跃索引裁剪。
+        VehicleOrderChainStore.DailyOrderFile daily = objectMapper.readValue(
+                temporaryDirectory.resolve("records/2026-07-22.json").toFile(),
+                VehicleOrderChainStore.DailyOrderFile.class);
+        assertThat(daily.orders()).hasSize(3);
+    }
+
     private VehicleOrderChainStore store(
             ObjectMapper objectMapper,
             Path root,
