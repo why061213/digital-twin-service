@@ -282,7 +282,8 @@ class Rm2StableGroupsTest {
                         "order-" + businessLine + "::source-line-" + businessLine
                                 + "::line-0::car-" + vehicle,
                         "order-" + businessLine, "运输中", "440000", "440000",
-                        coords(113 + businessLine * 0.1, 23, 114, 24),
+                        coords(100 + businessLine * 3, 20,
+                                101 + businessLine * 3, 21),
                         50, 60, "2026-07-14", "粤A" + businessLine + vehicle, 10));
             }
         }
@@ -349,6 +350,26 @@ class Rm2StableGroupsTest {
                         .filter(lineId -> lineId.startsWith("z-near-"))
                         .count() == 1),
                 "容量只有 1 的尾组也应优先用于打散相近 OD 订单");
+    }
+
+    @Test
+    void reverseAndSharedEndpointOrdersCreateSeparatePagesBelowCapacity() {
+        List<NormalizedTownRoadOrder> orders = List.of(
+                makeOrder("station-to-factory", "line-a", "运输中", "450000", "450000",
+                        coords(106.20, 23.10, 106.40, 23.30),
+                        30, 60, "2026-07-14", "桂A1", 10),
+                makeOrder("factory-to-station", "line-b", "运输中", "450000", "450000",
+                        coords(106.40, 23.30, 106.20, 23.10),
+                        30, 60, "2026-07-14", "桂A2", 10),
+                makeOrder("factory-to-yard", "line-c", "运输中", "450000", "450000",
+                        coords(106.40, 23.30, 106.80, 23.50),
+                        45, 60, "2026-07-14", "桂A3", 10));
+
+        List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(
+                RouteDtoConverter.shortHaulOrdersToRoutes(orders), 12);
+
+        assertEquals(3, groups.size(), "容量虽够，但反向 OD 和共享端点订单应主动拆组");
+        assertTrue(groups.stream().allMatch(group -> group.count() == 1));
     }
 
     @Test

@@ -207,9 +207,11 @@ public final class RouteDtoConverter {
             List<Map.Entry<String, List<RenderRouteDTO>>> businessLines =
                     new ArrayList<>(routesByBusinessLine.entrySet());
             int total = businessLines.size();
-            int pageCount = (int) Math.ceil((double) total / maxPerGroup);
+            int capacityPageCount = (int) Math.ceil((double) total / maxPerGroup);
+            int pageCount = Math.max(capacityPageCount, endpointConflictPageCount(businessLines));
             List<List<Map.Entry<String, List<RenderRouteDTO>>>> distributedPages =
-                    distributeNearbyEndpoints(businessLines, maxPerGroup, pageCount);
+                    distributeNearbyEndpoints(
+                            businessLines, maxPerGroup, pageCount, pageCount > capacityPageCount);
 
             for (int page = 0; page < pageCount; page++) {
                 List<Map.Entry<String, List<RenderRouteDTO>>> pageBusinessLines =
@@ -260,37 +262,30 @@ public final class RouteDtoConverter {
     }
 
     /**
-     * 在既有分页容量内尽量打散相近端点的不同业务订单。
-     * 同起点或同终点均会计入冲突；两端同时相近时权重更高。
+     * 尽量打散任意端点相近的不同业务订单。
+     * 当容量分页只有一页但订单互相冲突时，会主动增加分页。
      */
     private static List<List<Map.Entry<String, List<RenderRouteDTO>>>> distributeNearbyEndpoints(
             List<Map.Entry<String, List<RenderRouteDTO>>> businessLines,
             int maxPerGroup,
-            int pageCount
+            int pageCount,
+            boolean balanceCapacities
     ) {
         List<List<Map.Entry<String, List<RenderRouteDTO>>>> pages = new ArrayList<>();
         List<Integer> capacities = new ArrayList<>();
         for (int page = 0; page < pageCount; page++) {
             pages.add(new ArrayList<>());
-            int remaining = businessLines.size() - page * maxPerGroup;
-            capacities.add(Math.min(maxPerGroup, Math.max(0, remaining)));
+            if (balanceCapacities) {
+                int base = businessLines.size() / pageCount;
+                int extra = businessLines.size() % pageCount;
+                capacities.add(base + (page < extra ? 1 : 0));
+            } else {
+                int remaining = businessLines.size() - page * maxPerGroup;
+                capacities.add(Math.min(maxPerGroup, Math.max(0, remaining)));
+            }
         }
 
-        Map<String, Integer> conflictTotals = new LinkedHashMap<>();
-        for (Map.Entry<String, List<RenderRouteDTO>> candidate : businessLines) {
-            int totalConflict = businessLines.stream()
-                    .filter(other -> !candidate.getKey().equals(other.getKey()))
-                    .mapToInt(other -> endpointConflictScore(candidate, other))
-                    .sum();
-            conflictTotals.put(candidate.getKey(), totalConflict);
-        }
-        List<Map.Entry<String, List<RenderRouteDTO>>> prioritized = new ArrayList<>(businessLines);
-        prioritized.sort(Comparator
-                .<Map.Entry<String, List<RenderRouteDTO>>>comparingInt(
-                        entry -> conflictTotals.getOrDefault(entry.getKey(), 0))
-                .reversed()
-                .thenComparing(Map.Entry::getKey));
-
+        List<Map.Entry<String, List<RenderRouteDTO>>> prioritized = prioritizeByEndpointConflict(businessLines);
         for (Map.Entry<String, List<RenderRouteDTO>> candidate : prioritized) {
             int selectedPage = -1;
             int selectedConflict = Integer.MAX_VALUE;
@@ -313,6 +308,45 @@ public final class RouteDtoConverter {
         return pages;
     }
 
+    private static int endpointConflictPageCount(
+            List<Map.Entry<String, List<RenderRouteDTO>>> businessLines
+    ) {
+        List<List<Map.Entry<String, List<RenderRouteDTO>>>> pages = new ArrayList<>();
+        for (Map.Entry<String, List<RenderRouteDTO>> candidate : prioritizeByEndpointConflict(businessLines)) {
+            List<Map.Entry<String, List<RenderRouteDTO>>> available = pages.stream()
+                    .filter(page -> page.stream()
+                            .noneMatch(existing -> endpointConflictScore(candidate, existing) > 0))
+                    .findFirst()
+                    .orElse(null);
+            if (available == null) {
+                available = new ArrayList<>();
+                pages.add(available);
+            }
+            available.add(candidate);
+        }
+        return Math.max(1, pages.size());
+    }
+
+    private static List<Map.Entry<String, List<RenderRouteDTO>>> prioritizeByEndpointConflict(
+            List<Map.Entry<String, List<RenderRouteDTO>>> businessLines
+    ) {
+        Map<String, Integer> conflictTotals = new LinkedHashMap<>();
+        for (Map.Entry<String, List<RenderRouteDTO>> candidate : businessLines) {
+            int totalConflict = businessLines.stream()
+                    .filter(other -> !candidate.getKey().equals(other.getKey()))
+                    .mapToInt(other -> endpointConflictScore(candidate, other))
+                    .sum();
+            conflictTotals.put(candidate.getKey(), totalConflict);
+        }
+        List<Map.Entry<String, List<RenderRouteDTO>>> prioritized = new ArrayList<>(businessLines);
+        prioritized.sort(Comparator
+                .<Map.Entry<String, List<RenderRouteDTO>>>comparingInt(
+                        entry -> conflictTotals.getOrDefault(entry.getKey(), 0))
+                .reversed()
+                .thenComparing(Map.Entry::getKey));
+        return prioritized;
+    }
+
     private static int endpointConflictScore(
             Map.Entry<String, List<RenderRouteDTO>> left,
             Map.Entry<String, List<RenderRouteDTO>> right
@@ -320,10 +354,16 @@ public final class RouteDtoConverter {
         RenderRouteDTO leftRoute = representativeRoute(left);
         RenderRouteDTO rightRoute = representativeRoute(right);
         if (leftRoute == null || rightRoute == null) return 0;
-        boolean nearOrigin = coordinatesNear(leftRoute.fromCoords(), rightRoute.fromCoords());
-        boolean nearDestination = coordinatesNear(leftRoute.toCoords(), rightRoute.toCoords());
-        if (nearOrigin && nearDestination) return 4;
-        return (nearOrigin ? 1 : 0) + (nearDestination ? 1 : 0);
+        boolean originToOrigin = coordinatesNear(leftRoute.fromCoords(), rightRoute.fromCoords());
+        boolean destinationToDestination = coordinatesNear(leftRoute.toCoords(), rightRoute.toCoords());
+        boolean originToDestination = coordinatesNear(leftRoute.fromCoords(), rightRoute.toCoords());
+        boolean destinationToOrigin = coordinatesNear(leftRoute.toCoords(), rightRoute.fromCoords());
+        if ((originToOrigin && destinationToDestination)
+                || (originToDestination && destinationToOrigin)) return 4;
+        return (originToOrigin ? 1 : 0)
+                + (destinationToDestination ? 1 : 0)
+                + (originToDestination ? 1 : 0)
+                + (destinationToOrigin ? 1 : 0);
     }
 
     private static RenderRouteDTO representativeRoute(Map.Entry<String, List<RenderRouteDTO>> businessLine) {
