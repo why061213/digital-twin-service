@@ -50,6 +50,21 @@ final class RouteCorrectionPathBuilder {
         return new Result(List.copyOf(result), completedDistanceKm, totalDistanceKm, correctedProgress);
     }
 
+    static Partition partition(List<double[]> route, double progress) {
+        if (route == null || route.size() < 2) {
+            throw new IllegalArgumentException("route must contain at least two coordinates");
+        }
+        List<double[]> traversed = prefixThroughProgress(route, progress);
+        double[] boundary = copy(traversed.get(traversed.size() - 1));
+        List<double[]> remaining = suffixFromProgress(route, progress);
+        if (remaining.isEmpty() || !same(boundary, remaining.get(0))) {
+            remaining.add(0, boundary);
+        } else {
+            remaining.set(0, boundary);
+        }
+        return new Partition(List.copyOf(traversed), List.copyOf(remaining));
+    }
+
     private static List<double[]> prefixThroughProgress(List<double[]> coordinates, double progress) {
         List<double[]> prefix = new ArrayList<>();
         addDistinct(prefix, coordinates.get(0));
@@ -75,6 +90,32 @@ final class RouteCorrectionPathBuilder {
             break;
         }
         return prefix;
+    }
+
+    private static List<double[]> suffixFromProgress(List<double[]> coordinates, double progress) {
+        List<double[]> suffix = new ArrayList<>();
+        double totalKm = pathLengthKm(coordinates);
+        double targetKm = Math.max(0, Math.min(1, progress)) * totalKm;
+        double walkedKm = 0;
+        for (int i = 1; i < coordinates.size(); i++) {
+            double[] start = coordinates.get(i - 1);
+            double[] end = coordinates.get(i);
+            double segmentKm = distanceKm(start, end);
+            if (walkedKm + segmentKm < targetKm && segmentKm > 0) {
+                walkedKm += segmentKm;
+                continue;
+            }
+            double ratio = segmentKm <= 0 ? 0 : (targetKm - walkedKm) / segmentKm;
+            ratio = Math.max(0, Math.min(1, ratio));
+            addDistinct(suffix, new double[]{
+                    start[0] + (end[0] - start[0]) * ratio,
+                    start[1] + (end[1] - start[1]) * ratio
+            });
+            for (int tail = i; tail < coordinates.size(); tail++) addDistinct(suffix, coordinates.get(tail));
+            break;
+        }
+        if (suffix.isEmpty()) addDistinct(suffix, coordinates.get(coordinates.size() - 1));
+        return suffix;
     }
 
     private static int indexOfConfirmed(List<double[]> coordinates, double[] confirmedPosition) {
@@ -133,4 +174,6 @@ final class RouteCorrectionPathBuilder {
             double progress
     ) {
     }
+
+    record Partition(List<double[]> traversedCoordinates, List<double[]> remainingCoordinates) {}
 }

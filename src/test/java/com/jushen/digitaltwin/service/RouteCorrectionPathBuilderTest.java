@@ -59,5 +59,28 @@ class RouteCorrectionPathBuilderTest {
                 .filter(point -> Math.abs(point[0] - 113.2) < 0.000001
                         && Math.abs(point[1] - 23.32) < 0.000001)
                 .count());
+        assertTrue(secondCorrection.coordinates().stream().anyMatch(point ->
+                Math.abs(point[0] - 113.0) < 0.000001
+                        && Math.abs(point[1] - 23.2) < 0.000001));
+    }
+
+    @Test
+    void partitionsStitchedRouteAtTheSameBoundaryWithoutDroppingHistory() {
+        List<double[]> route = List.of(
+                new double[]{112.9, 23.0},
+                new double[]{113.0, 23.2},
+                new double[]{113.2, 23.32},
+                new double[]{113.5, 23.4}
+        );
+
+        RouteCorrectionPathBuilder.Partition partition = RouteCorrectionPathBuilder.partition(route, 0.6);
+
+        assertArrayEquals(route.get(0), partition.traversedCoordinates().get(0), 0.000001);
+        assertArrayEquals(route.get(route.size() - 1),
+                partition.remainingCoordinates().get(partition.remainingCoordinates().size() - 1), 0.000001);
+        assertArrayEquals(
+                partition.traversedCoordinates().get(partition.traversedCoordinates().size() - 1),
+                partition.remainingCoordinates().get(0),
+                0.000001);
     }
 }

@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static com.jushen.digitaltwin.routeanalysis.RouteAnalysisDTO.RoutePartDTO;
 import static com.jushen.digitaltwin.routeanalysis.RouteAnalysisDTO.SharedRouteRefDTO;
@@ -28,7 +29,7 @@ import static com.jushen.digitaltwin.routeanalysis.RouteAnalysisDTO.SharedRouteR
  */
 @Service
 public class RouteAnalysisService {
-    public static final String ANALYSIS_VERSION = "route-analysis-v1";
+    public static final String ANALYSIS_VERSION = "route-analysis-v2";
     private static final double EARTH_RADIUS_M = 6_371_000.0;
 
     private final double resampleStepM;
@@ -40,6 +41,8 @@ public class RouteAnalysisService {
     private final double deviationMinLengthM;
     private final double gridSizeM;
     private final ConcurrentMap<String, Map<String, RouteAnalysisDTO>> cache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Long> branchGroupOrdinal = new ConcurrentHashMap<>();
+    private final AtomicLong nextBranchGroupOrdinal = new AtomicLong();
 
     public RouteAnalysisService(
             @Value("${dashboard.route-analysis.resample-step-m:100}") double resampleStepM,
@@ -73,10 +76,15 @@ public class RouteAnalysisService {
         Map<String, RouteAnalysisDTO> result = new LinkedHashMap<>();
         if (routes.isEmpty()) return result;
 
+        routes.forEach(this::assignInitialBranchGroups);
         Map<GridCell, List<Segment>> index = buildIndex(routes);
         for (int left = 0; left < routes.size(); left++) {
             for (int right = left + 1; right < routes.size(); right++) {
-                markSharedRuns(routes.get(left), routes.get(right), index);
+                Route routeA = routes.get(left);
+                Route routeB = routes.get(right);
+                if (routeA.businessLineId.equals(routeB.businessLineId)) {
+                    markSharedRuns(routeA, routeB, index);
+                }
             }
         }
         routes.forEach(route -> result.put(route.lineId, assemble(route, routes)));
@@ -95,11 +103,13 @@ public class RouteAnalysisService {
         boolean[] deviation = deviationStates(samples, baseline.isEmpty() ? coordinates : baseline);
         return new Route(
                 lineId,
+                businessLineId(value, lineId),
                 text(value.get("orderId")),
                 text(value.get("plate")),
                 visualKey(value),
                 samples,
                 deviation,
+                sharedSets(samples.size() - 1),
                 sharedSets(samples.size() - 1)
         );
     }
@@ -127,12 +137,14 @@ public class RouteAnalysisService {
     private void markSharedRuns(Route routeA, Route routeB, Map<GridCell, List<Segment>> index) {
         List<Match> matches = new ArrayList<>();
         for (int indexA = 0; indexA < routeA.samples.size() - 1; indexA++) {
+            if (!routeA.deviation[indexA]) continue;
             Segment a = new Segment(routeA, indexA);
             Match best = null;
             Set<SegmentKey> seen = new HashSet<>();
             for (GridCell cell : cells(a, sharedToleranceM)) {
                 for (Segment b : index.getOrDefault(cell, List.of())) {
-                    if (b.route != routeB || !seen.add(new SegmentKey(b.route.lineId, b.index))) continue;
+                    if (b.route != routeB || !routeB.deviation[b.index]
+                            || !seen.add(new SegmentKey(b.route.lineId, b.index))) continue;
                     Match candidate = match(a, b);
                     if (candidate != null && (best == null || candidate.distance < best.distance)) best = candidate;
                 }
@@ -161,10 +173,52 @@ public class RouteAnalysisService {
         double length = routeA.samples.get(run.get(run.size() - 1).a.index + 1).measure
                 - routeA.samples.get(run.get(0).a.index).measure;
         if (length + 0.001 < sharedMinLengthM) return;
+        String branchGroupId = existingBranchGroup(run);
+        if (branchGroupId == null) {
+            branchGroupId = branchGroupId(
+                    routeA, run.get(0).a.index, run.get(run.size() - 1).a.index);
+            rememberBranchGroup(branchGroupId);
+        }
         for (Match match : run) {
             routeA.sharedBySegment.get(match.a.index).add(routeB.lineId);
             routeB.sharedBySegment.get(match.b.index).add(routeA.lineId);
+            assignBranchGroupToDeviationRun(routeA, match.a.index, branchGroupId);
+            assignBranchGroupToDeviationRun(routeB, match.b.index, branchGroupId);
         }
+    }
+
+    private void assignInitialBranchGroups(Route route) {
+        int start = 0;
+        while (start < route.deviation.length - 1) {
+            if (!route.deviation[start]) {
+                start++;
+                continue;
+            }
+            int end = start;
+            while (end + 1 < route.deviation.length - 1 && route.deviation[end + 1]) end++;
+            String groupId = branchGroupId(route, start, end);
+            rememberBranchGroup(groupId);
+            for (int index = start; index <= end; index++) {
+                route.branchGroupsBySegment.get(index).add(groupId);
+            }
+            start = end + 1;
+        }
+    }
+
+    private void assignBranchGroupToDeviationRun(Route route, int segmentIndex, String groupId) {
+        int start = segmentIndex;
+        int end = segmentIndex;
+        while (start > 0 && route.deviation[start - 1]) start--;
+        while (end + 1 < route.deviation.length - 1 && route.deviation[end + 1]) end++;
+        for (int index = start; index <= end; index++) {
+            Set<String> groups = route.branchGroupsBySegment.get(index);
+            groups.clear();
+            groups.add(groupId);
+        }
+    }
+
+    private void rememberBranchGroup(String groupId) {
+        branchGroupOrdinal.computeIfAbsent(groupId, ignored -> nextBranchGroupOrdinal.getAndIncrement());
     }
 
     private Match match(Segment a, Segment b) {
@@ -186,7 +240,8 @@ public class RouteAnalysisService {
         for (int cursor = 1; cursor <= route.sharedBySegment.size(); cursor++) {
             boolean same = cursor < route.sharedBySegment.size()
                     && role(route, cursor) == role(route, start)
-                    && route.sharedBySegment.get(cursor).equals(route.sharedBySegment.get(start));
+                    && route.sharedBySegment.get(cursor).equals(route.sharedBySegment.get(start))
+                    && route.branchGroupsBySegment.get(cursor).equals(route.branchGroupsBySegment.get(start));
             if (same) continue;
             int end = cursor;
             Set<String> participantIds = route.sharedBySegment.get(start);
@@ -204,10 +259,10 @@ public class RouteAnalysisService {
             }
             double from = route.samples.get(start).measure;
             double to = route.samples.get(end).measure;
-            String groupId = participants.isEmpty() ? null : sharedGroupId(route.lineId, participantIds, from, to);
+            String branchGroupId = route.branchGroupsBySegment.get(start).stream().sorted().findFirst().orElse(null);
             parts.add(new RoutePartDTO(
                     "part-" + (parts.size() + 1), from, to, role(route, start),
-                    List.copyOf(partCoordinates), groupId, participants));
+                    List.copyOf(partCoordinates), null, branchGroupId, participants));
             start = cursor;
         }
         double total = route.samples.get(route.samples.size() - 1).measure;
@@ -324,17 +379,48 @@ public class RouteAnalysisService {
         return result;
     }
 
-    private static String sharedGroupId(String lineId, Set<String> participants, double from, double to) {
-        List<String> ids = new ArrayList<>(participants);
-        ids.add(lineId);
-        ids.sort(String::compareTo);
-        String value = String.join("|", ids) + '|' + Math.round(from / 100) + '|' + Math.round(to / 100);
+    private static String branchGroupId(Route route, int startIndex, int endIndex) {
+        Sample start = route.samples.get(startIndex);
+        Sample end = route.samples.get(endIndex + 1);
+        String first = quantizedCoordinate(start);
+        String last = quantizedCoordinate(end);
+        String value = route.businessLineId + '|' + (first.compareTo(last) <= 0
+                ? first + '|' + last : last + '|' + first);
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
-            return "shared-" + HexFormat.of().formatHex(digest).substring(0, 12);
+            return "branch-" + HexFormat.of().formatHex(digest).substring(0, 12);
         } catch (NoSuchAlgorithmException ignored) {
-            return "shared-" + Integer.toHexString(value.hashCode());
+            return "branch-" + Integer.toHexString(value.hashCode());
         }
+    }
+
+    private String existingBranchGroup(List<Match> run) {
+        String earliest = null;
+        for (Match match : run) {
+            Set<String> left = match.a.route.branchGroupsBySegment.get(match.a.index);
+            Set<String> right = match.b.route.branchGroupsBySegment.get(match.b.index);
+            for (String candidate : left) earliest = earlierBranchGroup(earliest, candidate);
+            for (String candidate : right) earliest = earlierBranchGroup(earliest, candidate);
+        }
+        return earliest;
+    }
+
+    private String earlierBranchGroup(String current, String candidate) {
+        if (current == null) return candidate;
+        long currentOrdinal = branchGroupOrdinal.getOrDefault(current, Long.MAX_VALUE);
+        long candidateOrdinal = branchGroupOrdinal.getOrDefault(candidate, Long.MAX_VALUE);
+        return candidateOrdinal < currentOrdinal ? candidate : current;
+    }
+
+    private static String quantizedCoordinate(Sample sample) {
+        return Math.round(sample.lng / 0.005) + "," + Math.round(sample.lat / 0.005);
+    }
+
+    private static String businessLineId(Map<String, Object> route, String lineId) {
+        String businessLineId = text(route.get("businessLineId"));
+        if (businessLineId != null) return businessLineId;
+        String orderId = text(route.get("orderId"));
+        return orderId == null ? lineId : orderId;
     }
 
     @SuppressWarnings("unchecked")
@@ -377,6 +463,8 @@ public class RouteAnalysisService {
         if (routes == null || routes.isEmpty()) return "empty";
         List<String> identities = routes.stream()
                 .map(route -> String.valueOf(route.get("lineId")) + ':'
+                        + String.valueOf(route.get("businessLineId")) + ':'
+                        + String.valueOf(route.get("orderId")) + ':'
                         + routeSignature(route) + ':'
                         + String.valueOf(route.get("routeRevision")))
                 .sorted()
@@ -422,11 +510,13 @@ public class RouteAnalysisService {
 
     private record Route(
             String lineId,
+            String businessLineId,
             String orderId,
             String plate,
             String visualKey,
             List<Sample> samples,
             boolean[] deviation,
-            List<Set<String>> sharedBySegment
+            List<Set<String>> sharedBySegment,
+            List<Set<String>> branchGroupsBySegment
     ) {}
 }

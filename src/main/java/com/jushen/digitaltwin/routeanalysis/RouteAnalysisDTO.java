@@ -15,6 +15,7 @@ public record RouteAnalysisDTO(
             String routeRole,
             List<double[]> coordinates,
             String sharedGroupId,
+            String branchGroupId,
             List<SharedRouteRefDTO> sharedWith
     ) {}
 

@@ -8,32 +8,56 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RouteAnalysisServiceTest {
     private final RouteAnalysisService service = new RouteAnalysisService(100, 120, 800, 0.97, 300, 150, 300, 500);
 
     @Test
-    void marksLongParallelCorridorAsSharedUsingExactLineIdentity() {
-        Map<String, RouteAnalysisDTO> result = service.analyze(List.of(
-                route("green", 113.0, 23.0, 113.02, 23.0),
-                route("pink", 113.0, 23.0005, 113.02, 23.0005)
-        ));
+    void givesSameOrderVehiclesOnTheSameDeviationOneBranchIdentity() {
+        Map<String, Object> green = route("green", 113.0, 23.0, 113.02, 23.0);
+        Map<String, Object> pink = route("pink", 113.0, 23.0005, 113.02, 23.0005);
+        green.put("businessLineId", "business-1");
+        pink.put("businessLineId", "business-1");
+        green.put("baselineCoordinates", List.of(point(113.0, 23.02), point(113.02, 23.02)));
+        pink.put("baselineCoordinates", List.of(point(113.0, 23.02), point(113.02, 23.02)));
+        String originalBranch = service.analyze(List.of(green)).get("green").parts().stream()
+                .map(RouteAnalysisDTO.RoutePartDTO::branchGroupId).filter(java.util.Objects::nonNull)
+                .findFirst().orElseThrow();
+        Map<String, RouteAnalysisDTO> result = service.analyze(List.of(green, pink));
 
-        assertTrue(result.get("green").parts().stream().anyMatch(part ->
-                part.sharedWith().stream().anyMatch(route -> route.lineId().equals("pink"))));
-        assertTrue(result.get("pink").parts().stream().anyMatch(part ->
-                part.sharedWith().stream().anyMatch(route -> route.lineId().equals("green"))));
+        String greenBranch = result.get("green").parts().stream()
+                .map(RouteAnalysisDTO.RoutePartDTO::branchGroupId).filter(java.util.Objects::nonNull)
+                .findFirst().orElseThrow();
+        String pinkBranch = result.get("pink").parts().stream()
+                .map(RouteAnalysisDTO.RoutePartDTO::branchGroupId).filter(java.util.Objects::nonNull)
+                .findFirst().orElseThrow();
+        assertEquals(originalBranch, greenBranch);
+        assertEquals(greenBranch, pinkBranch);
     }
 
     @Test
-    void usesOneProjectionReferenceForTheWholeGroup() {
+    void doesNotAssignOneBranchIdentityAcrossDifferentOrders() {
+        Map<String, Object> first = route("first", 120.0, 20.0, 120.02, 20.0);
+        Map<String, Object> second = route("second", 120.0, 20.0005, 120.02, 20.0005);
+        first.put("businessLineId", "business-1");
+        second.put("businessLineId", "business-2");
+        first.put("baselineCoordinates", List.of(point(120.0, 20.02), point(120.02, 20.02)));
+        second.put("baselineCoordinates", List.of(point(120.0, 20.02), point(120.02, 20.02)));
         Map<String, RouteAnalysisDTO> result = service.analyze(List.of(
-                route("low", 120.0, 20.0, 120.02, 20.0),
-                route("high", 120.0, 20.0005, 120.02, 20.0005)
+                first, second
         ));
 
-        assertTrue(result.get("low").parts().stream().anyMatch(part -> !part.sharedWith().isEmpty()));
+        String firstBranch = result.get("first").parts().stream()
+                .map(RouteAnalysisDTO.RoutePartDTO::branchGroupId).filter(java.util.Objects::nonNull)
+                .findFirst().orElseThrow();
+        String secondBranch = result.get("second").parts().stream()
+                .map(RouteAnalysisDTO.RoutePartDTO::branchGroupId).filter(java.util.Objects::nonNull)
+                .findFirst().orElseThrow();
+        assertNotEquals(firstBranch, secondBranch);
+        assertTrue(result.values().stream().flatMap(analysis -> analysis.parts().stream())
+                .allMatch(part -> part.sharedWith().isEmpty()));
     }
 
     @Test

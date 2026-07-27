@@ -21,7 +21,10 @@ class Rm2RouteResponseAssemblerTest {
                 "pathKey", "vehicle-route::line-1",
                 "routeLengthKm", 18.5,
                 "isRouteBranch", true,
-                "deviationCoordinates", vehicleCoordinates
+                "deviationCoordinates", vehicleCoordinates,
+                "traversedCoordinates", vehicleCoordinates.subList(0, 2),
+                "remainingCoordinates", vehicleCoordinates.subList(1, 3),
+                "routeReplanAnchors", List.of(vehicleCoordinates.get(1))
         );
 
         Map<String, Object> result = Rm2RouteResponseAssembler.effectiveRoute(baseline, position);
@@ -32,6 +35,8 @@ class Rm2RouteResponseAssemblerTest {
         assertEquals("baseline-path", result.get("baselinePathKey"));
         assertEquals(42L, result.get("routeRevision"));
         assertEquals(true, result.get("isRouteBranch"));
+        assertEquals(vehicleCoordinates.subList(0, 2), result.get("traversedCoordinates"));
+        assertEquals(vehicleCoordinates.subList(1, 3), result.get("remainingCoordinates"));
     }
 
     @Test

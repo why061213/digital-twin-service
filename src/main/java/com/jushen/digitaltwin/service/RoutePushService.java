@@ -75,6 +75,7 @@ public class RoutePushService {
     private final Map<String, BroadcastPositionState> lastBroadcastPositions = new ConcurrentHashMap<>();
     private final Map<String, String> rm2GroupIdByLineId = new ConcurrentHashMap<>();
     private final Map<String, Map<String, Object>> tripRuntimeMetadataByLineId = new ConcurrentHashMap<>();
+    private final Map<String, List<double[]>> routeReplanAnchors = new ConcurrentHashMap<>();
     private final AtomicLong positionSequence = new AtomicLong();
     private volatile String rm2SnapshotVersion = "0";
     private static final double MAX_PROVIDER_SPEED_KMH = 140.0;
@@ -1159,24 +1160,21 @@ public class RoutePushService {
                 }
                 lastRouteReplanAt.put(lineId, now);
                 RoutePlanningService.PlannedRoute replanned = routePlanningService.plan(
-                        baselineCoordinates.get(0),
-                        baselineCoordinates.get(baselineCoordinates.size() - 1),
-                        List.of(snapshot.position()));
+                        snapshot.position(), baselineCoordinates.get(baselineCoordinates.size() - 1));
                 if (replanned.success()) {
-                    List<double[]> correctedCoordinates = replanned.coordinates();
-                    List<double[]> correctedMatchingCoordinates = replanned.matchingCoordinates();
-                    double correctedProgress = progressOnCoordinates(
-                            correctedMatchingCoordinates, snapshot.position(), progress);
-                    double totalDistanceKm = replanned.distanceKm() > 0
-                            ? replanned.distanceKm()
-                            : pathLengthKm(correctedMatchingCoordinates);
-                    double completedDistanceKm = correctedProgress * totalDistanceKm;
+                    RouteCorrectionPathBuilder.Result displaySplice = RouteCorrectionPathBuilder.splice(
+                            route.coordinates(), pathProgress, snapshot.position(), replanned.coordinates());
+                    RouteCorrectionPathBuilder.Result matchingSplice = RouteCorrectionPathBuilder.splice(
+                            route.matchingCoordinates(), pathProgress, snapshot.position(), replanned.matchingCoordinates());
+                    List<double[]> correctedCoordinates = displaySplice.coordinates();
+                    List<double[]> correctedMatchingCoordinates = matchingSplice.coordinates();
+                    double correctedProgress = matchingSplice.progress();
+                    double totalDistanceKm = matchingSplice.totalDistanceKm();
+                    double completedDistanceKm = matchingSplice.completedDistanceKm();
                     double effectiveSpeedKmh = isProviderSpeed(snapshot.speedKmh())
                             ? snapshot.speedKmh()
                             : normalizedRouteSpeed(route.speedKmh());
-                    long durationMs = replanned.durationMs() > 0
-                            ? replanned.durationMs()
-                            : travelDurationMs(totalDistanceKm, effectiveSpeedKmh);
+                    long durationMs = travelDurationMs(totalDistanceKm, effectiveSpeedKmh);
                     long completedDurationMs = Math.round(correctedProgress * durationMs);
                     long correctedStartTime = now - completedDurationMs;
                     List<double[]> deviationCoordinates = RouteDeviationPathBuilder.extract(
@@ -1192,6 +1190,7 @@ public class RoutePushService {
                     routeProgressSources.put(lineId, "real-provider");
                     vehicleDeviationCoordinates.put(lineId,
                             RoutePlanningService.PlannedRoute.simplifyForRendering(deviationCoordinates, 240));
+                    rememberRouteReplanAnchor(lineId, snapshot.position());
                     routeCorrectionRevisions.put(lineId, now);
                     lastBroadcastPositions.remove(lineId);
                     if (route.scope() == RouteScope.ROAD) {
@@ -1588,6 +1587,12 @@ public class RoutePushService {
         if (revision == null) return;
         message.put("routeRevision", revision);
         message.put("routeCoordinates", route.coordinates());
+        double progress = message.get("progress") instanceof Number number ? number.doubleValue() : 0;
+        RouteCorrectionPathBuilder.Partition partition = RouteCorrectionPathBuilder.partition(
+                route.coordinates(), progress);
+        message.put("traversedCoordinates", partition.traversedCoordinates());
+        message.put("remainingCoordinates", partition.remainingCoordinates());
+        message.put("routeReplanAnchors", routeReplanAnchors.getOrDefault(route.lineId(), List.of()));
         message.put("routeLengthKm", route.routeLengthKm());
         message.put("travelDurationMs", route.travelDurationMs());
         message.put("pathKey", route.pathKey());
@@ -1603,6 +1608,18 @@ public class RoutePushService {
                 ? "branch:" + route.lineId()
                 : route.orderFamilyId());
         message.put("isRouteBranch", highlightedBranch);
+    }
+
+    private void rememberRouteReplanAnchor(String lineId, double[] position) {
+        if (lineId == null || position == null || position.length < 2) return;
+        routeReplanAnchors.compute(lineId, (ignored, existing) -> {
+            List<double[]> anchors = new ArrayList<>(existing == null ? List.of() : existing);
+            double[] next = new double[]{position[0], position[1]};
+            if (anchors.isEmpty() || distanceKm(anchors.get(anchors.size() - 1), next) > 0.01) {
+                anchors.add(next);
+            }
+            return List.copyOf(anchors);
+        });
     }
 
     private double routeProgress(ScheduledRoute route, long now) {
@@ -1722,6 +1739,7 @@ public class RoutePushService {
                 routeProgressSources.remove(entry.getKey());
                 baselineRouteCoordinates.remove(entry.getKey());
                 vehicleDeviationCoordinates.remove(entry.getKey());
+                routeReplanAnchors.remove(entry.getKey());
                 lastBroadcastPositions.remove(entry.getKey());
                 rm2GroupIdByLineId.remove(entry.getKey());
                 tripRuntimeMetadataByLineId.remove(entry.getKey());

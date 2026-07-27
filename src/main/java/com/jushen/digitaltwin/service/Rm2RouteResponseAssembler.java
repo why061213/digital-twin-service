@@ -53,6 +53,9 @@ final class Rm2RouteResponseAssembler {
         if (corrected) {
             result.put("routeRevision", position.get("routeRevision"));
             result.put("deviationCoordinates", position.getOrDefault("deviationCoordinates", List.of()));
+            result.put("traversedCoordinates", position.getOrDefault("traversedCoordinates", List.of()));
+            result.put("remainingCoordinates", position.getOrDefault("remainingCoordinates", List.of()));
+            result.put("routeReplanAnchors", position.getOrDefault("routeReplanAnchors", List.of()));
             result.put("colorKey", position.get("colorKey"));
             result.put("isRouteBranch", Boolean.TRUE.equals(position.get("isRouteBranch")));
         }
