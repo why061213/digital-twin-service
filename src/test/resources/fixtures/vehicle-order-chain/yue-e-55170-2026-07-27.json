@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "caseId": "yue-e-55170-2026-07-27",
+  "capturedAt": "2026-07-27T05:37:36.230Z",
+  "vehicleKey": "粤E55170",
+  "providerVehicleId": "152708",
+  "currentPosition": [112.82592730872125, 23.0490875616904],
+  "history": [
+    {
+      "orderId": "CY0220260722068",
+      "from": "广东省佛山市三水区广东炬申仓储有限公司（南拓港仓）",
+      "to": "广东省清远市清城区清远新粤亚铝业有限公司（清远石角）",
+      "observedAt": "2026-07-22T12:18:34Z",
+      "status": "在途-1"
+    },
+    {
+      "orderId": "CY0220260727012",
+      "from": "广东省佛山市三水区广东炬申仓储有限公司（南拓港仓）",
+      "to": "广东省佛山市南海区佛山市鸿顺锋再生资源有限公司（大沥）",
+      "observedAt": "2026-07-27T01:59:41Z",
+      "status": "待装载"
+    },
+    {
+      "orderId": "CY0220260727012",
+      "from": "广东省佛山市三水区广东炬申仓储有限公司（南拓港仓）",
+      "to": "广东省佛山市南海区佛山市鸿顺锋再生资源有限公司（大沥）",
+      "observedAt": "2026-07-27T03:53:37Z",
+      "status": "在途-1"
+    }
+  ],
+  "currentStoredOrder": {
+    "key": "CY0220260727012|CY0220260727012-1|粤E55170",
+    "orderId": "CY0220260727012",
+    "routeKey": "CY0220260727012-1",
+    "firstObservedAtMs": 1785118467259,
+    "lastObservedAtMs": 1785124928135,
+    "record": {
+      "orderId": "CY0220260727012",
+      "lineId": "CY0220260727012-1",
+      "from": {
+        "name": "广东省佛山市三水区广东炬申仓储有限公司（南拓港仓）",
+        "province": "广东省",
+        "city": "佛山市",
+        "district": "三水区",
+        "adcode": "440607",
+        "coords": null
+      },
+      "to": {
+        "name": "广东省佛山市南海区佛山市鸿顺锋再生资源有限公司（大沥）",
+        "province": "广东省",
+        "city": "佛山市",
+        "district": "南海区",
+        "adcode": "440605",
+        "coords": null
+      },
+      "vehicle": {
+        "plate": null,
+        "carId": "粤E55170",
+        "cargo": "工业硅",
+        "cargoWeight": 33.0,
+        "cargoUnit": "吨",
+        "currentCoords": null,
+        "speedKmh": null
+      },
+      "status": "运输中",
+      "updatedAt": "2026-07-27 11:53:37",
+      "deleted": false,
+      "upToDate": false
+    }
+  },
+  "capturedOutcome": {
+    "decision": "EN_ROUTE_TO_DELIVERY",
+    "reason": "onboard-orders-with-confirmed-delivery-ahead",
+    "groupEligible": true,
+    "tripId": "trip-粤E55170-1785118467259",
+    "runtimeLineId": "trip::trip-粤E55170-1785118467259",
+    "tripPhase": "LINEHAUL",
+    "planVersion": 2,
+    "orderInstanceIds": ["CY0220260727012|CY0220260727012-1|粤E55170"],
+    "onboardOrderIds": ["CY0220260727012|CY0220260727012-1|粤E55170"],
+    "pendingPickupOrderIds": [],
+    "pendingDeliveryOrderIds": ["CY0220260727012|CY0220260727012-1|粤E55170"],
+    "completedOrderIds": [],
+    "targetAction": "DELIVERY",
+    "targetDestination": "广东省佛山市南海区佛山市鸿顺锋再生资源有限公司（大沥）"
+  }
+}
