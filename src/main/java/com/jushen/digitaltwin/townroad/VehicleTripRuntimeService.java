@@ -158,6 +158,168 @@ public class VehicleTripRuntimeService {
         return List.copyOf(currentByVehicle.values());
     }
 
+    /**
+     * 用完整位置轨迹重建复合订单进度。这里故意不采用上游订单状态：轨迹已经证明
+     * 车辆依次完成了哪些 Stop 时，位置事实优先，避免错误的“待装载/运输中/已完成”回滚行程。
+     */
+    public synchronized CompositeTripSnapshot resolveCompositeTrip(
+            List<VehicleOrderChainStore.StoredOrder> orders,
+            List<TripPosition> positions
+    ) {
+        return resolveCompositeTrip(orders, positions, null);
+    }
+
+    public synchronized CompositeTripSnapshot resolveCompositeTrip(
+            VehicleTripRuntime existingTrip,
+            List<TripPosition> positions
+    ) {
+        if (existingTrip == null) throw new IllegalArgumentException("existing composite trip is required");
+        List<VehicleOrderChainStore.StoredOrder> members = existingTrip.ordersByInstanceId().values().stream()
+                .filter(order -> {
+                    TripMemberState state = existingTrip.orderMembers().get(order.key());
+                    return state != TripMemberState.QUEUED && state != TripMemberState.REJECTED;
+                })
+                .toList();
+        return resolveCompositeTrip(members, positions, existingTrip);
+    }
+
+    private CompositeTripSnapshot resolveCompositeTrip(
+            List<VehicleOrderChainStore.StoredOrder> orders,
+            List<TripPosition> positions,
+            VehicleTripRuntime identity
+    ) {
+        List<VehicleOrderChainStore.StoredOrder> members = orders == null ? List.of() : orders.stream()
+                .filter(order -> order != null && order.record() != null)
+                .sorted(Comparator.comparingLong(VehicleOrderChainStore.StoredOrder::firstObservedAtMs)
+                        .thenComparing(VehicleOrderChainStore.StoredOrder::key))
+                .toList();
+        if (members.isEmpty()) throw new IllegalArgumentException("composite trip requires at least one order");
+        String vehicleKey = members.get(0).vehicleKey();
+        members = members.stream().filter(order -> vehicleKey.equals(order.vehicleKey())).toList();
+        List<TripPosition> trajectory = positions == null ? List.of() : positions.stream()
+                .filter(point -> point != null && hasCoordinates(point.position()))
+                .sorted(Comparator.comparing(TripPosition::observedAt))
+                .toList();
+
+        Map<String, VehicleOrderChainStore.StoredOrder> byInstanceId = new LinkedHashMap<>();
+        Map<String, TripMemberState> memberStates = new LinkedHashMap<>();
+        Set<String> pendingPickup = new LinkedHashSet<>();
+        for (VehicleOrderChainStore.StoredOrder member : members) {
+            byInstanceId.put(member.key(), member);
+            memberStates.put(member.key(), TripMemberState.CONFIRMED);
+            pendingPickup.add(member.key());
+        }
+        double[] initialPosition = trajectory.isEmpty() ? null : trajectory.get(0).position();
+        VehicleTripTopologyService.TripTopology topology = topologyService.build(
+                Map.copyOf(byInstanceId), Map.copyOf(memberStates), Set.of(), Set.of(), null,
+                initialPosition, null);
+        long openedAt = trajectory.isEmpty()
+                ? members.stream().mapToLong(VehicleOrderChainStore.StoredOrder::firstObservedAtMs).min().orElse(0L)
+                : trajectory.get(0).observedAt().toEpochMilli();
+        String tripId = identity == null ? "trip-" + vehicleKey + '-' + openedAt : identity.tripId();
+        String runtimeLineId = identity == null ? "trip::" + tripId : identity.runtimeLineId();
+        String firstLegId = topology.legs().isEmpty() ? null : topology.legs().get(0).legId();
+        VehicleTripRuntime trip = new VehicleTripRuntime(
+                tripId, vehicleKey, List.copyOf(byInstanceId.keySet()), Map.copyOf(byInstanceId),
+                Map.copyOf(memberStates), Set.of(), Set.of(), Set.of(), Set.of(),
+                Set.copyOf(pendingPickup), Set.of(), Set.of(), List.copyOf(pendingPickup),
+                pendingPickup.iterator().next(), TripPhase.TO_FIRST_PICKUP, openedAt, null,
+                runtimeLineId, null, firstLegId, topology.planVersion(),
+                trajectory.isEmpty() ? PositionQuality.UNKNOWN : PositionQuality.FRESH, topology);
+
+        TargetPresenceState finalPresence = TargetPresenceState.EN_ROUTE;
+        for (TripPosition point : trajectory) {
+            TargetPresenceObservation observation = observeCurrentTarget(trip, point.position(), point.observedAt());
+            finalPresence = observation.state();
+            VehicleTripTopologyService.TripStop target = observation.target();
+            if (target == null) continue;
+            if (observation.state() == TargetPresenceState.ARRIVED) {
+                trip = applyEligibilityEvidence(
+                        trip, target.stopId(), target.orderInstanceId(), "ARRIVED", point.position());
+            } else if (observation.state() == TargetPresenceState.DWELLING) {
+                String decision = target.action() == VehicleTripTopologyService.StopAction.PICKUP
+                        ? "LOADING" : "UNLOADING";
+                trip = applyEligibilityEvidence(
+                        trip, target.stopId(), target.orderInstanceId(), decision, point.position());
+            } else if (observation.state() == TargetPresenceState.DEPARTED) {
+                trip = applyEligibilityEvidence(
+                        trip, target.stopId(), target.orderInstanceId(), "DEPARTED", point.position());
+                finalPresence = TargetPresenceState.EN_ROUTE;
+            }
+        }
+        VehicleTripTopologyService.TripStop target = currentTargetStop(trip);
+        return describeCompositeTrip(trip, finalPresence);
+    }
+
+    public CompositeTripSnapshot describeCompositeTrip(
+            VehicleTripRuntime trip,
+            TargetPresenceState presence
+    ) {
+        if (trip == null) return null;
+        TargetPresenceState effectivePresence = presence == null ? TargetPresenceState.EN_ROUTE : presence;
+        VehicleTripTopologyService.TripStop target = currentTargetStop(trip);
+        return new CompositeTripSnapshot(
+                trip, compositeStatusText(trip, target, effectivePresence), effectivePresence,
+                target == null ? null : target.stopId(), compositeStopViews(trip, target));
+    }
+
+    private String compositeStatusText(
+            VehicleTripRuntime trip,
+            VehicleTripTopologyService.TripStop target,
+            TargetPresenceState presence
+    ) {
+        if (target == null) return "复合订单已完成";
+        boolean pickup = target.action() == VehicleTripTopologyService.StopAction.PICKUP;
+        long visitedBefore = trip.topology().stops().stream()
+                .filter(stop -> stop.action() == target.action())
+                .filter(stop -> stop.visitState() == VehicleTripTopologyService.VisitState.VISITED)
+                .count();
+        String ordinal = chineseOrdinal((int) visitedBefore + 1);
+        String kind = pickup ? "装载点" : "目的地";
+        String location = target.locationName() == null ? "未知地点" : target.locationName();
+        if (presence == TargetPresenceState.DWELLING) {
+            return "正在第" + ordinal + kind + (pickup ? "装载" : "卸载") + " · " + location;
+        }
+        if (presence == TargetPresenceState.ARRIVED) {
+            return "已到达第" + ordinal + kind + " · " + location;
+        }
+        return "正在前往第" + ordinal + kind + " · " + location;
+    }
+
+    private List<CompositeStopView> compositeStopViews(
+            VehicleTripRuntime trip,
+            VehicleTripTopologyService.TripStop target
+    ) {
+        Map<VehicleTripTopologyService.StopAction, Integer> indexes = new LinkedHashMap<>();
+        List<CompositeStopView> result = new ArrayList<>();
+        List<VehicleTripTopologyService.TripStop> orderedStops = trip.topology().stops().stream()
+                .sorted(Comparator
+                        .comparingInt((VehicleTripTopologyService.TripStop stop) ->
+                                stop.action() == VehicleTripTopologyService.StopAction.PICKUP ? 0 : 1)
+                        .thenComparing(VehicleTripTopologyService.TripStop::orderInstanceId))
+                .toList();
+        for (VehicleTripTopologyService.TripStop stop : orderedStops) {
+            int sequence = indexes.merge(stop.action(), 1, Integer::sum);
+            result.add(new CompositeStopView(
+                    stop.stopId(), stop.orderInstanceId(), stop.action(), sequence,
+                    stop.locationName(), stop.coordinates(), stop.visitState(),
+                    target != null && target.stopId().equals(stop.stopId()),
+                    stop.action() == VehicleTripTopologyService.StopAction.PICKUP ? "#38bdf8" : "#ef4444"));
+        }
+        return List.copyOf(result);
+    }
+
+    private String chineseOrdinal(int value) {
+        return switch (value) {
+            case 1 -> "一";
+            case 2 -> "二";
+            case 3 -> "三";
+            case 4 -> "四";
+            case 5 -> "五";
+            default -> String.valueOf(value);
+        };
+    }
+
     public VehicleTripTopologyService.TripStop currentTargetStop(VehicleTripRuntime trip) {
         if (trip == null || trip.topology() == null) return null;
         VehicleTripTopologyService.TripLeg leg = trip.topology().legs().stream()
@@ -752,6 +914,33 @@ public class VehicleTripRuntimeService {
             double distanceKm,
             int sampleCount,
             long dwellMs
+    ) {}
+
+    public record TripPosition(Instant observedAt, double[] position) {
+        public TripPosition {
+            observedAt = observedAt == null ? Instant.EPOCH : observedAt;
+            position = position == null ? null : position.clone();
+        }
+    }
+
+    public record CompositeStopView(
+            String stopId,
+            String orderInstanceId,
+            VehicleTripTopologyService.StopAction action,
+            int sequence,
+            String locationName,
+            double[] coordinates,
+            VehicleTripTopologyService.VisitState visitState,
+            boolean currentTarget,
+            String markerColor
+    ) {}
+
+    public record CompositeTripSnapshot(
+            VehicleTripRuntime trip,
+            String statusText,
+            TargetPresenceState presence,
+            String targetStopId,
+            List<CompositeStopView> stops
     ) {}
 
     public record VehicleTripRuntime(

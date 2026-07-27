@@ -818,6 +818,8 @@ public class TownRoadRenderService {
         putIfNotNull(meta, "targetStopId", decision.targetStopId());
         putIfNotNull(meta, "targetOrderInstanceId", decision.targetOrderInstanceId());
         putIfNotNull(meta, "targetAction", decision.targetAction());
+        putIfNotNull(meta, "tripStatusText", decision.tripStatusText());
+        meta.put("tripStops", decision.tripStops() == null ? List.of() : decision.tripStops());
         meta.put("pendingOrderCount", decision.pendingPickupOrderIds().size());
         meta.put("onboardOrderCount", decision.onboardOrderIds().size());
         meta.put("completedOrderCount", decision.completedOrderIds().size());

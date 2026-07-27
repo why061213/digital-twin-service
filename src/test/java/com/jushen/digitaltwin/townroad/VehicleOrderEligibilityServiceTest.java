@@ -149,6 +149,11 @@ class VehicleOrderEligibilityServiceTest {
                 .isEqualTo(VehicleTripRuntimeService.TripMemberState.CONFIRMED);
         assertThat(decision.targetOrderInstanceId()).isEqualTo(waiting.key());
         assertThat(decision.currentLegOriginPosition()).containsExactly(113.2, 23.0);
+        assertThat(decision.tripStatusText()).contains("装载点");
+        assertThat(decision.tripStops()).hasSize(4);
+        assertThat(decision.tripStops())
+                .filteredOn(stop -> stop.action() == VehicleTripTopologyService.StopAction.DELIVERY)
+                .allMatch(stop -> "#ef4444".equals(stop.markerColor()));
         assertThat(decision.groupEligible()).isTrue();
     }
 

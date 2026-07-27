@@ -209,9 +209,12 @@ public class VehicleTripTopologyService {
         List<String> plan = new ArrayList<>();
         double[] cursor = hasCoordinates(currentPosition) ? currentPosition : null;
         while (!remaining.isEmpty()) {
+            boolean pickupsRemain = remaining.values().stream()
+                    .anyMatch(stop -> stop.action() == StopAction.PICKUP);
             List<TripStop> legal = remaining.values().stream()
-                    .filter(stop -> stop.action() == StopAction.PICKUP
-                            || pickedOrders.contains(stop.orderInstanceId()))
+                    .filter(stop -> pickupsRemain
+                            ? stop.action() == StopAction.PICKUP
+                            : pickedOrders.contains(stop.orderInstanceId()))
                     .toList();
             if (legal.isEmpty()) break;
             final double[] current = cursor;
@@ -244,9 +247,12 @@ public class VehicleTripTopologyService {
             best.stopIds = List.copyOf(path);
             return;
         }
+        boolean pickupsRemain = remaining.values().stream()
+                .anyMatch(stop -> stop.action() == StopAction.PICKUP);
         List<TripStop> legal = remaining.values().stream()
-                .filter(stop -> stop.action() == StopAction.PICKUP
-                        || pickedOrders.contains(stop.orderInstanceId()))
+                .filter(stop -> pickupsRemain
+                        ? stop.action() == StopAction.PICKUP
+                        : pickedOrders.contains(stop.orderInstanceId()))
                 .filter(stop -> path.isEmpty() && forcedFirstStopId != null
                         ? forcedFirstStopId.equals(stop.stopId()) : true)
                 .filter(stop -> hasCoordinates(stop.coordinates()))

@@ -113,6 +113,7 @@ public class VehicleOrderEligibilityService {
                     "NO_REAL_POSITION", "vehicle-directory-or-fresh-position-missing", position, null, null);
         }
 
+        trip = resolveCompositeTripFromTrajectory(trip, providerVehicleId, position, now);
         trip = tripRuntimeService.evaluateDynamicInsertions(trip, position.position());
         VehicleTripTopologyService.TripStop target = tripRuntimeService.currentTargetStop(trip);
         if (target != null) {
@@ -233,6 +234,36 @@ public class VehicleOrderEligibilityService {
                 classification.state().name(), classification.reason(), position, previous, classification);
     }
 
+    private VehicleTripRuntimeService.VehicleTripRuntime resolveCompositeTripFromTrajectory(
+            VehicleTripRuntimeService.VehicleTripRuntime trip,
+            String providerVehicleId,
+            PositionSnapshot currentPosition,
+            Instant now
+    ) {
+        long activeMembers = trip.orderMembers().values().stream()
+                .filter(state -> state != VehicleTripRuntimeService.TripMemberState.QUEUED
+                        && state != VehicleTripRuntimeService.TripMemberState.REJECTED)
+                .count();
+        if (activeMembers < 2 || providerVehicleId == null || providerVehicleId.isBlank()) return trip;
+        Instant earliest = now.minus(Duration.ofHours(48));
+        Instant openedAt = trip.openedAt() > 0 ? Instant.ofEpochMilli(trip.openedAt()) : earliest;
+        Instant start = openedAt.isBefore(earliest) ? earliest : openedAt;
+        ProviderTrajectoryClient.TrajectoryResult trajectory = trajectoryClient.fetch(providerVehicleId, start, now);
+        if (trajectory == null || !trajectory.success() || trajectory.points() == null) return trip;
+        List<VehicleTripRuntimeService.TripPosition> positions = new ArrayList<>();
+        trajectory.points().forEach(point -> positions.add(new VehicleTripRuntimeService.TripPosition(
+                point.time(), new double[]{point.lng(), point.lat()})));
+        Instant observedAt = currentPosition.providerTime() == null ? now : currentPosition.providerTime();
+        positions.add(new VehicleTripRuntimeService.TripPosition(observedAt, currentPosition.position()));
+        try {
+            VehicleTripRuntimeService.CompositeTripSnapshot resolved =
+                    tripRuntimeService.resolveCompositeTrip(trip, positions);
+            return resolved == null ? trip : resolved.trip();
+        } catch (IllegalArgumentException ignored) {
+            return trip;
+        }
+    }
+
     private VehicleDecision decision(
             VehicleTripRuntimeService.VehicleTripRuntime trip,
             VehicleOrderChainStore.StoredOrder current,
@@ -272,6 +303,13 @@ public class VehicleOrderEligibilityService {
         double[] legOrigin = currentLeg != null && !currentLeg.coordinates().isEmpty()
                 ? currentLeg.coordinates().get(0) : position == null ? null : position.position();
         double[] legDestination = effectiveTarget == null ? null : effectiveTarget.coordinates();
+        VehicleTripRuntimeService.TargetPresenceState presence = switch (effectiveDecision) {
+            case "ARRIVED" -> VehicleTripRuntimeService.TargetPresenceState.ARRIVED;
+            case "LOADING", "UNLOADING" -> VehicleTripRuntimeService.TargetPresenceState.DWELLING;
+            default -> VehicleTripRuntimeService.TargetPresenceState.EN_ROUTE;
+        };
+        VehicleTripRuntimeService.CompositeTripSnapshot composite =
+                tripRuntimeService.describeCompositeTrip(effectiveTrip, presence);
         return new VehicleDecision(
                 current.vehicleKey(), record.orderId(), instanceId, record.status(), record.updatedAt(),
                 providerVehicleId, effectiveEligible, effectiveDecision, effectiveReason,
@@ -292,7 +330,9 @@ public class VehicleOrderEligibilityService {
                 effectiveTarget == null ? null : effectiveTarget.orderInstanceId(),
                 effectiveTarget == null ? null : effectiveTarget.action().name(),
                 legOrigin, legDestination,
-                effectiveTarget == null ? null : effectiveTarget.locationName());
+                effectiveTarget == null ? null : effectiveTarget.locationName(),
+                composite == null ? null : composite.statusText(),
+                composite == null ? List.of() : composite.stops());
     }
 
     private VehicleOrderChainStore.StoredOrder previousCompletedOrder(
@@ -413,8 +453,39 @@ public class VehicleOrderEligibilityService {
             String targetAction,
             double[] currentLegOriginPosition,
             double[] currentLegDestinationPosition,
-            String currentLegDestination
+            String currentLegDestination,
+            String tripStatusText,
+            List<VehicleTripRuntimeService.CompositeStopView> tripStops
     ) {
+        public VehicleDecision(
+                String vehicleKey, String orderId, String lineId, String orderStatus,
+                String orderUpdatedAt, String providerVehicleId, boolean groupEligible,
+                String decision, String reason, double[] currentPosition,
+                String previousOrderId, String previousDestination, double[] previousDestinationPosition,
+                String loadingOrigin, double[] loadingOriginPosition,
+                WaitingOrderTrajectoryClassifier.Classification waitingAnalysis,
+                String tripId, VehicleTripRuntimeService.TripPhase tripPhase,
+                VehicleTripRuntimeService.PositionQuality positionQuality,
+                List<String> tripOrderInstanceIds, Set<String> pendingPickupOrderIds,
+                Set<String> onboardOrderIds, Set<String> completedOrderIds,
+                List<String> nextCandidates,
+                Map<String, VehicleTripRuntimeService.TripMemberState> tripOrderMembers,
+                Set<String> queuedOrderIds, String runtimeLineId, String currentLegId,
+                long planVersion, String targetStopId, String targetOrderInstanceId,
+                String targetAction, double[] currentLegOriginPosition,
+                double[] currentLegDestinationPosition, String currentLegDestination
+        ) {
+            this(vehicleKey, orderId, lineId, orderStatus, orderUpdatedAt, providerVehicleId,
+                    groupEligible, decision, reason, currentPosition, previousOrderId,
+                    previousDestination, previousDestinationPosition, loadingOrigin,
+                    loadingOriginPosition, waitingAnalysis, tripId, tripPhase, positionQuality,
+                    tripOrderInstanceIds, pendingPickupOrderIds, onboardOrderIds,
+                    completedOrderIds, nextCandidates, tripOrderMembers, queuedOrderIds,
+                    runtimeLineId, currentLegId, planVersion, targetStopId, targetOrderInstanceId,
+                    targetAction, currentLegOriginPosition, currentLegDestinationPosition,
+                    currentLegDestination, null, List.of());
+        }
+
         public VehicleDecision(
                 String vehicleKey, String orderId, String lineId, String orderStatus,
                 String orderUpdatedAt, String providerVehicleId, boolean groupEligible,
@@ -436,7 +507,7 @@ public class VehicleOrderEligibilityService {
                     VehicleTripRuntimeService.PositionQuality.UNKNOWN,
                     tripOrderInstanceIds, pendingPickupOrderIds, onboardOrderIds,
                     completedOrderIds, nextCandidates, tripOrderMembers, queuedOrderIds,
-                    null, null, 0L, null, null, null, null, null, null);
+                    null, null, 0L, null, null, null, null, null, null, null, List.of());
         }
     }
 }

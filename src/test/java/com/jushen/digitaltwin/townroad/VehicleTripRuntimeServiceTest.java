@@ -21,6 +21,50 @@ class VehicleTripRuntimeServiceTest {
     Path temporaryDirectory;
 
     @Test
+    void resolvesCompositeTripFromTrajectoryEvenWhenOrderStatusesAreWrong() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        ExternalOrderRecord first = compositeRecord(
+                "order-a1-b1", "line-a1-b1", "已完成", "A1", 113.10, "B1", 113.30);
+        ExternalOrderRecord second = compositeRecord(
+                "order-a2-b2", "line-a2-b2", "运输中", "A2", 113.20, "B2", 113.40);
+        List<VehicleOrderChainStore.StoredOrder> route = List.of(stored(first, 10), stored(second, 20));
+        Instant start = Instant.parse("2026-07-27T00:00:00Z");
+
+        VehicleTripRuntimeService.CompositeTripSnapshot beforeA1 = resolveComposite(
+                store, route, points(start, 113.00));
+        assertThat(beforeA1.statusText()).isEqualTo("正在前往第一装载点 · A1");
+        assertThat(beforeA1.stops()).extracting(VehicleTripRuntimeService.CompositeStopView::locationName)
+                .containsExactly("A1", "A2", "B1", "B2");
+        assertThat(beforeA1.stops()).filteredOn(stop ->
+                        stop.action() == VehicleTripTopologyService.StopAction.DELIVERY)
+                .allMatch(stop -> "#ef4444".equals(stop.markerColor()));
+
+        List<VehicleTripRuntimeService.TripPosition> throughA1 = points(start,
+                113.00, 113.10, 113.10, 113.15);
+        VehicleTripRuntimeService.CompositeTripSnapshot toA2 = resolveComposite(store, route, throughA1);
+        assertThat(toA2.statusText()).isEqualTo("正在前往第二装载点 · A2");
+        assertThat(toA2.trip().onboardOrderIds()).containsExactly(key(first));
+
+        List<VehicleTripRuntimeService.TripPosition> throughA2 = append(throughA1, start, 4,
+                113.20, 113.20, 113.25);
+        VehicleTripRuntimeService.CompositeTripSnapshot toB1 = resolveComposite(store, route, throughA2);
+        assertThat(toB1.statusText()).isEqualTo("正在前往第一目的地 · B1");
+        assertThat(toB1.trip().onboardOrderIds()).containsExactlyInAnyOrder(key(first), key(second));
+
+        List<VehicleTripRuntimeService.TripPosition> throughB1 = append(throughA2, start, 7,
+                113.30, 113.30, 113.35);
+        VehicleTripRuntimeService.CompositeTripSnapshot toB2 = resolveComposite(store, route, throughB1);
+        assertThat(toB2.statusText()).isEqualTo("正在前往第二目的地 · B2");
+        assertThat(toB2.trip().completedOrderIds()).containsExactly(key(first));
+
+        List<VehicleTripRuntimeService.TripPosition> completed = append(throughB1, start, 10,
+                113.40, 113.40, 113.46);
+        VehicleTripRuntimeService.CompositeTripSnapshot done = resolveComposite(store, route, completed);
+        assertThat(done.statusText()).isEqualTo("复合订单已完成");
+        assertThat(done.trip().completedOrderIds()).containsExactlyInAnyOrder(key(first), key(second));
+    }
+
+    @Test
     void keepsAllCurrentOrdersButSelectsOneStableTransportingAnchor() {
         VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
         ExternalOrderRecord waiting = record("order-waiting", "line-waiting", "待装载");
@@ -332,6 +376,58 @@ class VehicleTripRuntimeServiceTest {
                         fromCoords),
                 new ExternalOrderRecord.Location("卸货点", "广东省", "肇庆市", "四会市", "441284",
                         toCoords),
+                new ExternalOrderRecord.Vehicle("粤A10001", "vehicle-1", "货物", 10d, "吨", null, null),
+                status, Instant.now().toString(), false, true);
+    }
+
+    private VehicleTripRuntimeService.CompositeTripSnapshot resolveComposite(
+            VehicleOrderChainStore store,
+            List<VehicleOrderChainStore.StoredOrder> route,
+            List<VehicleTripRuntimeService.TripPosition> positions
+    ) {
+        return new VehicleTripRuntimeService(store).resolveCompositeTrip(route, positions);
+    }
+
+    private List<VehicleTripRuntimeService.TripPosition> points(Instant start, double... longitudes) {
+        List<VehicleTripRuntimeService.TripPosition> result = new java.util.ArrayList<>();
+        for (int index = 0; index < longitudes.length; index++) {
+            long seconds = index == 0 ? 0 : index * 70L;
+            result.add(new VehicleTripRuntimeService.TripPosition(
+                    start.plusSeconds(seconds), new double[]{longitudes[index], 23.0}));
+        }
+        return List.copyOf(result);
+    }
+
+    private List<VehicleTripRuntimeService.TripPosition> append(
+            List<VehicleTripRuntimeService.TripPosition> prefix,
+            Instant start,
+            int startIndex,
+            double... longitudes
+    ) {
+        List<VehicleTripRuntimeService.TripPosition> result = new java.util.ArrayList<>(prefix);
+        for (int index = 0; index < longitudes.length; index++) {
+            result.add(new VehicleTripRuntimeService.TripPosition(
+                    start.plusSeconds((startIndex + index) * 70L),
+                    new double[]{longitudes[index], 23.0}));
+        }
+        return List.copyOf(result);
+    }
+
+    private ExternalOrderRecord compositeRecord(
+            String orderId,
+            String lineId,
+            String status,
+            String pickupName,
+            double pickupLng,
+            String deliveryName,
+            double deliveryLng
+    ) {
+        return new ExternalOrderRecord(
+                orderId, lineId,
+                new ExternalOrderRecord.Location(pickupName, "广东省", "佛山市", "南海区", "440605",
+                        new double[]{pickupLng, 23.0}),
+                new ExternalOrderRecord.Location(deliveryName, "广东省", "佛山市", "南海区", "440605",
+                        new double[]{deliveryLng, 23.0}),
                 new ExternalOrderRecord.Vehicle("粤A10001", "vehicle-1", "货物", 10d, "吨", null, null),
                 status, Instant.now().toString(), false, true);
     }
