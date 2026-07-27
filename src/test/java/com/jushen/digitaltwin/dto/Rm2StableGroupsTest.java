@@ -297,6 +297,61 @@ class Rm2StableGroupsTest {
     }
 
     @Test
+    void nearbyOriginsAndDestinationsAreSpreadAcrossPages() {
+        List<NormalizedTownRoadOrder> orders = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            orders.add(makeOrder(
+                    "near-" + i, "a-near-" + i, "运输中", "440000", "360000",
+                    coords(113.000 + i * 0.005, 23.000 + i * 0.005,
+                            114.000 + i * 0.005, 24.000 + i * 0.005),
+                    50, 60, "2026-07-14", "粤N" + i, 10));
+        }
+        for (int i = 0; i < 3; i++) {
+            orders.add(makeOrder(
+                    "far-" + i, "z-far-" + i, "运输中", "440000", "360000",
+                    coords(110.0 + i, 20.0 + i, 118.0 + i, 28.0 + i),
+                    80, 60, "2026-07-14", "粤F" + i, 10));
+        }
+
+        List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(
+                RouteDtoConverter.shortHaulOrdersToRoutes(orders), 2);
+
+        assertEquals(3, groups.size());
+        assertTrue(groups.stream().allMatch(group -> group.count() == 2));
+        for (Rm2RouteGroupDTO group : groups) {
+            long nearbyCount = group.orderLineIds().stream()
+                    .filter(lineId -> lineId.startsWith("a-near-"))
+                    .count();
+            assertEquals(1, nearbyCount,
+                    "三个相近 OD 订单应分别进入三个分页组: " + group.orderLineIds());
+        }
+    }
+
+    @Test
+    void nearbyOrdersTakePriorityWhenLastPageHasOnlyOneSlot() {
+        List<NormalizedTownRoadOrder> orders = List.of(
+                makeOrder("far-0", "a-far-0", "运输中", "440000", "360000",
+                        coords(100, 10, 105, 15), 50, 60, "2026-07-14", "粤F0", 10),
+                makeOrder("far-1", "a-far-1", "运输中", "440000", "360000",
+                        coords(120, 35, 125, 40), 50, 60, "2026-07-14", "粤F1", 10),
+                makeOrder("near-0", "z-near-0", "运输中", "440000", "360000",
+                        coords(113.000, 23.000, 114.000, 24.000),
+                        50, 60, "2026-07-14", "粤N0", 10),
+                makeOrder("near-1", "z-near-1", "运输中", "440000", "360000",
+                        coords(113.005, 23.005, 114.005, 24.005),
+                        50, 60, "2026-07-14", "粤N1", 10));
+
+        List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(
+                RouteDtoConverter.shortHaulOrdersToRoutes(orders), 3);
+
+        assertEquals(List.of(3, 1), groups.stream().map(Rm2RouteGroupDTO::count).toList());
+        assertTrue(groups.stream().allMatch(group -> group.orderLineIds().stream()
+                        .filter(lineId -> lineId.startsWith("z-near-"))
+                        .count() == 1),
+                "容量只有 1 的尾组也应优先用于打散相近 OD 订单");
+    }
+
+    @Test
     void playbackStructureBuildsThreeIndependentRings() {
         List<NormalizedTownRoadOrder> orders = List.of(
                 makeOrder("a-1", "a-1", "运输中", "440000", "360000",
