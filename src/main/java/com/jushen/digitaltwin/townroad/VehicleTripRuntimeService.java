@@ -35,6 +35,7 @@ public class VehicleTripRuntimeService {
     private static final double MAX_INSERTION_DETOUR_KM = 30d;
     private static final double MAX_INSERTION_DETOUR_RATIO = 0.20d;
     private static final double DIRECTION_TOLERANCE_KM = 10d;
+    private static final long MIN_VALID_DWELL_MS = 60_000L;
     private final VehicleOrderChainStore orderStore;
     private final VehicleTripTopologyService topologyService;
     private final RoutePlanningService routePlanningService;
@@ -42,6 +43,7 @@ public class VehicleTripRuntimeService {
     private final Path tripsRoot;
     private final Set<String> restoreAttempted = new LinkedHashSet<>();
     private final Map<String, VehicleTripRuntime> currentByVehicle = new LinkedHashMap<>();
+    private final Map<String, StopPresenceEvidence> stopPresenceByTripStop = new LinkedHashMap<>();
 
     @Autowired
     public VehicleTripRuntimeService(
@@ -70,6 +72,18 @@ public class VehicleTripRuntimeService {
         this.topologyService = new VehicleTripTopologyService();
         this.objectMapper = null;
         this.routePlanningService = null;
+        this.tripsRoot = null;
+    }
+
+    VehicleTripRuntimeService(
+            VehicleOrderChainStore orderStore,
+            VehicleTripTopologyService topologyService,
+            RoutePlanningService routePlanningService
+    ) {
+        this.orderStore = orderStore;
+        this.topologyService = topologyService;
+        this.routePlanningService = routePlanningService;
+        this.objectMapper = null;
         this.tripsRoot = null;
     }
 
@@ -131,34 +145,81 @@ public class VehicleTripRuntimeService {
         return topologyService.stopById(trip.topology(), stopId);
     }
 
+    public synchronized TargetPresenceObservation observeCurrentTarget(
+            VehicleTripRuntime trip,
+            double[] position,
+            Instant observedAt
+    ) {
+        VehicleTripTopologyService.TripStop target = currentTargetStop(trip);
+        if (target == null || !hasCoordinates(position) || !hasCoordinates(target.coordinates())) {
+            return new TargetPresenceObservation(TargetPresenceState.EN_ROUTE, target, 0d, 0, 0L);
+        }
+        double distanceKm = VehicleTripTopologyService.haversineKm(position, target.coordinates());
+        String key = trip.tripId() + "|" + target.stopId();
+        long at = (observedAt == null ? Instant.now() : observedAt).toEpochMilli();
+        StopPresenceEvidence previous = stopPresenceByTripStop.get(key);
+        if (distanceKm <= VehicleTripTopologyService.DEFAULT_NODE_MERGE_RADIUS_KM) {
+            StopPresenceEvidence evidence = previous == null
+                    ? new StopPresenceEvidence(at, at, 1, false)
+                    : new StopPresenceEvidence(previous.enteredAtMs(), at, previous.sampleCount() + 1,
+                    previous.dwellConfirmed()
+                            || (previous.sampleCount() + 1 >= 2 && at - previous.enteredAtMs() >= MIN_VALID_DWELL_MS));
+            stopPresenceByTripStop.put(key, evidence);
+            TargetPresenceState state = evidence.dwellConfirmed()
+                    ? TargetPresenceState.DWELLING : TargetPresenceState.ARRIVED;
+            return new TargetPresenceObservation(
+                    state, target, distanceKm, evidence.sampleCount(), at - evidence.enteredAtMs());
+        }
+        stopPresenceByTripStop.remove(key);
+        if (previous != null && previous.dwellConfirmed()) {
+            return new TargetPresenceObservation(TargetPresenceState.DEPARTED, target, distanceKm,
+                    previous.sampleCount(), previous.lastObservedAtMs() - previous.enteredAtMs());
+        }
+        return new TargetPresenceObservation(
+                previous == null ? TargetPresenceState.EN_ROUTE : TargetPresenceState.PASSING_BY,
+                target, distanceKm, previous == null ? 0 : previous.sampleCount(),
+                previous == null ? 0L : previous.lastObservedAtMs() - previous.enteredAtMs());
+    }
+
     /** 用当前位置评估候选/排队订单是否适合插入当前剩余路线；只重排尚未执行的后缀。 */
     public synchronized VehicleTripRuntime evaluateDynamicInsertions(
             VehicleTripRuntime trip,
             double[] currentPosition
     ) {
         if (trip == null || currentPosition == null || currentPosition.length < 2) return trip;
-        VehicleTripTopologyService.TripStop currentTarget = currentTargetStop(trip);
-        if (currentTarget == null || currentTarget.coordinates() == null) return trip;
-        double baselineKm = VehicleTripTopologyService.haversineKm(currentPosition, currentTarget.coordinates());
+        VehicleTripTopologyService.TripTopology baselineTopology = topologyService.build(
+                trip.ordersByInstanceId(), trip.orderMembers(), trip.onboardOrderIds(),
+                trip.completedOrderIds(), trip.topology(), currentPosition, null);
+        double baselineKm = topologyDistanceKm(baselineTopology);
+        if (!Double.isFinite(baselineKm)) return trip;
         String selectedOrderId = null;
         double selectedExtraKm = Double.MAX_VALUE;
+        VehicleTripTopologyService.TripTopology selectedTopology = null;
         for (Map.Entry<String, TripMemberState> entry : trip.orderMembers().entrySet()) {
             if (entry.getValue() != TripMemberState.CANDIDATE && entry.getValue() != TripMemberState.QUEUED) continue;
             VehicleOrderChainStore.StoredOrder candidate = trip.ordersByInstanceId().get(entry.getKey());
             double[] pickup = candidate == null || candidate.record().from() == null
                     ? null : candidate.record().from().coords();
-            if (pickup == null || pickup.length < 2) continue;
-            double toPickup = VehicleTripTopologyService.haversineKm(currentPosition, pickup);
-            double pickupToTarget = VehicleTripTopologyService.haversineKm(pickup, currentTarget.coordinates());
-            double extraKm = toPickup + pickupToTarget - baselineKm;
+            double[] delivery = candidate == null || candidate.record().to() == null
+                    ? null : candidate.record().to().coords();
+            if (!hasCoordinates(pickup) || !hasCoordinates(delivery) || !validCargo(candidate.record())) continue;
+            Map<String, TripMemberState> candidateMembers = new LinkedHashMap<>(trip.orderMembers());
+            candidateMembers.put(entry.getKey(), TripMemberState.CONFIRMED);
+            VehicleTripTopologyService.TripTopology candidateTopology = topologyService.build(
+                    trip.ordersByInstanceId(), Map.copyOf(candidateMembers), trip.onboardOrderIds(),
+                    trip.completedOrderIds(), trip.topology(), currentPosition, null);
+            if (!respectsTimeWindows(candidateTopology)) continue;
+            double extraKm = topologyDistanceKm(candidateTopology) - baselineKm;
             double allowedDetourKm = Math.max(MAX_INSERTION_DETOUR_KM, baselineKm * MAX_INSERTION_DETOUR_RATIO);
-            boolean directionValid = pickupToTarget <= baselineKm + DIRECTION_TOLERANCE_KM;
+            double pickupDistanceKm = VehicleTripTopologyService.haversineKm(currentPosition, pickup);
+            boolean directionValid = pickupDistanceKm <= baselineKm + DIRECTION_TOLERANCE_KM;
             if (directionValid && extraKm <= allowedDetourKm && extraKm < selectedExtraKm) {
                 selectedOrderId = entry.getKey();
                 selectedExtraKm = extraKm;
+                selectedTopology = candidateTopology;
             }
         }
-        if (selectedOrderId == null) return trip;
+        if (selectedOrderId == null || selectedTopology == null) return trip;
 
         Map<String, TripMemberState> members = new LinkedHashMap<>(trip.orderMembers());
         members.put(selectedOrderId, TripMemberState.CONFIRMED);
@@ -168,24 +229,17 @@ public class VehicleTripRuntimeService {
         pendingPickup.add(selectedOrderId);
         List<String> activeOrders = new ArrayList<>(trip.orderInstanceIds());
         if (!activeOrders.contains(selectedOrderId)) activeOrders.add(selectedOrderId);
-        VehicleTripTopologyService.TripTopology topology = topologyService.build(
-                trip.ordersByInstanceId(), Map.copyOf(members), trip.onboardOrderIds(),
-                trip.completedOrderIds(), trip.topology(), currentPosition,
-                selectedOrderId + "::PICKUP");
+        VehicleTripTopologyService.TripTopology topology = selectedTopology;
         if (routePlanningService != null && !topology.legs().isEmpty()) {
-            VehicleOrderChainStore.StoredOrder selected = trip.ordersByInstanceId().get(selectedOrderId);
-            double[] pickup = selected.record().from().coords();
-            RoutePlanningService.PlannedRoute baseline = routePlanningService.plan(
-                    currentPosition, currentTarget.coordinates());
-            RoutePlanningService.PlannedRoute toPickup = routePlanningService.plan(currentPosition, pickup);
-            RoutePlanningService.PlannedRoute pickupToTarget = routePlanningService.plan(
-                    pickup, currentTarget.coordinates());
-            if (baseline.success() && toPickup.success() && pickupToTarget.success()) {
-                double roadExtraKm = toPickup.distanceKm() + pickupToTarget.distanceKm() - baseline.distanceKm();
+            PlannedTopology baselineRoad = planTopology(baselineTopology);
+            PlannedTopology insertedRoad = planTopology(topology);
+            if (baselineRoad.success() && insertedRoad.success()) {
+                double roadExtraKm = insertedRoad.distanceKm() - baselineRoad.distanceKm();
                 double roadAllowedKm = Math.max(MAX_INSERTION_DETOUR_KM,
-                        baseline.distanceKm() * MAX_INSERTION_DETOUR_RATIO);
+                        baselineRoad.distanceKm() * MAX_INSERTION_DETOUR_RATIO);
                 if (roadExtraKm > roadAllowedKm) return trip;
-                topology = withPlannedCurrentLeg(topology, toPickup);
+                topology = insertedRoad.topology();
+                selectedExtraKm = roadExtraKm;
             }
         }
         VehicleTripRuntime updated = new VehicleTripRuntime(
@@ -203,23 +257,57 @@ public class VehicleTripRuntimeService {
         return updated;
     }
 
-    private VehicleTripTopologyService.TripTopology withPlannedCurrentLeg(
-            VehicleTripTopologyService.TripTopology topology,
-            RoutePlanningService.PlannedRoute route
-    ) {
-        VehicleTripTopologyService.TripLeg current = topology.legs().get(0);
-        List<double[]> coordinates = route.matchingCoordinates() == null || route.matchingCoordinates().isEmpty()
-                ? route.coordinates() : route.matchingCoordinates();
-        VehicleTripTopologyService.TripLeg planned = new VehicleTripTopologyService.TripLeg(
-                current.legId(), current.fromStopId(), current.toStopId(), current.purpose(),
-                coordinates, route.distanceKm(), route.durationMs(),
-                VehicleTripTopologyService.LegState.EN_ROUTE, current.segmentKey());
-        List<VehicleTripTopologyService.TripLeg> legs = new ArrayList<>(topology.legs());
-        legs.set(0, planned);
-        return new VehicleTripTopologyService.TripTopology(
-                topology.stops(), topology.nodes(), topology.plannedStopIds(), List.copyOf(legs),
-                topology.planVersion(), topology.planSignature());
+    private double topologyDistanceKm(VehicleTripTopologyService.TripTopology topology) {
+        if (topology == null || topology.legs() == null) return Double.NaN;
+        return topology.legs().stream().mapToDouble(VehicleTripTopologyService.TripLeg::distanceKm).sum();
     }
+
+    private boolean validCargo(ExternalOrderRecord record) {
+        if (record == null || record.vehicle() == null || record.vehicle().cargoWeight() == null) return true;
+        double weight = record.vehicle().cargoWeight();
+        return Double.isFinite(weight) && weight >= 0d;
+    }
+
+    private boolean respectsTimeWindows(VehicleTripTopologyService.TripTopology topology) {
+        // 上游当前没有结构化时间窗字段；一旦 TripStop.timeWindow 有值，未知格式不冒险接单。
+        return topology.stops().stream().allMatch(stop -> stop.timeWindow() == null || stop.timeWindow().isBlank());
+    }
+
+    private PlannedTopology planTopology(VehicleTripTopologyService.TripTopology topology) {
+        Map<String, VehicleTripTopologyService.TripStop> stops = new LinkedHashMap<>();
+        for (VehicleTripTopologyService.TripStop stop : topology.stops()) stops.put(stop.stopId(), stop);
+        List<VehicleTripTopologyService.TripLeg> plannedLegs = new ArrayList<>();
+        double totalKm = 0d;
+        for (VehicleTripTopologyService.TripLeg leg : topology.legs()) {
+            double[] from = "CURRENT_POSITION".equals(leg.fromStopId()) && !leg.coordinates().isEmpty()
+                    ? leg.coordinates().get(0)
+                    : stops.get(leg.fromStopId()) == null ? null : stops.get(leg.fromStopId()).coordinates();
+            double[] to = stops.get(leg.toStopId()) == null ? null : stops.get(leg.toStopId()).coordinates();
+            if (!hasCoordinates(from) || !hasCoordinates(to)) return new PlannedTopology(false, topology, 0d);
+            RoutePlanningService.PlannedRoute route = routePlanningService.plan(from, to);
+            if (!route.success()) return new PlannedTopology(false, topology, 0d);
+            List<double[]> coordinates = route.matchingCoordinates() == null || route.matchingCoordinates().isEmpty()
+                    ? route.coordinates() : route.matchingCoordinates();
+            plannedLegs.add(new VehicleTripTopologyService.TripLeg(
+                    leg.legId(), leg.fromStopId(), leg.toStopId(), leg.purpose(), coordinates,
+                    route.distanceKm(), route.durationMs(), leg.state(), leg.segmentKey()));
+            totalKm += route.distanceKm();
+        }
+        return new PlannedTopology(true, new VehicleTripTopologyService.TripTopology(
+                topology.stops(), topology.nodes(), topology.plannedStopIds(), List.copyOf(plannedLegs),
+                topology.planVersion(), topology.planSignature()), totalKm);
+    }
+
+    private boolean hasCoordinates(double[] coordinates) {
+        return coordinates != null && coordinates.length >= 2
+                && Double.isFinite(coordinates[0]) && Double.isFinite(coordinates[1]);
+    }
+
+    private record PlannedTopology(
+            boolean success,
+            VehicleTripTopologyService.TripTopology topology,
+            double distanceKm
+    ) {}
 
     /** 将实时位置/轨迹证据回写到运行态；不改写上游订单，也不伪造固定节点顺序。 */
     public synchronized VehicleTripRuntime applyEligibilityEvidence(
@@ -248,6 +336,7 @@ public class VehicleTripRuntimeService {
         Set<String> pendingPickup = new LinkedHashSet<>(trip.pendingPickupOrderIds());
         Set<String> pendingDelivery = new LinkedHashSet<>(trip.pendingDeliveryOrderIds());
         PositionQuality positionQuality = trip.positionQuality();
+        String currentNodeId = trip.currentNodeId();
         if ("NO_REAL_POSITION".equals(decision)) {
             positionQuality = positionQuality == PositionQuality.UNKNOWN
                     ? PositionQuality.UNKNOWN : PositionQuality.STALE;
@@ -255,12 +344,19 @@ public class VehicleTripRuntimeService {
             positionQuality = PositionQuality.FRESH;
         }
         VehicleTripTopologyService.TripTopology evidenceTopology = trip.topology();
-        if ("LOADING".equals(decision)) {
+        boolean planChanged = false;
+        if ("ARRIVED".equals(decision)) {
+            currentNodeId = nodeForStop(evidenceTopology, stopId);
+            evidenceTopology = topologyService.withVisitState(
+                    evidenceTopology, stopId, VehicleTripTopologyService.VisitState.ARRIVED);
+        } else if ("LOADING".equals(decision) || "UNLOADING".equals(decision)) {
+            currentNodeId = nodeForStop(evidenceTopology, stopId);
             phase = evidenceStop == null || evidenceStop.action() == VehicleTripTopologyService.StopAction.PICKUP
                     ? TripPhase.AT_PICKUP : TripPhase.DISTRIBUTING;
             evidenceTopology = topologyService.withVisitState(
                     evidenceTopology, stopId, VehicleTripTopologyService.VisitState.DWELLING);
         } else if ("DEPARTED".equals(decision)) {
+            planChanged = true;
             if (evidenceStop == null || evidenceStop.action() == VehicleTripTopologyService.StopAction.PICKUP) {
                 pendingPickup.remove(orderInstanceId);
                 visited.add(orderInstanceId);
@@ -295,12 +391,14 @@ public class VehicleTripRuntimeService {
                 Set.copyOf(visited), Set.copyOf(onboard), Set.copyOf(pendingPickup),
                 Set.copyOf(pendingDelivery), trip.completedOrderIds(), nextCandidates,
                 trip.anchorOrderInstanceId(), phase, trip.openedAt(), trip.closedAt(),
-                trip.runtimeLineId(), trip.currentNodeId(), trip.currentLegId(),
+                trip.runtimeLineId(), currentNodeId, trip.currentLegId(),
                 trip.planVersion(), positionQuality, evidenceTopology);
-        VehicleTripTopologyService.TripTopology topology = topologyService.build(
-                updated.ordersByInstanceId(), updated.orderMembers(), updated.onboardOrderIds(),
-                updated.completedOrderIds(), evidenceTopology, position, null);
-        updated = withTopology(updated, topology);
+        if (planChanged) {
+            VehicleTripTopologyService.TripTopology topology = topologyService.build(
+                    updated.ordersByInstanceId(), updated.orderMembers(), updated.onboardOrderIds(),
+                    updated.completedOrderIds(), evidenceTopology, position, null);
+            updated = withTopology(updated, topology);
+        }
         currentByVehicle.put(trip.vehicleKey(), updated);
         persist(updated);
         return updated;
@@ -609,6 +707,22 @@ public class VehicleTripRuntimeService {
 
     public enum TripMemberState { CANDIDATE, CONFIRMED, QUEUED, REJECTED }
     public enum PositionQuality { FRESH, STALE, UNKNOWN }
+    public enum TargetPresenceState { EN_ROUTE, ARRIVED, DWELLING, PASSING_BY, DEPARTED }
+
+    private record StopPresenceEvidence(
+            long enteredAtMs,
+            long lastObservedAtMs,
+            int sampleCount,
+            boolean dwellConfirmed
+    ) {}
+
+    public record TargetPresenceObservation(
+            TargetPresenceState state,
+            VehicleTripTopologyService.TripStop target,
+            double distanceKm,
+            int sampleCount,
+            long dwellMs
+    ) {}
 
     public record VehicleTripRuntime(
             String tripId,

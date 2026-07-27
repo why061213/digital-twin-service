@@ -114,25 +114,43 @@ public class VehicleOrderEligibilityService {
 
         trip = tripRuntimeService.evaluateDynamicInsertions(trip, position.position());
         VehicleTripTopologyService.TripStop target = tripRuntimeService.currentTargetStop(trip);
-        if (target != null && target.action() == VehicleTripTopologyService.StopAction.PICKUP
-                && trip.pendingPickupOrderIds().contains(target.orderInstanceId())) {
+        if (target != null) {
             VehicleOrderChainStore.StoredOrder targetOrder = trip.ordersByInstanceId().get(target.orderInstanceId());
-            WaitingOrderTrajectoryClassifier.Classification immediate =
-                    WaitingOrderTrajectoryClassifier.classify(position.position(), target.coordinates(), List.of());
             boolean alreadyCarrying = !trip.onboardOrderIds().isEmpty();
-            if (immediate.state() == WaitingOrderTrajectoryClassifier.State.LOADING) {
+            VehicleTripRuntimeService.TargetPresenceObservation observation =
+                    tripRuntimeService.observeCurrentTarget(
+                            trip, position.position(), position.providerTime());
+            if (observation.state() == VehicleTripRuntimeService.TargetPresenceState.ARRIVED) {
                 return decision(trip, current, instanceId, providerVehicleId, alreadyCarrying,
-                        "LOADING", "current-target-pickup-radius", position, null, immediate);
+                        "ARRIVED", "current-target-arrived-awaiting-valid-dwell", position, null, null);
             }
-            if (trip.phase() == VehicleTripRuntimeService.TripPhase.AT_PICKUP) {
-                if (targetOrder != null) orderStore.recordSuspectedInTransit(targetOrder.record());
+            if (observation.state() == VehicleTripRuntimeService.TargetPresenceState.DWELLING) {
+                boolean pickup = target.action() == VehicleTripTopologyService.StopAction.PICKUP;
+                return decision(trip, current, instanceId, providerVehicleId, alreadyCarrying,
+                        pickup ? "LOADING" : "UNLOADING",
+                        pickup ? "pickup-valid-dwell-confirmed" : "delivery-valid-dwell-confirmed",
+                        position, null, null);
+            }
+            if (observation.state() == VehicleTripRuntimeService.TargetPresenceState.DEPARTED) {
+                if (target.action() == VehicleTripTopologyService.StopAction.PICKUP && targetOrder != null) {
+                    orderStore.recordSuspectedInTransit(targetOrder.record());
+                }
                 return decision(trip, current, instanceId, providerVehicleId, true,
-                        "DEPARTED", "departed-current-target-pickup", position, null, immediate);
+                        "DEPARTED",
+                        target.action() == VehicleTripTopologyService.StopAction.PICKUP
+                                ? "departed-current-target-pickup-after-valid-dwell"
+                                : "departed-current-target-delivery-after-valid-dwell",
+                        position, null, null);
             }
-            if (alreadyCarrying) {
+            if (alreadyCarrying && target.action() == VehicleTripTopologyService.StopAction.PICKUP) {
                 return decision(trip, current, instanceId, providerVehicleId, true,
                         "EN_ROUTE_TO_PICKUP", "onboard-orders-with-confirmed-pickup-ahead",
-                        position, null, immediate);
+                        position, null, null);
+            }
+            if (alreadyCarrying && target.action() == VehicleTripTopologyService.StopAction.DELIVERY) {
+                return decision(trip, current, instanceId, providerVehicleId, true,
+                        "EN_ROUTE_TO_DELIVERY", "onboard-orders-with-confirmed-delivery-ahead",
+                        position, null, null);
             }
         }
 

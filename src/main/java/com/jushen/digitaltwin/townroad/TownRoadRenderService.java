@@ -398,7 +398,8 @@ public class TownRoadRenderService {
         String reason = decision.reason() == null ? "" : decision.reason();
         // 在途-1/2 的区别保留在车辆状态链和 eligibility 诊断中；
         // 进入原后续协议时统一映射为“运输中”，避免破坏旧前端和调度统计。
-        if ("DEPARTED".equals(decision.decision()) || reason.contains("在途-2")
+        if (!decision.onboardOrderIds().isEmpty()
+                || "DEPARTED".equals(decision.decision()) || reason.contains("在途-2")
                 || "TRANSPORTING".equals(decision.decision()) || reason.contains("在途-1")) {
             effectiveStatus = "运输中";
         }
@@ -406,10 +407,14 @@ public class TownRoadRenderService {
                 && decision.currentLegOriginPosition() != null
                 && decision.currentLegDestinationPosition() != null) {
             ExternalOrderRecord.Location template = targetLocation(decision, order);
-            ExternalOrderRecord.Location from = new ExternalOrderRecord.Location(
-                    "车辆当前位置", template == null ? null : template.province(),
-                    template == null ? null : template.city(), template == null ? null : template.district(),
-                    template == null ? null : template.adcode(), decision.currentLegOriginPosition());
+            ExternalOrderRecord.Location from = amapGeocodeClient.reverseGeocode(
+                    decision.currentLegOriginPosition());
+            if (from == null) {
+                // 反查失败时行政区保持未知，宁可进入 RM1，也不能复制目标省份误判 RM2。
+                from = new ExternalOrderRecord.Location(
+                        "车辆当前位置", null, null, null, null,
+                        decision.currentLegOriginPosition());
+            }
             ExternalOrderRecord.Location to = new ExternalOrderRecord.Location(
                     decision.currentLegDestination(), template == null ? null : template.province(),
                     template == null ? null : template.city(), template == null ? null : template.district(),

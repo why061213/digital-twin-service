@@ -41,7 +41,7 @@ class VehicleOrderEligibilityServiceTest {
         assertThat(decision(report, "old-completed").decision()).isEqualTo("COMPLETED_EXPIRED");
         assertThat(decision(report, "recent-completed").groupEligible()).isTrue();
         assertThat(decision(report, "transporting").groupEligible()).isTrue();
-        assertThat(decision(report, "loading").decision()).isEqualTo("LOADING");
+        assertThat(decision(report, "loading").decision()).isEqualTo("ARRIVED");
     }
 
     @Test
@@ -89,8 +89,8 @@ class VehicleOrderEligibilityServiceTest {
                 fixture.service.analyzeLatestVehicleOrders(), "current");
 
         assertThat(decision.groupEligible()).isTrue();
-        assertThat(decision.decision()).isEqualTo("TRANSPORTING_RECORDED");
-        assertThat(decision.reason()).isEqualTo("vehicle-order-chain-status:在途-2");
+        assertThat(decision.decision()).isEqualTo("EN_ROUTE_TO_DELIVERY");
+        assertThat(decision.reason()).isEqualTo("onboard-orders-with-confirmed-delivery-ahead");
     }
 
     @Test

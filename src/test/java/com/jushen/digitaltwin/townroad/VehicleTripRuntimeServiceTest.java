@@ -1,6 +1,7 @@
 package com.jushen.digitaltwin.townroad;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jushen.digitaltwin.baidu.RoutePlanningService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -10,6 +11,9 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class VehicleTripRuntimeServiceTest {
@@ -111,7 +115,7 @@ class VehicleTripRuntimeServiceTest {
                 new double[]{113.0, 23.0}, new double[]{115.0, 23.0});
         ExternalOrderRecord inserted = record(
                 "order-2", "line-2", "待装载",
-                new double[]{114.0, 23.02}, new double[]{116.0, 23.0});
+                new double[]{114.0, 23.02}, new double[]{114.7, 23.0});
         VehicleTripRuntimeService service = new VehicleTripRuntimeService(store);
         VehicleTripRuntimeService.VehicleTripRuntime initial = service.reconcile(List.of(
                 stored(onboard, 1_000), stored(inserted, 31L * 60L * 1_000L))).get(0);
@@ -144,6 +148,93 @@ class VehicleTripRuntimeServiceTest {
                 new double[]{114.1, 23.02});
         assertThat(departed.onboardOrderIds()).contains(key(onboard), key(inserted));
         assertThat(departed.pendingPickupOrderIds()).doesNotContain(key(inserted));
+    }
+
+    @Test
+    void rejectsAlongPickupWhenDeliveryMakesWholeSuffixUnreasonable() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        ExternalOrderRecord onboard = record("order-1", "line-1", "运输中",
+                new double[]{113.0, 23.0}, new double[]{120.2, 30.3});
+        ExternalOrderRecord detour = record("order-2", "line-2", "待装载",
+                new double[]{115.0, 27.0}, new double[]{87.6, 43.8});
+        VehicleTripRuntimeService service = new VehicleTripRuntimeService(store);
+        VehicleTripRuntimeService.VehicleTripRuntime initial = service.reconcile(List.of(
+                stored(onboard, 1_000), stored(detour, 31L * 60L * 1_000L))).get(0);
+
+        VehicleTripRuntimeService.VehicleTripRuntime result = service.evaluateDynamicInsertions(
+                initial, new double[]{114.0, 25.0});
+
+        assertThat(result.orderMembers().get(key(detour)))
+                .isEqualTo(VehicleTripRuntimeService.TripMemberState.QUEUED);
+        assertThat(result.topology().stops()).extracting(VehicleTripTopologyService.TripStop::orderInstanceId)
+                .doesNotContain(key(detour));
+    }
+
+    @Test
+    void validatesAndMaterializesCompleteSuffixWithRoadPlanner() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        RoutePlanningService planner = mock(RoutePlanningService.class);
+        when(planner.plan(any(double[].class), any(double[].class))).thenAnswer(invocation -> {
+            double[] from = invocation.getArgument(0);
+            double[] to = invocation.getArgument(1);
+            double distance = VehicleTripTopologyService.haversineKm(from, to) * 1.1d;
+            double[] middle = new double[]{(from[0] + to[0]) / 2d, (from[1] + to[1]) / 2d};
+            return new RoutePlanningService.PlannedRoute(
+                    true, "road-test", List.of(from.clone(), middle, to.clone()),
+                    List.of(from.clone(), middle, to.clone()), distance, 60_000L, null);
+        });
+        ExternalOrderRecord onboard = record("order-1", "line-1", "运输中",
+                new double[]{113.0, 23.0}, new double[]{115.0, 23.0});
+        ExternalOrderRecord inserted = record("order-2", "line-2", "待装载",
+                new double[]{114.0, 23.02}, new double[]{114.7, 23.0});
+        VehicleTripRuntimeService service = new VehicleTripRuntimeService(
+                store, new VehicleTripTopologyService(), planner);
+        VehicleTripRuntimeService.VehicleTripRuntime initial = service.reconcile(List.of(
+                stored(onboard, 1_000), stored(inserted, 31L * 60L * 1_000L))).get(0);
+
+        VehicleTripRuntimeService.VehicleTripRuntime result = service.evaluateDynamicInsertions(
+                initial, new double[]{113.5, 23.0});
+
+        assertThat(result.orderMembers().get(key(inserted)))
+                .isEqualTo(VehicleTripRuntimeService.TripMemberState.CONFIRMED);
+        assertThat(result.topology().plannedStopIds())
+                .contains(key(inserted) + "::PICKUP", key(inserted) + "::DELIVERY");
+        assertThat(result.topology().legs()).allSatisfy(leg -> {
+            assertThat(leg.coordinates()).hasSize(3);
+            assertThat(leg.durationMs()).isEqualTo(60_000L);
+        });
+        verify(planner, atLeast(4)).plan(any(double[].class), any(double[].class));
+    }
+
+    @Test
+    void deliveryRequiresValidDwellBeforeOnlyThatOrderCompletes() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        ExternalOrderRecord onboard = record("order-1", "line-1", "运输中",
+                new double[]{113.0, 23.0}, new double[]{115.0, 23.0});
+        VehicleTripRuntimeService service = new VehicleTripRuntimeService(store);
+        VehicleTripRuntimeService.VehicleTripRuntime trip = service.reconcile(
+                List.of(stored(onboard, 1_000))).get(0);
+        Instant enteredAt = Instant.parse("2026-07-27T00:00:00Z");
+
+        VehicleTripRuntimeService.TargetPresenceObservation arrived = service.observeCurrentTarget(
+                trip, new double[]{115.0, 23.0}, enteredAt);
+        VehicleTripRuntimeService.TargetPresenceObservation dwelling = service.observeCurrentTarget(
+                trip, new double[]{115.001, 23.0}, enteredAt.plusSeconds(61));
+        VehicleTripRuntimeService.TargetPresenceObservation departed = service.observeCurrentTarget(
+                trip, new double[]{115.2, 23.0}, enteredAt.plusSeconds(120));
+
+        assertThat(arrived.state()).isEqualTo(VehicleTripRuntimeService.TargetPresenceState.ARRIVED);
+        assertThat(dwelling.state()).isEqualTo(VehicleTripRuntimeService.TargetPresenceState.DWELLING);
+        assertThat(departed.state()).isEqualTo(VehicleTripRuntimeService.TargetPresenceState.DEPARTED);
+        String stopId = key(onboard) + "::DELIVERY";
+        trip = service.applyEligibilityEvidence(trip, stopId, key(onboard), "ARRIVED",
+                new double[]{115.0, 23.0});
+        trip = service.applyEligibilityEvidence(trip, stopId, key(onboard), "UNLOADING",
+                new double[]{115.001, 23.0});
+        trip = service.applyEligibilityEvidence(trip, stopId, key(onboard), "DEPARTED",
+                new double[]{115.2, 23.0});
+        assertThat(trip.onboardOrderIds()).isEmpty();
+        assertThat(trip.completedOrderIds()).containsExactly(key(onboard));
     }
 
     @Test

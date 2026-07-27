@@ -18,6 +18,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 高德地图 Web API 地理编码客户端。
@@ -32,6 +33,7 @@ public class AmapGeocodeClient {
     private static final Logger log = LoggerFactory.getLogger(AmapGeocodeClient.class);
 
     private static final String GEOCODE_URL = "https://restapi.amap.com/v3/geocode/geo";
+    private static final String REGEOCODE_URL = "https://restapi.amap.com/v3/geocode/regeo";
 
     /** 统计计数器 */
     private int successCount = 0;
@@ -42,6 +44,7 @@ public class AmapGeocodeClient {
     private final LocalCoordDb localCoordDb;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final Map<String, ExternalOrderRecord.Location> reverseCache = new ConcurrentHashMap<>();
 
     /** 上一次调用 API 的时间，用于限速 */
     private long lastCallAt = 0;
@@ -144,6 +147,56 @@ public class AmapGeocodeClient {
         return geocode(null, null, null, name);
     }
 
+    /** 按真实 GPS 反查行政区；失败时返回 null，调用方不得复制目标节点行政区。 */
+    public synchronized ExternalOrderRecord.Location reverseGeocode(double[] coordinates) {
+        if (coordinates == null || coordinates.length < 2) return null;
+        String cacheKey = String.format(java.util.Locale.ROOT, "%.4f,%.4f", coordinates[0], coordinates[1]);
+        ExternalOrderRecord.Location cached = reverseCache.get(cacheKey);
+        if (cached != null) return cached;
+        String key = properties.getAmapKey();
+        if (key == null || key.isBlank()) return null;
+        try {
+            rateLimit();
+            Map<String, String> params = new TreeMap<>();
+            params.put("key", key);
+            params.put("location", coordinates[0] + "," + coordinates[1]);
+            params.put("extensions", "base");
+            String secret = properties.getAmapSecret();
+            if (secret != null && !secret.isBlank()) params.put("sig", sign(params, secret));
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(buildUrl(REGEOCODE_URL, params)))
+                    .timeout(Duration.ofMillis(properties.getRequestTimeoutMs() > 0
+                            ? properties.getRequestTimeoutMs() : 12000))
+                    .GET().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) return null;
+            JsonNode root = objectMapper.readTree(response.body());
+            if (root.path("status").asInt(0) != 1) return null;
+            JsonNode regeocode = root.path("regeocode");
+            JsonNode component = regeocode.path("addressComponent");
+            String province = text(component.path("province"));
+            String city = text(component.path("city"));
+            if (city == null) city = text(component.path("province"));
+            String district = text(component.path("district"));
+            String adcode = text(component.path("adcode"));
+            String name = text(regeocode.path("formatted_address"));
+            ExternalOrderRecord.Location location = new ExternalOrderRecord.Location(
+                    name == null ? "车辆当前位置" : name, province, city, district, adcode,
+                    coordinates.clone());
+            reverseCache.put(cacheKey, location);
+            return location;
+        } catch (Exception exception) {
+            log.warn("[Amap] reverse geocode failed for {}: {}", cacheKey, exception.getMessage());
+            return null;
+        }
+    }
+
+    private String text(JsonNode node) {
+        if (node == null || !node.isTextual()) return null;
+        String value = node.asText().trim();
+        return value.isBlank() ? null : value;
+    }
+
     /** 获取统计信息并重置计数器 */
     public synchronized String getStatsAndReset() {
         String stats = String.format("[Amap] session stats: success=%d fail=%d skip(local)=%d",
@@ -175,7 +228,7 @@ public class AmapGeocodeClient {
             params.put("sig", sig);
         }
 
-        String url = buildUrl(params);
+        String url = buildUrl(GEOCODE_URL, params);
 
         log.debug("[Amap] calling geocode: {}", address);
 
@@ -243,8 +296,8 @@ public class AmapGeocodeClient {
     /**
      * 构建请求 URL
      */
-    private String buildUrl(Map<String, String> params) {
-        StringBuilder sb = new StringBuilder(GEOCODE_URL);
+    private String buildUrl(String baseUrl, Map<String, String> params) {
+        StringBuilder sb = new StringBuilder(baseUrl);
         sb.append('?');
         boolean first = true;
         for (Map.Entry<String, String> entry : params.entrySet()) {
