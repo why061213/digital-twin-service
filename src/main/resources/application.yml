@@ -134,3 +134,14 @@ dashboard:
     local-path: coord-db
     # API 请求超时（毫秒）
     request-timeout-ms: 12000
+
+  # ===== 路线语义分析（米制，与前端渲染采样数无关） =====
+  route-analysis:
+    resample-step-m: 100
+    grid-size-m: 500
+    shared-tolerance-m: 120
+    shared-min-length-m: 800
+    shared-direction-dot: 0.97
+    deviation-enter-distance-m: 300
+    deviation-exit-distance-m: 150
+    deviation-min-length-m: 300

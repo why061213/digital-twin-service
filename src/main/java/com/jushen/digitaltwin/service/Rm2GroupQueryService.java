@@ -2,6 +2,8 @@ package com.jushen.digitaltwin.service;
 
 import com.jushen.digitaltwin.dto.RenderRouteDTO;
 import com.jushen.digitaltwin.dto.Rm2Snapshot;
+import com.jushen.digitaltwin.routeanalysis.RouteAnalysisDTO;
+import com.jushen.digitaltwin.routeanalysis.RouteAnalysisService;
 import com.jushen.digitaltwin.townroad.TownRoadRenderService;
 import org.springframework.stereotype.Service;
 
@@ -16,13 +18,16 @@ public class Rm2GroupQueryService {
 
     private final TownRoadRenderService renderService;
     private final RoutePushService routePushService;
+    private final RouteAnalysisService routeAnalysisService;
 
     public Rm2GroupQueryService(
             TownRoadRenderService renderService,
-            RoutePushService routePushService
+            RoutePushService routePushService,
+            RouteAnalysisService routeAnalysisService
     ) {
         this.renderService = renderService;
         this.routePushService = routePushService;
+        this.routeAnalysisService = routeAnalysisService;
     }
 
     public Map<String, Object> listGroups() {
@@ -81,6 +86,8 @@ public class Rm2GroupQueryService {
                 positions.add(position);
             }
         }
+        Map<String, RouteAnalysisDTO> analyses = routeAnalysisService.analyze(effectiveRoutes);
+        effectiveRoutes.forEach(route -> route.put("analysis", analyses.get(route.get("lineId"))));
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("scope", "rm2");
