@@ -7,6 +7,9 @@ src/main/resources/token-cache.json
 target/
 runtime-data/
 
+# Deep Code CLI (prevent API key leaks)
+.deepcode/
+
 # IDE and OS files
 .idea/
 .vscode/
