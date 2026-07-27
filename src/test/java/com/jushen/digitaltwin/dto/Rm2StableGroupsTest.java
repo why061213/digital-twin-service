@@ -353,7 +353,7 @@ class Rm2StableGroupsTest {
     }
 
     @Test
-    void reverseAndSharedEndpointOrdersCreateSeparatePagesBelowCapacity() {
+    void reverseAndSharedEndpointOrdersSplitOnlyAfterDensityThreshold() {
         List<NormalizedTownRoadOrder> orders = List.of(
                 makeOrder("station-to-factory", "line-a", "运输中", "450000", "450000",
                         coords(106.20, 23.10, 106.40, 23.30),
@@ -368,8 +368,25 @@ class Rm2StableGroupsTest {
         List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(
                 RouteDtoConverter.shortHaulOrdersToRoutes(orders), 12);
 
-        assertEquals(3, groups.size(), "容量虽够，但反向 OD 和共享端点订单应主动拆组");
-        assertTrue(groups.stream().allMatch(group -> group.count() == 1));
+        assertEquals(2, groups.size(), "第三个相近订单出现后才应主动拆组");
+        assertEquals(List.of(2, 1), groups.stream().map(Rm2RouteGroupDTO::count).toList());
+    }
+
+    @Test
+    void twoNearbyOrdersStayTogetherBelowDensityThreshold() {
+        List<NormalizedTownRoadOrder> orders = List.of(
+                makeOrder("station-to-factory", "line-a", "运输中", "450000", "450000",
+                        coords(106.20, 23.10, 106.40, 23.30),
+                        30, 60, "2026-07-14", "桂A1", 10),
+                makeOrder("factory-to-station", "line-b", "运输中", "450000", "450000",
+                        coords(106.40, 23.30, 106.20, 23.10),
+                        30, 60, "2026-07-14", "桂A2", 10));
+
+        List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(
+                RouteDtoConverter.shortHaulOrdersToRoutes(orders), 12);
+
+        assertEquals(1, groups.size(), "不超过两个相近订单时不应拆得太散");
+        assertEquals(2, groups.get(0).count());
     }
 
     @Test

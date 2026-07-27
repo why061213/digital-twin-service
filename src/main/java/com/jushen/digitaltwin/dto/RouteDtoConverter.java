@@ -21,6 +21,7 @@ public final class RouteDtoConverter {
     private static final double MAX_ROUTE_SPEED_KMH = 140.0;
     private static final double DEFAULT_SIMULATION_SPEED_KMH = 80.0;
     private static final double NEARBY_ENDPOINT_KM = 15.0;
+    private static final int MAX_NEARBY_BUSINESS_LINES_PER_GROUP = 2;
 
     private RouteDtoConverter() {}
 
@@ -208,10 +209,11 @@ public final class RouteDtoConverter {
                     new ArrayList<>(routesByBusinessLine.entrySet());
             int total = businessLines.size();
             int capacityPageCount = (int) Math.ceil((double) total / maxPerGroup);
-            int pageCount = Math.max(capacityPageCount, endpointConflictPageCount(businessLines));
+            int endpointPageCount = endpointDensityPageCount(businessLines);
+            int pageCount = Math.max(capacityPageCount, endpointPageCount);
             List<List<Map.Entry<String, List<RenderRouteDTO>>>> distributedPages =
                     distributeNearbyEndpoints(
-                            businessLines, maxPerGroup, pageCount, pageCount > capacityPageCount);
+                            businessLines, maxPerGroup, pageCount, endpointPageCount > 1);
 
             for (int page = 0; page < pageCount; page++) {
                 List<Map.Entry<String, List<RenderRouteDTO>>> pageBusinessLines =
@@ -290,9 +292,19 @@ public final class RouteDtoConverter {
             int selectedPage = -1;
             int selectedConflict = Integer.MAX_VALUE;
             int selectedSize = Integer.MAX_VALUE;
+            boolean thresholdSafePageAvailable = false;
+            for (int page = 0; page < pages.size(); page++) {
+                List<Map.Entry<String, List<RenderRouteDTO>>> current = pages.get(page);
+                if (current.size() < capacities.get(page)
+                        && canShareEndpointPage(current, candidate)) {
+                    thresholdSafePageAvailable = true;
+                    break;
+                }
+            }
             for (int page = 0; page < pages.size(); page++) {
                 List<Map.Entry<String, List<RenderRouteDTO>>> current = pages.get(page);
                 if (current.size() >= capacities.get(page)) continue;
+                if (thresholdSafePageAvailable && !canShareEndpointPage(current, candidate)) continue;
                 int conflict = current.stream()
                         .mapToInt(existing -> endpointConflictScore(candidate, existing))
                         .sum();
@@ -308,14 +320,13 @@ public final class RouteDtoConverter {
         return pages;
     }
 
-    private static int endpointConflictPageCount(
+    private static int endpointDensityPageCount(
             List<Map.Entry<String, List<RenderRouteDTO>>> businessLines
     ) {
         List<List<Map.Entry<String, List<RenderRouteDTO>>>> pages = new ArrayList<>();
         for (Map.Entry<String, List<RenderRouteDTO>> candidate : prioritizeByEndpointConflict(businessLines)) {
             List<Map.Entry<String, List<RenderRouteDTO>>> available = pages.stream()
-                    .filter(page -> page.stream()
-                            .noneMatch(existing -> endpointConflictScore(candidate, existing) > 0))
+                    .filter(page -> canShareEndpointPage(page, candidate))
                     .findFirst()
                     .orElse(null);
             if (available == null) {
@@ -325,6 +336,26 @@ public final class RouteDtoConverter {
             available.add(candidate);
         }
         return Math.max(1, pages.size());
+    }
+
+    private static boolean canShareEndpointPage(
+            List<Map.Entry<String, List<RenderRouteDTO>>> page,
+            Map.Entry<String, List<RenderRouteDTO>> candidate
+    ) {
+        long candidateNearbyCount = page.stream()
+                .filter(existing -> endpointConflictScore(candidate, existing) > 0)
+                .count();
+        if (candidateNearbyCount >= MAX_NEARBY_BUSINESS_LINES_PER_GROUP) return false;
+
+        for (Map.Entry<String, List<RenderRouteDTO>> existing : page) {
+            if (endpointConflictScore(candidate, existing) <= 0) continue;
+            long existingNearbyCount = page.stream()
+                    .filter(other -> !existing.getKey().equals(other.getKey()))
+                    .filter(other -> endpointConflictScore(existing, other) > 0)
+                    .count();
+            if (existingNearbyCount >= MAX_NEARBY_BUSINESS_LINES_PER_GROUP - 1L) return false;
+        }
+        return true;
     }
 
     private static List<Map.Entry<String, List<RenderRouteDTO>>> prioritizeByEndpointConflict(
