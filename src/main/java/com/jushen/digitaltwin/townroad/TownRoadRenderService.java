@@ -28,7 +28,7 @@ import java.util.Set;
 public class TownRoadRenderService {
 
     private static final Logger log = LoggerFactory.getLogger(TownRoadRenderService.class);
-    public static final int RM2_GROUP_SIZE = 3;
+    public static final int RM2_GROUP_SIZE = 1; // 临时：每辆车单独一组
 
     private final TownRoadExternalOrderClient townRoadExternalOrderClient;
     private final TownRoadMiddleLayer middleLayer;

@@ -58,7 +58,16 @@ dashboard:
       auto-sync-initial-delay-ms: 5000
       auto-sync-fixed-delay-ms: 900000
       # true 时，仅展示能解析 supplier vehicleId、可进行真实位置批量校准的订单。
-      ignore-orders-without-real-position: true
+      ignore-orders-without-real-position: false
+      # 待装载自动判定：结合当前真实位置、上一单和36个历史轨迹分位区分前往装载点/装载中/已出发。
+      treat-loading-unloading-as-transporting: true
+      # 新中间层实验分支：只做今昨订单日库 diff 与车辆轻量索引，随后截断后续程序。
+      vehicle-order-chain-experiment-enabled: true
+      vehicle-order-chain-store-path: runtime-data/vehicle-order-chain
+      # Trip 到离站使用独立迟滞半径，不复用 5km 的拓扑节点融合半径。
+      trip-arrival-radius-km: 0.5
+      trip-departure-radius-km: 0.8
+      trip-minimum-dwell-ms: 60000
   route:
     # 所有档位都使用正常车辆时间尺度；代码层还会把异常配置限制在可信速度内。
     simulation-profile: real
@@ -125,3 +134,14 @@ dashboard:
     local-path: coord-db
     # API 请求超时（毫秒）
     request-timeout-ms: 12000
+
+  # ===== 路线语义分析（米制，与前端渲染采样数无关） =====
+  route-analysis:
+    resample-step-m: 100
+    grid-size-m: 500
+    shared-tolerance-m: 120
+    shared-min-length-m: 800
+    shared-direction-dot: 0.97
+    deviation-enter-distance-m: 300
+    deviation-exit-distance-m: 150
+    deviation-min-length-m: 300
