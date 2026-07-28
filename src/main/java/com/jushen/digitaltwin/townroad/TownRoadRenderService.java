@@ -118,6 +118,7 @@ public class TownRoadRenderService {
 
         VehicleOrderChainPipelineContext vehicleOrderChainContext = null;
         List<ExternalOrderRecord> downstreamInput = rawOrders == null ? List.of() : rawOrders;
+        Map<String, List<double[]>> compositeRouteWaypoints = Map.of();
         boolean downstreamInputAlreadyExpanded = false;
         if (externalOrderProperties.isVehicleOrderChainExperimentEnabled()) {
             List<ExternalOrderRecord> expanded = middleLayer.expandVehicleInstances(
@@ -128,9 +129,9 @@ public class TownRoadRenderService {
             VehicleOrderChainStore.IngestResult stored = vehicleOrderChainStore.ingest(expanded);
             VehicleOrderEligibilityService.EligibilityReport eligibility =
                     vehicleOrderEligibilityService.analyzeLatestVehicleOrders();
-            List<ExternalOrderRecord> eligibleOrders = eligibility.enabled()
-                    ? eligibleVehicleOrdersForPipeline(eligibility)
-                    : expanded;
+            EligiblePipelineInput eligiblePipeline = eligibleVehicleOrdersForPipeline(eligibility);
+            List<ExternalOrderRecord> eligibleOrders = eligiblePipeline.orders();
+            compositeRouteWaypoints = eligiblePipeline.routeWaypointsByInstanceId();
             downstreamInput = eligibleOrders;
             downstreamInputAlreadyExpanded = true;
             vehicleOrderChainContext = new VehicleOrderChainPipelineContext(
@@ -191,7 +192,9 @@ public class TownRoadRenderService {
                 .toList();
 
         long middleLayerStartedAt = System.currentTimeMillis();
-        ExternalOrderSnapshotResult result = middleLayer.processSnapshot(planningOrders);
+        ExternalOrderSnapshotResult result = compositeRouteWaypoints.isEmpty()
+                ? middleLayer.processSnapshot(planningOrders)
+                : middleLayer.processSnapshot(planningOrders, compositeRouteWaypoints);
         broadcastDailyKpisIfChanged();
         long middleLayerFinishedAt = System.currentTimeMillis();
         if (traceEnabled) {
@@ -360,26 +363,69 @@ public class TownRoadRenderService {
     // 指纹与变化检测
     // ---------------------------------------------------------------
 
-    private List<ExternalOrderRecord> eligibleVehicleOrdersForPipeline(
+    private EligiblePipelineInput eligibleVehicleOrdersForPipeline(
             VehicleOrderEligibilityService.EligibilityReport eligibility
     ) {
         Map<String, VehicleOrderEligibilityService.VehicleDecision> eligibleByInstanceId =
                 new LinkedHashMap<>();
         for (VehicleOrderEligibilityService.VehicleDecision decision : eligibility.decisions()) {
-            if (decision != null && decision.groupEligible()
+            if (decision != null && (!eligibility.enabled() || decision.groupEligible())
                     && decision.lineId() != null && !decision.lineId().isBlank()) {
                 eligibleByInstanceId.put(decision.lineId(), decision);
             }
         }
 
+        List<VehicleOrderChainStore.StoredOrder> storedOrders = vehicleOrderChainStore.recentStoredOrders();
+        Map<String, VehicleOrderChainStore.StoredOrder> storedByKey = new LinkedHashMap<>();
+        for (VehicleOrderChainStore.StoredOrder stored : storedOrders) {
+            if (stored != null && stored.record() != null) storedByKey.put(stored.key(), stored);
+        }
+
         List<ExternalOrderRecord> result = new ArrayList<>();
+        Map<String, List<double[]>> routeWaypointsByInstanceId = new LinkedHashMap<>();
         Map<String, VehicleOrderEligibilityService.VehicleDecision> decisionsByRuntimeLine = new LinkedHashMap<>();
-        for (VehicleOrderChainStore.StoredOrder stored : vehicleOrderChainStore.recentStoredOrders()) {
+        Set<String> emittedCompositeTripIds = new LinkedHashSet<>();
+        for (VehicleOrderChainStore.StoredOrder stored : storedOrders) {
             if (stored == null || stored.record() == null) continue;
             ExternalOrderRecord order = stored.record();
             String instanceId = middleLayer.instanceIdFor(order);
             VehicleOrderEligibilityService.VehicleDecision decision = eligibleByInstanceId.get(instanceId);
             if (decision == null || !safeEquals(decision.orderId(), order.orderId())) continue;
+
+            if (isCompositeTrip(decision)) {
+                if (!emittedCompositeTripIds.add(decision.tripId())) continue;
+                ExternalOrderRecord merged = mergedCompositeOrder(decision, storedByKey, order);
+                if (merged == null) {
+                    log.warn("[VehicleOrderChain] composite trip has insufficient resolved stops: trip={}",
+                            decision.tripId());
+                    continue;
+                }
+                result.add(merged);
+                String mergedInstanceId = middleLayer.instanceIdFor(merged);
+                List<double[]> stopCoordinates = decision.tripStops().stream()
+                        .map(VehicleTripRuntimeService.CompositeStopView::coordinates)
+                        .filter(this::hasCoordinates)
+                        .map(this::copyCoordinate)
+                        .toList();
+                routeWaypointsByInstanceId.put(mergedInstanceId,
+                        stopCoordinates.size() <= 2
+                                ? List.of()
+                                : List.copyOf(stopCoordinates.subList(1, stopCoordinates.size() - 1)));
+                for (String memberId : decision.tripOrderInstanceIds()) {
+                    VehicleOrderChainStore.StoredOrder member = storedByKey.get(memberId);
+                    if (member == null || member.record() == null) continue;
+                    routePushService.aliasFreshProviderPosition(
+                            middleLayer.instanceIdFor(member.record()), mergedInstanceId,
+                            merged.vehicle() == null ? null : merged.vehicle().plate(),
+                            merged.vehicle() == null ? null : merged.vehicle().carId());
+                }
+                decisionsByRuntimeLine.put(mergedInstanceId, decision);
+                log.info("[VehicleOrderChain] merged composite trip for rendering: trip={}, orders={}, stops={}, waypoints={}, lineId={}",
+                        decision.tripId(), decision.tripOrderInstanceIds().size(), stopCoordinates.size(),
+                        routeWaypointsByInstanceId.get(mergedInstanceId).size(), mergedInstanceId);
+                continue;
+            }
+
             ExternalOrderRecord effective = withEffectiveVehicleChainStatus(order, decision);
             result.add(effective);
             String runtimeInstanceId = middleLayer.instanceIdFor(effective);
@@ -390,22 +436,110 @@ public class TownRoadRenderService {
             decisionsByRuntimeLine.put(runtimeInstanceId, decision);
         }
         this.tripDecisionByLineId = Map.copyOf(decisionsByRuntimeLine);
-        return List.copyOf(result);
+        return new EligiblePipelineInput(List.copyOf(result), Map.copyOf(routeWaypointsByInstanceId));
+    }
+
+    private boolean isCompositeTrip(VehicleOrderEligibilityService.VehicleDecision decision) {
+        if (decision == null || decision.tripId() == null || decision.tripStops() == null) return false;
+        return decision.tripStops().stream()
+                .map(VehicleTripRuntimeService.CompositeStopView::orderInstanceId)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct().limit(2).count() > 1;
+    }
+
+    private ExternalOrderRecord mergedCompositeOrder(
+            VehicleOrderEligibilityService.VehicleDecision decision,
+            Map<String, VehicleOrderChainStore.StoredOrder> storedByKey,
+            ExternalOrderRecord fallbackOrder
+    ) {
+        List<VehicleTripRuntimeService.CompositeStopView> stops = decision.tripStops().stream()
+                .filter(stop -> stop != null && hasCoordinates(stop.coordinates()))
+                .toList();
+        if (stops.size() < 2) return null;
+        ExternalOrderRecord.Location from = compositeStopLocation(stops.get(0), storedByKey);
+        ExternalOrderRecord.Location to = compositeStopLocation(stops.get(stops.size() - 1), storedByKey);
+        if (from == null || to == null) return null;
+
+        List<ExternalOrderRecord> members = decision.tripOrderInstanceIds().stream()
+                .map(storedByKey::get)
+                .filter(java.util.Objects::nonNull)
+                .map(VehicleOrderChainStore.StoredOrder::record)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        ExternalOrderRecord.Vehicle baseVehicle = fallbackOrder.vehicle();
+        double totalWeight = members.stream()
+                .map(ExternalOrderRecord::vehicle)
+                .filter(java.util.Objects::nonNull)
+                .map(ExternalOrderRecord.Vehicle::cargoWeight)
+                .filter(java.util.Objects::nonNull)
+                .filter(Double::isFinite)
+                .mapToDouble(Double::doubleValue)
+                .sum();
+        String cargo = members.stream()
+                .map(ExternalOrderRecord::vehicle)
+                .filter(java.util.Objects::nonNull)
+                .map(ExternalOrderRecord.Vehicle::cargo)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct()
+                .reduce((left, right) -> left + " / " + right)
+                .orElse(baseVehicle == null ? null : baseVehicle.cargo());
+        ExternalOrderRecord.Vehicle vehicle = baseVehicle == null ? null : new ExternalOrderRecord.Vehicle(
+                baseVehicle.plate(), baseVehicle.carId(), cargo,
+                totalWeight > 0 ? totalWeight : baseVehicle.cargoWeight(), baseVehicle.cargoUnit(),
+                hasCoordinates(decision.currentPosition()) ? copyCoordinate(decision.currentPosition()) : baseVehicle.currentCoords(),
+                baseVehicle.speedKmh());
+        String status = effectiveVehicleStatus(fallbackOrder, decision);
+        String runtimeLineId = decision.runtimeLineId() == null || decision.runtimeLineId().isBlank()
+                ? "trip::" + decision.tripId() : decision.runtimeLineId();
+        return new ExternalOrderRecord(
+                decision.tripId(), runtimeLineId, null, from, to, vehicle,
+                status, decision.orderUpdatedAt(), false, true, 0, 0);
+    }
+
+    private ExternalOrderRecord.Location compositeStopLocation(
+            VehicleTripRuntimeService.CompositeStopView stop,
+            Map<String, VehicleOrderChainStore.StoredOrder> storedByKey
+    ) {
+        VehicleOrderChainStore.StoredOrder stored = storedByKey.get(stop.orderInstanceId());
+        ExternalOrderRecord record = stored == null ? null : stored.record();
+        ExternalOrderRecord.Location source = record == null ? null
+                : stop.action() == VehicleTripTopologyService.StopAction.PICKUP ? record.from() : record.to();
+        if (source == null) source = amapGeocodeClient.reverseGeocode(stop.coordinates());
+        return new ExternalOrderRecord.Location(
+                stop.locationName(), source == null ? null : source.province(),
+                source == null ? null : source.city(), source == null ? null : source.district(),
+                source == null ? null : source.adcode(), copyCoordinate(stop.coordinates()));
+    }
+
+    private boolean hasCoordinates(double[] coordinates) {
+        return coordinates != null && coordinates.length >= 2
+                && Double.isFinite(coordinates[0]) && Double.isFinite(coordinates[1]);
+    }
+
+    private double[] copyCoordinate(double[] coordinates) {
+        return new double[]{coordinates[0], coordinates[1]};
+    }
+
+    private String effectiveVehicleStatus(
+            ExternalOrderRecord order,
+            VehicleOrderEligibilityService.VehicleDecision decision
+    ) {
+        String reason = decision.reason() == null ? "" : decision.reason();
+        if (!decision.onboardOrderIds().isEmpty()
+                || "DEPARTED".equals(decision.decision()) || reason.contains("在途-2")
+                || "TRANSPORTING".equals(decision.decision()) || reason.contains("在途-1")) {
+            return "运输中";
+        }
+        return order.status();
     }
 
     private ExternalOrderRecord withEffectiveVehicleChainStatus(
             ExternalOrderRecord order,
             VehicleOrderEligibilityService.VehicleDecision decision
     ) {
-        String effectiveStatus = order.status();
-        String reason = decision.reason() == null ? "" : decision.reason();
+        String effectiveStatus = effectiveVehicleStatus(order, decision);
         // 在途-1/2 的区别保留在车辆状态链和 eligibility 诊断中；
         // 进入原后续协议时统一映射为“运输中”，避免破坏旧前端和调度统计。
-        if (!decision.onboardOrderIds().isEmpty()
-                || "DEPARTED".equals(decision.decision()) || reason.contains("在途-2")
-                || "TRANSPORTING".equals(decision.decision()) || reason.contains("在途-1")) {
-            effectiveStatus = "运输中";
-        }
         if (decision.runtimeLineId() != null
                 && decision.currentLegOriginPosition() != null
                 && decision.currentLegDestinationPosition() != null) {
@@ -916,7 +1050,7 @@ public class TownRoadRenderService {
         return List.of(
                         "tripId", "visualKey", "currentLegId", "planVersion", "tripPhase",
                         "tripDecision", "positionQuality", "targetAction", "pendingOrderCount",
-                        "onboardOrderCount", "completedOrderCount")
+                        "onboardOrderCount", "completedOrderCount", "tripStops")
                 .stream()
                 .map(key -> key + "=" + String.valueOf(meta.get(key)))
                 .collect(java.util.stream.Collectors.joining(","));
@@ -986,5 +1120,10 @@ public class TownRoadRenderService {
             VehicleOrderEligibilityService.EligibilityReport eligibility,
             int expandedVehicleRecordCount,
             int downstreamEligibleCount
+    ) {}
+
+    private record EligiblePipelineInput(
+            List<ExternalOrderRecord> orders,
+            Map<String, List<double[]>> routeWaypointsByInstanceId
     ) {}
 }

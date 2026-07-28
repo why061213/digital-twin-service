@@ -93,6 +93,13 @@ public class TownRoadMiddleLayer {
     }
 
     public synchronized ExternalOrderSnapshotResult processSnapshot(List<ExternalOrderRecord> rawOrders) {
+        return processSnapshot(rawOrders, Map.of());
+    }
+
+    public synchronized ExternalOrderSnapshotResult processSnapshot(
+            List<ExternalOrderRecord> rawOrders,
+            Map<String, List<double[]>> routeWaypointsByInstanceId
+    ) {
         List<ExternalOrderRecord> safeRawOrders = rawOrders == null ? List.of() : rawOrders;
         List<ExternalOrderRecord> expandedRawOrders = expandVehicleInstances(safeRawOrders);
 
@@ -107,7 +114,9 @@ public class TownRoadMiddleLayer {
         log.info("[TownRoad] pre-filter: expandedTotal={}, worthRoutePlan={}, skipped={}",
                 expandedRawOrders.size(), ordersNeedingRoutePlan.size(),
                 expandedRawOrders.size() - ordersNeedingRoutePlan.size());
-        Map<String, RoutePlanBundle> routePlansByOrderLine = planOrderLineRoutes(ordersNeedingRoutePlan);
+        Map<String, RoutePlanBundle> routePlansByOrderLine = planOrderLineRoutes(
+                ordersNeedingRoutePlan,
+                routeWaypointsByInstanceId == null ? Map.of() : routeWaypointsByInstanceId);
         Map<String, NormalizedTownRoadOrder> previous = new LinkedHashMap<>(ordersByInstanceId);
 
         Map<String, NormalizedTownRoadOrder> dedupedCandidates = new LinkedHashMap<>();
@@ -1139,7 +1148,10 @@ public class TownRoadMiddleLayer {
         return coordinates == null ? List.of() : copyCoordinates(coordinates);
     }
 
-    private Map<String, RoutePlanBundle> planOrderLineRoutes(List<ExternalOrderRecord> expandedRawOrders) {
+    private Map<String, RoutePlanBundle> planOrderLineRoutes(
+            List<ExternalOrderRecord> expandedRawOrders,
+            Map<String, List<double[]>> routeWaypointsByInstanceId
+    ) {
         Map<String, List<ResolvedRouteSeed>> seedsByKey = new LinkedHashMap<>();
         for (ExternalOrderRecord raw : expandedRawOrders) {
             if (!isValidBasic(raw)) continue;
@@ -1156,11 +1168,13 @@ public class TownRoadMiddleLayer {
         Map<String, RoutePlanBundle> result = new LinkedHashMap<>();
         for (Map.Entry<String, List<ResolvedRouteSeed>> entry : seedsByKey.entrySet()) {
             ResolvedRouteSeed representative = entry.getValue().get(0);
+            List<double[]> waypoints = routeWaypointsByInstanceId.getOrDefault(
+                    instanceIdFor(representative.raw()), List.of());
             RoutePlanningService.PlannedRoute baseline = routePlanningService.plan(
-                    representative.fromCoords(), representative.toCoords());
+                    representative.fromCoords(), representative.toCoords(), waypoints);
             result.put(entry.getKey(), new RoutePlanBundle(baseline));
-            log.info("[RoutePlan] order-line baseline prepared: key={}, provider={}",
-                    entry.getKey(), baseline.provider());
+            log.info("[RoutePlan] order-line baseline prepared: key={}, provider={}, waypointCount={}",
+                    entry.getKey(), baseline.provider(), waypoints.size());
         }
         return Map.copyOf(result);
     }

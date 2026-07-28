@@ -72,7 +72,7 @@ class TownRoadRenderServicePipelineCutTest {
                 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 List.of(), List.of(), List.of(), List.of(), List.of(),
                 List.of(), List.of(), List.of(), List.of());
-        when(middleLayer.processSnapshot(anyList())).thenAnswer(invocation -> {
+        when(middleLayer.processSnapshot(anyList(), any())).thenAnswer(invocation -> {
             List<ExternalOrderRecord> input = invocation.getArgument(0);
             ExternalOrderRecord synthetic = input.get(0);
             return new ExternalOrderSnapshotResult(
@@ -94,13 +94,20 @@ class TownRoadRenderServicePipelineCutTest {
         service.processAndBroadcast(raw);
 
         ArgumentCaptor<List<ExternalOrderRecord>> pipelineInput = ArgumentCaptor.forClass(List.class);
-        verify(middleLayer).processSnapshot(pipelineInput.capture());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, List<double[]>>> waypointInput = ArgumentCaptor.forClass(Map.class);
+        verify(middleLayer).processSnapshot(pipelineInput.capture(), waypointInput.capture());
         assertThat(pipelineInput.getValue()).hasSize(1);
         ExternalOrderRecord synthetic = pipelineInput.getValue().get(0);
         assertThat(synthetic.orderId()).startsWith("trip-粤A90001");
         assertThat(synthetic.lineId()).isEqualTo("trip::" + synthetic.orderId());
         assertThat(synthetic.status()).isEqualTo("运输中");
-        assertThat(synthetic.to().coords()).containsExactly(112.95, 23.00);
+        assertThat(synthetic.from().coords()).containsExactly(113.10, 23.00);
+        assertThat(synthetic.to().coords()).containsExactly(112.80, 23.00);
+        assertThat(synthetic.vehicle().cargoWeight()).isEqualTo(20d);
+        assertThat(waypointInput.getValue()).containsOnlyKeys(synthetic.lineId());
+        assertThat(waypointInput.getValue().get(synthetic.lineId()))
+                .containsExactly(new double[]{112.95, 23.00}, new double[]{112.70, 23.00});
 
         assertThat(service.getLatestRm2Snapshot().routes()).hasSize(1);
         Map<String, Object> meta = service.getLatestRm2Snapshot().routes().get(0).meta();
@@ -115,6 +122,7 @@ class TownRoadRenderServicePipelineCutTest {
                 .containsEntry("pendingOrderCount", 1)
                 .containsEntry("onboardOrderCount", 1)
                 .containsEntry("completedOrderCount", 0);
+        assertThat((List<?>) meta.get("tripStops")).hasSize(4);
         verify(routePush).setTripRuntimeMetadata(
                 org.mockito.ArgumentMatchers.eq(synthetic.lineId()),
                 org.mockito.ArgumentMatchers.argThat(runtimeMeta ->

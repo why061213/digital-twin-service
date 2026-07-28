@@ -52,9 +52,28 @@ public class VehicleOrderEligibilityService {
         List<VehicleTripRuntimeService.VehicleTripRuntime> trips = tripRuntimeService.reconcile(
                 currentSnapshot == null || currentSnapshot.isEmpty() ? history : currentSnapshot);
         if (!properties.isIgnoreOrdersWithoutRealPosition()) {
+            List<VehicleDecision> structuralDecisions = new ArrayList<>();
+            for (VehicleTripRuntimeService.VehicleTripRuntime trip : trips) {
+                VehicleOrderChainStore.StoredOrder current = trip.anchorOrder();
+                if (current == null || current.record() == null) continue;
+                VehicleTripRuntimeService.VehicleTripRuntime compositeView =
+                        tripRuntimeService.includeAllActiveOrdersForCompositeView(trip);
+                structuralDecisions.add(decision(
+                        compositeView,
+                        current,
+                        middleLayer.instanceIdFor(current.record()),
+                        null,
+                        false,
+                        "POSITION_FILTER_DISABLED",
+                        "real-position-filter-disabled",
+                        null,
+                        null,
+                        null));
+            }
+            structuralDecisions.sort(Comparator.comparing(VehicleDecision::vehicleKey));
             EligibilityReport disabled = new EligibilityReport(
                     now.toString(), false, Map.of("skipped", true), Map.of("skipped", true),
-                    trips.size(), 0, 0, List.of(), null);
+                    trips.size(), 0, 0, List.copyOf(structuralDecisions), null);
             return disabled;
         }
 

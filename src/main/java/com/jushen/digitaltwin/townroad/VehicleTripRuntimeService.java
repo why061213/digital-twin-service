@@ -159,6 +159,38 @@ public class VehicleTripRuntimeService {
     }
 
     /**
+     * 真实位置过滤关闭时，所有同时存在的未完成订单都属于同一展示行程。
+     * 这里只补齐聚合视图，不改写动态插单判定保存的运行态。
+     */
+    public synchronized VehicleTripRuntime includeAllActiveOrdersForCompositeView(VehicleTripRuntime trip) {
+        if (trip == null || trip.ordersByInstanceId() == null || trip.ordersByInstanceId().size() < 2) return trip;
+        Map<String, TripMemberState> members = new LinkedHashMap<>(trip.orderMembers());
+        Set<String> activeOrderIds = new LinkedHashSet<>();
+        Set<String> pendingPickup = new LinkedHashSet<>(trip.pendingPickupOrderIds());
+        for (Map.Entry<String, VehicleOrderChainStore.StoredOrder> entry : trip.ordersByInstanceId().entrySet()) {
+            String instanceId = entry.getKey();
+            VehicleOrderChainStore.StoredOrder stored = entry.getValue();
+            if (stored == null || stored.record() == null || isCompleted(stored.record().status())) continue;
+            members.put(instanceId, TripMemberState.CONFIRMED);
+            activeOrderIds.add(instanceId);
+            if (!trip.onboardOrderIds().contains(instanceId)) pendingPickup.add(instanceId);
+        }
+        if (activeOrderIds.size() < 2) return trip;
+        VehicleTripTopologyService.TripTopology topology = topologyService.build(
+                trip.ordersByInstanceId(), Map.copyOf(members), trip.onboardOrderIds(),
+                trip.completedOrderIds(), trip.topology());
+        VehicleTripRuntime compositeView = new VehicleTripRuntime(
+                trip.tripId(), trip.vehicleKey(), List.copyOf(activeOrderIds), trip.ordersByInstanceId(),
+                Map.copyOf(members), Set.of(), trip.rejectedOrderIds(),
+                trip.visitedPickupOrderIds(), trip.onboardOrderIds(), Set.copyOf(pendingPickup),
+                trip.pendingDeliveryOrderIds(), trip.completedOrderIds(), List.copyOf(pendingPickup),
+                trip.anchorOrderInstanceId(), trip.phase(), trip.openedAt(), trip.closedAt(),
+                trip.runtimeLineId(), trip.currentNodeId(), trip.currentLegId(), topology.planVersion(),
+                trip.positionQuality(), topology);
+        return withTopology(compositeView, topology);
+    }
+
+    /**
      * 用完整位置轨迹重建复合订单进度。这里故意不采用上游订单状态：轨迹已经证明
      * 车辆依次完成了哪些 Stop 时，位置事实优先，避免错误的“待装载/运输中/已完成”回滚行程。
      */

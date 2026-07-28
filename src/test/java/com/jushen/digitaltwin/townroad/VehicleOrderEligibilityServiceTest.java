@@ -158,6 +158,25 @@ class VehicleOrderEligibilityServiceTest {
     }
 
     @Test
+    void disabledRealPositionFilteringStillDescribesCompositeTripStructure() {
+        Instant now = Instant.now();
+        VehicleOrderChainStore.StoredOrder first = stored(
+                record("first", "桂L91622", "运输中", now.minusSeconds(60), 113.0), 1);
+        VehicleOrderChainStore.StoredOrder second = stored(
+                record("second", "桂L91622", "待装载", now.minusSeconds(30), 113.1), 2);
+        Fixture fixture = fixture(List.of(first, second));
+        fixture.properties.setIgnoreOrdersWithoutRealPosition(false);
+
+        VehicleOrderEligibilityService.EligibilityReport report = fixture.service.analyzeLatestVehicleOrders();
+
+        assertThat(report.enabled()).isFalse();
+        assertThat(report.decisions()).hasSize(1);
+        assertThat(report.decisions().get(0).tripOrderInstanceIds()).hasSize(2);
+        assertThat(report.decisions().get(0).tripStops()).hasSize(4);
+        verifyNoInteractions(fixture.routePush, fixture.trajectory);
+    }
+
+    @Test
     void localFinalDeliveryCompletionBlocksStaleUpstreamTransportingRoute() {
         Instant enteredAt = Instant.parse("2026-07-27T00:00:00Z");
         VehicleOrderChainStore.StoredOrder transporting = stored(
@@ -210,7 +229,7 @@ class VehicleOrderEligibilityServiceTest {
         return new Fixture(
                 new VehicleOrderEligibilityService(
                         routePush, middleLayer, properties, store, trajectory, tripRuntimeService),
-                routePush, trajectory, store);
+                routePush, trajectory, store, properties);
     }
 
     private VehicleOrderEligibilityService.VehicleDecision decision(
@@ -273,6 +292,7 @@ class VehicleOrderEligibilityServiceTest {
             VehicleOrderEligibilityService service,
             RoutePushService routePush,
             ProviderTrajectoryClient trajectory,
-            VehicleOrderChainStore store
+            VehicleOrderChainStore store,
+            TownRoadExternalOrderProperties properties
     ) {}
 }
