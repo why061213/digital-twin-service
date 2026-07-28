@@ -47,6 +47,9 @@ import jakarta.annotation.PreDestroy;
 import jakarta.annotation.PostConstruct;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -75,6 +78,9 @@ public class RoutePushService {
     private final Map<String, BroadcastPositionState> lastBroadcastPositions = new ConcurrentHashMap<>();
     private final Map<String, String> rm2GroupIdByLineId = new ConcurrentHashMap<>();
     private final Map<String, Map<String, Object>> tripRuntimeMetadataByLineId = new ConcurrentHashMap<>();
+    /** 真实车与模拟车共用的本地位置证据，供同一套节点状态机消费。 */
+    private final Map<String, List<RoutePositionHistorySample>> localPositionHistoryByLineId = new ConcurrentHashMap<>();
+    private final Path localPositionHistoryRoot = Path.of("runtime-data", "vehicle-position-history");
     private final Map<String, List<double[]>> routeReplanAnchors = new ConcurrentHashMap<>();
     private final AtomicLong positionSequence = new AtomicLong();
     private volatile String rm2SnapshotVersion = "0";
@@ -95,6 +101,8 @@ public class RoutePushService {
     private final Map<String, String> loadingVehicleCarIdMap = new ConcurrentHashMap<>();
     /** 装载车辆出发回调（触发订单同步） */
     private volatile Runnable onLoadingVehicleDeparted = null;
+    /** 一轮真实/模拟位置证据落盘后的轻量 Trip 状态推进回调。 */
+    private volatile Runnable onRoutePositionHistoryRefreshed = null;
     private final boolean passivePositionPushEnabled;
     private final String simulationProfile;
     private final String externalPositionUrl;
@@ -902,7 +910,8 @@ public class RoutePushService {
 
     private void addTripRuntimeMetadata(Map<String, Object> message, String lineId) {
         Map<String, Object> metadata = tripRuntimeMetadataByLineId.get(lineId);
-        if (metadata != null) message.putAll(metadata);
+        if (metadata == null) return;
+        message.putAll(metadata);
     }
 
     /** 供 RM2 快照复用运行池已经确定的速度、距离和预测时长。 */
@@ -1003,21 +1012,24 @@ public class RoutePushService {
             fixedDelayString = "${dashboard.route.position-refresh.fixed-delay-ms:30000}"
     )
     public void scheduledPositionRefresh() {
-        if (!passivePositionPushEnabled || !positionCache.isEnabled()) return;
+        if (!passivePositionPushEnabled) return;
 
         long now = System.currentTimeMillis();
         cleanupExpiredRoutes(now);
 
-        Map<String, Set<String>> vehicleToLineIds = collectActiveTransportVehicleMap();
-        // 装载中车辆也纳入位置刷新，用于检测是否已出发
-        for (Map.Entry<String, double[]> entry : loadingVehiclePositions.entrySet()) {
-            String lineId = entry.getKey();
-            String vehicleId = loadingVehicleCarIdMap.get(lineId);
-            if (vehicleId != null && !vehicleId.isBlank()) {
-                vehicleToLineIds.computeIfAbsent(vehicleId, k -> new LinkedHashSet<>()).add(lineId);
+        Map<String, Object> summary = Map.of("skipped", true, "reason", "provider-position-disabled");
+        if (positionCache.isEnabled()) {
+            Map<String, Set<String>> vehicleToLineIds = collectActiveTransportVehicleMap();
+            // 装载中车辆也纳入位置刷新，用于检测是否已出发
+            for (Map.Entry<String, double[]> entry : loadingVehiclePositions.entrySet()) {
+                String lineId = entry.getKey();
+                String vehicleId = loadingVehicleCarIdMap.get(lineId);
+                if (vehicleId != null && !vehicleId.isBlank()) {
+                    vehicleToLineIds.computeIfAbsent(vehicleId, k -> new LinkedHashSet<>()).add(lineId);
+                }
             }
+            summary = positionCache.runBatchRefresh(this::getAccessTokenForExternalSafe, vehicleToLineIds);
         }
-        Map<String, Object> summary = positionCache.runBatchRefresh(this::getAccessTokenForExternalSafe, vehicleToLineIds);
         int calibratedRouteCount = calibrateActiveRoutesFromCache(now);
         if (calibratedRouteCount > 0) {
             log.info("[PositionCache] calibrated active simulations: routeCount={}, refreshSummary={}",
@@ -1026,6 +1038,16 @@ public class RoutePushService {
 
         // 检测装载中车辆是否已出发（偏离初始位置超过阈值）
         checkLoadingVehicleDepartures();
+
+        captureActivePositionHistory(now);
+        Runnable historyCallback = onRoutePositionHistoryRefreshed;
+        if (historyCallback != null) {
+            try {
+                historyCallback.run();
+            } catch (Exception e) {
+                log.warn("[PositionHistory] trip milestone callback failed", e);
+            }
+        }
 
         // 每个 scope 一轮最多一个位置帧，避免逐车 WebSocket 广播风暴。
         if (passivePositionPushEnabled) {
@@ -1159,10 +1181,15 @@ public class RoutePushService {
                     continue;
                 }
                 lastRouteReplanAt.put(lineId, now);
+                TripRouteAnchorResolver.Anchors tripAnchors = TripRouteAnchorResolver.resolve(
+                        tripRuntimeMetadataByLineId.get(lineId), baselineCoordinates,
+                        baselineProgress, objectMapper);
                 RoutePlanningService.PlannedRoute plannedPrefix = routePlanningService.plan(
-                        baselineCoordinates.get(0), snapshot.position());
+                        baselineCoordinates.get(0), snapshot.position(),
+                        tripAnchors.completedWaypoints());
                 RoutePlanningService.PlannedRoute replanned = routePlanningService.plan(
-                        snapshot.position(), baselineCoordinates.get(baselineCoordinates.size() - 1));
+                        snapshot.position(), baselineCoordinates.get(baselineCoordinates.size() - 1),
+                        tripAnchors.remainingWaypoints());
                 if (plannedPrefix.success() && replanned.success()) {
                     RouteCorrectionPathBuilder.Result displaySplice = RouteCorrectionPathBuilder.joinPlanned(
                             route.coordinates(), snapshot.position(),
@@ -1200,8 +1227,10 @@ public class RoutePushService {
                     if (route.scope() == RouteScope.ROAD) {
                         webSocketHandler.broadcast(routeMessage(correctedRoute, false));
                     }
-                    log.warn("[RouteCorrection] replanned full route through vehicle position: lineId={}, prefixProvider={}, remainingProvider={}, offRouteKm={}, completedKm={}, totalKm={}, progress={}%, durationMs={}",
-                            lineId, plannedPrefix.provider(), replanned.provider(), String.format(Locale.ROOT, "%.3f", offRouteKm),
+                    log.warn("[RouteCorrection] replanned full route through vehicle position: lineId={}, prefixProvider={}, remainingProvider={}, completedWaypoints={}, remainingWaypoints={}, offRouteKm={}, completedKm={}, totalKm={}, progress={}%, durationMs={}",
+                            lineId, plannedPrefix.provider(), replanned.provider(),
+                            tripAnchors.completedWaypoints().size(), tripAnchors.remainingWaypoints().size(),
+                            String.format(Locale.ROOT, "%.3f", offRouteKm),
                             String.format(Locale.ROOT, "%.2f", completedDistanceKm),
                             String.format(Locale.ROOT, "%.2f", totalDistanceKm),
                             Math.round(correctedProgress * 100), durationMs);
@@ -1302,6 +1331,36 @@ public class RoutePushService {
     /** 装载车辆出发时回调（供 TownRoadRenderService 注入订单刷新逻辑）。 */
     public void setOnLoadingVehicleDeparted(Runnable callback) {
         this.onLoadingVehicleDeparted = callback;
+    }
+
+    public void setOnRoutePositionHistoryRefreshed(Runnable callback) {
+        this.onRoutePositionHistoryRefreshed = callback;
+    }
+
+    /** 按 tripId 读取本地连续位置证据；供应商缺历史时也不会丢失已经采到的点。 */
+    public List<RoutePositionHistorySample> localPositionHistoryForTrip(String tripId) {
+        if (tripId == null || tripId.isBlank()) return List.of();
+        return tripRuntimeMetadataByLineId.entrySet().stream()
+                .filter(entry -> tripId.equals(String.valueOf(entry.getValue().get("tripId"))))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .map(lineId -> {
+                    ScheduledRoute route = activeRoutes.get(lineId);
+                    if (route == null) return List.<RoutePositionHistorySample>of();
+                    return localPositionHistory(lineId).stream()
+                            .filter(sample -> route.pathKey().equals(sample.routePathKey()))
+                            .toList();
+                })
+                .orElse(List.of());
+    }
+
+    public void setTripRuntimeMetadataForTrip(String tripId, Map<String, Object> metadata) {
+        if (tripId == null || tripId.isBlank()) return;
+        tripRuntimeMetadataByLineId.forEach((lineId, existing) -> {
+            if (tripId.equals(String.valueOf(existing.get("tripId")))) {
+                setTripRuntimeMetadata(lineId, metadata);
+            }
+        });
     }
 
     private String getAccessTokenForExternalSafe() {
@@ -1730,6 +1789,142 @@ public class RoutePushService {
             return rm2GroupIdByLineId.getOrDefault(route.lineId(), route.pathKey());
         }
         return groupIdFor(route.lineId());
+    }
+
+    private void captureActivePositionHistory(long now) {
+        for (ScheduledRoute route : activeRoutes.values()) {
+            Map<String, Object> metadata = tripRuntimeMetadataByLineId.get(route.lineId());
+            if (metadata == null || metadata.get("tripId") == null) continue;
+            PositionSnapshot provider = positionCache.getPosition(route.lineId());
+            boolean simulated = provider == null;
+            double progress = routeProgress(route, now);
+            if (simulated) appendSyntheticMilestoneEvidence(route, metadata, progress, now);
+            double[] position = simulated
+                    ? coordinateAtProgress(route.coordinates(), progress)
+                    : provider.position();
+            Instant observedAt = simulated || provider.providerTime() == null
+                    ? Instant.ofEpochMilli(now) : provider.providerTime();
+            appendLocalPositionSample(route.lineId(), new RoutePositionHistorySample(
+                    observedAt, position, simulated ? "simulated" : provider.source(), progress,
+                    route.pathKey()));
+            persistLocalPositionHistory(route.lineId());
+        }
+    }
+
+    private void appendSyntheticMilestoneEvidence(
+            ScheduledRoute route,
+            Map<String, Object> metadata,
+            double currentProgress,
+            long now
+    ) {
+        Object rawStops = metadata.get("tripStops");
+        if (!(rawStops instanceof List<?> stops)) return;
+        for (Object rawStop : stops) {
+            Map<String, Object> stop = objectMapper.convertValue(
+                    rawStop, new TypeReference<LinkedHashMap<String, Object>>() {});
+            if ("VISITED".equals(String.valueOf(stop.get("visitState")))) continue;
+            double[] coordinates = coordinateValue(stop.get("coordinates"));
+            String stopId = stop.get("stopId") == null ? null : String.valueOf(stop.get("stopId"));
+            if (coordinates == null || stopId == null) continue;
+            double stopProgress = RouteProgressProjector.project(route.coordinates(), coordinates, -1);
+            if (currentProgress <= stopProgress + 0.001) continue;
+            double departureDelta = Math.max(0.0015,
+                    1.0 / Math.max(1.0, route.routeLengthKm()));
+            if (currentProgress <= stopProgress + departureDelta) continue;
+
+            long crossingAt = Math.min(now - 1,
+                    route.startTime() + Math.round(stopProgress * route.travelDurationMs()));
+            long arrivedAt = crossingAt - 60_000L;
+            double departureProgress = Math.min(currentProgress, stopProgress + departureDelta);
+            double[] departedPosition = coordinateAtProgress(route.coordinates(), departureProgress);
+            appendLocalPositionSample(route.lineId(), new RoutePositionHistorySample(
+                    Instant.ofEpochMilli(arrivedAt), coordinates, "simulated-arrival", stopProgress,
+                    route.pathKey()));
+            appendLocalPositionSample(route.lineId(), new RoutePositionHistorySample(
+                    Instant.ofEpochMilli(crossingAt), coordinates, "simulated-dwell", stopProgress,
+                    route.pathKey()));
+            appendLocalPositionSample(route.lineId(), new RoutePositionHistorySample(
+                    Instant.ofEpochMilli(crossingAt + 1), departedPosition,
+                    "simulated-departure", departureProgress, route.pathKey()));
+        }
+    }
+
+    private List<RoutePositionHistorySample> localPositionHistory(String lineId) {
+        List<RoutePositionHistorySample> cached = localPositionHistoryByLineId.computeIfAbsent(
+                lineId, this::restoreLocalPositionHistory);
+        synchronized (cached) {
+            return List.copyOf(cached);
+        }
+    }
+
+    private Double latestSimulatedProgress(String lineId, String routePathKey) {
+        return localPositionHistory(lineId).stream()
+                .filter(sample -> sample.source() != null && sample.source().startsWith("simulated"))
+                .filter(sample -> routePathKey != null && routePathKey.equals(sample.routePathKey()))
+                .max(Comparator.comparing(RoutePositionHistorySample::observedAt))
+                .map(RoutePositionHistorySample::progress)
+                .filter(Double::isFinite)
+                .map(value -> Math.max(0, Math.min(1, value)))
+                .orElse(null);
+    }
+
+    private void appendLocalPositionSample(String lineId, RoutePositionHistorySample sample) {
+        if (lineId == null || sample == null || sample.position() == null || sample.position().length < 2) return;
+        List<RoutePositionHistorySample> history = localPositionHistoryByLineId.computeIfAbsent(
+                lineId, this::restoreLocalPositionHistory);
+        synchronized (history) {
+            boolean duplicate = history.stream().anyMatch(existing ->
+                    existing.observedAt().equals(sample.observedAt())
+                            && distanceKm(existing.position(), sample.position()) < 0.001);
+            if (!duplicate) history.add(sample);
+            history.sort(Comparator.comparing(RoutePositionHistorySample::observedAt));
+            if (history.size() > 1_000) history.subList(0, history.size() - 1_000).clear();
+        }
+    }
+
+    private List<RoutePositionHistorySample> restoreLocalPositionHistory(String lineId) {
+        Path path = localPositionHistoryFile(lineId);
+        if (!Files.isRegularFile(path)) return new ArrayList<>();
+        try {
+            List<RoutePositionHistorySample> restored = objectMapper.readValue(
+                    path.toFile(), new TypeReference<List<RoutePositionHistorySample>>() {});
+            return new ArrayList<>(restored == null ? List.of() : restored);
+        } catch (Exception e) {
+            log.warn("[PositionHistory] failed to restore: lineId={}, path={}", lineId, path, e);
+            return new ArrayList<>();
+        }
+    }
+
+    private void persistLocalPositionHistory(String lineId) {
+        try {
+            Files.createDirectories(localPositionHistoryRoot);
+            Path target = localPositionHistoryFile(lineId);
+            Path temporary = target.resolveSibling(target.getFileName() + ".tmp");
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(
+                    temporary.toFile(), localPositionHistory(lineId));
+            try {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException ignored) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (Exception e) {
+            log.warn("[PositionHistory] failed to persist: lineId={}", lineId, e);
+        }
+    }
+
+    private Path localPositionHistoryFile(String lineId) {
+        String fileName = UUID.nameUUIDFromBytes(lineId.getBytes(StandardCharsets.UTF_8)) + ".json";
+        return localPositionHistoryRoot.resolve(fileName);
+    }
+
+    private double[] coordinateValue(Object value) {
+        if (value instanceof double[] point && point.length >= 2) return point;
+        if (value instanceof List<?> point && point.size() >= 2
+                && point.get(0) instanceof Number lng && point.get(1) instanceof Number lat) {
+            return new double[]{lng.doubleValue(), lat.doubleValue()};
+        }
+        return null;
     }
 
     private void cleanupExpiredRoutes(long now) {
@@ -2197,6 +2392,14 @@ public class RoutePushService {
         long travelDurationMs = plannedTravelDurationMs != null && plannedTravelDurationMs > 0
                 ? plannedTravelDurationMs
                 : travelDurationMs(routeLengthKm, effectiveSpeedKmh);
+        String routePathKey = pathKey(from, to, coordinates);
+        if (initialExternalPosition == null && resolvedCurrentCoords == null && !"已完成".equals(status)) {
+            Double restoredProgress = latestSimulatedProgress(lineId, routePathKey);
+            if (restoredProgress != null && restoredProgress > progress) {
+                progress = restoredProgress;
+                progressSource = "local-simulated-history";
+            }
+        }
         long startTime = "已完成".equals(status)
                 ? now - travelDurationMs
                 : now - Math.round(progress * travelDurationMs);
@@ -2216,7 +2419,7 @@ public class RoutePushService {
                 toProvince,
                 coordinates,
                 matchingCoordinates,
-                pathKey(from, to, coordinates),
+                routePathKey,
                 startTime,
                 routeLengthKm,
                 effectiveSpeedKmh,
@@ -2426,6 +2629,13 @@ public class RoutePushService {
         long travelDurationMs = plannedTravelDurationMs != null && plannedTravelDurationMs > 0
                 ? plannedTravelDurationMs
                 : travelDurationMs(routeLengthKm, effectiveSpeedKmh);
+        if (initialExternalPosition == null && resolvedCurrentCoords == null && !"已完成".equals(status)) {
+            Double restoredProgress = latestSimulatedProgress(lineId, pathKey);
+            if (restoredProgress != null && restoredProgress > progress) {
+                progress = restoredProgress;
+                progressSource = "local-simulated-history";
+            }
+        }
         long startTime = "已完成".equals(status)
                 ? now - travelDurationMs
                 : now - Math.round(progress * travelDurationMs);
@@ -2568,6 +2778,28 @@ public class RoutePushService {
         public List<double[]> getCoordinates() { return coordinates; }
         @Override
         public String getPathKey() { return pathKey; }
+    }
+
+    public record RoutePositionHistorySample(
+            Instant observedAt,
+            double[] position,
+            String source,
+            double progress,
+            String routePathKey
+    ) {
+        public RoutePositionHistorySample {
+            observedAt = observedAt == null ? Instant.EPOCH : observedAt;
+            position = position == null ? null : position.clone();
+        }
+
+        public RoutePositionHistorySample(
+                Instant observedAt,
+                double[] position,
+                String source,
+                double progress
+        ) {
+            this(observedAt, position, source, progress, null);
+        }
     }
 
     public record RouteRuntimeMetrics(

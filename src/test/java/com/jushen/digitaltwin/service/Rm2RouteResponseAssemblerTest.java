@@ -53,13 +53,38 @@ class Rm2RouteResponseAssemblerTest {
         assertEquals(false, result.containsKey("isRouteBranch"));
     }
 
+    @Test
+    void overlaysDynamicTripMilestonesFromPositionFrame() {
+        List<double[]> coordinates = List.of(point(113, 23), point(114, 24));
+        RenderRouteDTO baseline = route(coordinates, Map.of(
+                "tripId", "trip-1",
+                "targetStopId", "stop-2",
+                "tripStatusText", "正在前往第二节点"
+        ));
+        Map<String, Object> position = Map.of(
+                "tripId", "trip-1",
+                "targetStopId", "stop-3",
+                "tripStatusText", "正在前往第三节点"
+        );
+
+        Map<String, Object> result = Rm2RouteResponseAssembler.effectiveRoute(baseline, position);
+        Map<?, ?> meta = (Map<?, ?>) result.get("meta");
+
+        assertEquals("stop-3", meta.get("targetStopId"));
+        assertEquals("正在前往第三节点", meta.get("tripStatusText"));
+    }
+
     private static RenderRouteDTO route(List<double[]> coordinates) {
+        return route(coordinates, Map.of());
+    }
+
+    private static RenderRouteDTO route(List<double[]> coordinates, Map<String, Object> meta) {
         return new RenderRouteDTO(
                 "line-1", "order-1", "business-1", "粤E00001", "vehicle-1",
                 "A", "B", coordinates.get(0), coordinates.get(coordinates.size() - 1), coordinates,
                 12.0, 40.0, "运输中", "铝材", 10.0, "吨", 1_000L,
                 "baseline-path", "rm2", "group-1", "primary", "GCJ02", "now",
-                "signature", Map.of()
+                "signature", meta
         );
     }
 

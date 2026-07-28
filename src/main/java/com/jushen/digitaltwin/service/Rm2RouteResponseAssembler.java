@@ -49,7 +49,7 @@ final class Rm2RouteResponseAssembler {
         result.put("routeSignature", corrected
                 ? baseline.routeSignature() + "::revision-" + position.get("routeRevision")
                 : baseline.routeSignature());
-        result.put("meta", baseline.meta());
+        result.put("meta", TripMilestoneProgressResolver.mergeDynamicMetadata(baseline.meta(), position));
         if (corrected) {
             result.put("routeRevision", position.get("routeRevision"));
             result.put("deviationCoordinates", position.getOrDefault("deviationCoordinates", List.of()));

@@ -84,6 +84,14 @@ public class TownRoadRenderService {
         this.vehicleOrderChainStore = vehicleOrderChainStore;
         this.vehicleOrderEligibilityService = vehicleOrderEligibilityService;
         routePushService.setOnLoadingVehicleDeparted(this::onLoadingVehicleDeparted);
+        routePushService.setOnRoutePositionHistoryRefreshed(this::onRoutePositionHistoryRefreshed);
+    }
+
+    private void onRoutePositionHistoryRefreshed() {
+        int updated = vehicleOrderEligibilityService.advanceTripsFromLocalPositionHistory();
+        if (updated > 0) {
+            log.debug("[TownRoad] advanced trip milestones from local position history: count={}", updated);
+        }
     }
 
     private void onLoadingVehicleDeparted() {

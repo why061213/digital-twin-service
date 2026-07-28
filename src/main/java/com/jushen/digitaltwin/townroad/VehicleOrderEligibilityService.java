@@ -10,11 +10,13 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** 按车辆当前任务簇执行严格真实定位筛选，并用稳定锚点兼容旧单路线协议。 */
 @Service
@@ -27,6 +29,7 @@ public class VehicleOrderEligibilityService {
     private final VehicleOrderChainStore orderStore;
     private final ProviderTrajectoryClient trajectoryClient;
     private final VehicleTripRuntimeService tripRuntimeService;
+    private final Map<String, Instant> lastLocalEvidenceAtByTrip = new ConcurrentHashMap<>();
 
     public VehicleOrderEligibilityService(
             RoutePushService routePushService,
@@ -42,6 +45,86 @@ public class VehicleOrderEligibilityService {
         this.orderStore = orderStore;
         this.trajectoryClient = trajectoryClient;
         this.tripRuntimeService = tripRuntimeService;
+    }
+
+    /**
+     * 消费 RoutePushService 本地缓存的连续位置证据。
+     * 真实位置和模拟位置在这里进入同一套 ARRIVED/DWELLING/DEPARTED 状态机。
+     */
+    public int advanceTripsFromLocalPositionHistory() {
+        int updatedCount = 0;
+        for (VehicleTripRuntimeService.VehicleTripRuntime initial : tripRuntimeService.currentTrips()) {
+            List<RoutePushService.RoutePositionHistorySample> history =
+                    routePushService.localPositionHistoryForTrip(initial.tripId());
+            if (history.isEmpty()) continue;
+            Instant lastProcessed = lastLocalEvidenceAtByTrip.get(initial.tripId());
+            VehicleTripRuntimeService.VehicleTripRuntime trip = initial;
+            VehicleTripRuntimeService.TargetPresenceState presence =
+                    VehicleTripRuntimeService.TargetPresenceState.EN_ROUTE;
+            Instant newest = lastProcessed;
+            boolean consumed = false;
+            for (RoutePushService.RoutePositionHistorySample sample : history) {
+                if (sample == null || sample.position() == null || sample.position().length < 2) continue;
+                if (lastProcessed != null && !sample.observedAt().isAfter(lastProcessed)) continue;
+                consumed = true;
+                if (newest == null || sample.observedAt().isAfter(newest)) newest = sample.observedAt();
+                VehicleTripRuntimeService.TargetPresenceObservation observation =
+                        tripRuntimeService.observeCurrentTarget(trip, sample.position(), sample.observedAt());
+                presence = observation.state();
+                VehicleTripTopologyService.TripStop target = observation.target();
+                if (target == null) continue;
+                String decision = switch (observation.state()) {
+                    case ARRIVED -> "ARRIVED";
+                    case DWELLING -> target.action() == VehicleTripTopologyService.StopAction.PICKUP
+                            ? "LOADING" : "UNLOADING";
+                    case DEPARTED -> "DEPARTED";
+                    default -> null;
+                };
+                if (decision != null) {
+                    trip = tripRuntimeService.applyEligibilityEvidence(
+                            trip, target.stopId(), target.orderInstanceId(), decision, sample.position());
+                    if ("DEPARTED".equals(decision)) {
+                        presence = VehicleTripRuntimeService.TargetPresenceState.EN_ROUTE;
+                    }
+                }
+            }
+            if (!consumed) continue;
+            lastLocalEvidenceAtByTrip.put(initial.tripId(), newest);
+            VehicleTripRuntimeService.CompositeTripSnapshot snapshot =
+                    tripRuntimeService.describeCompositeTrip(trip, presence);
+            routePushService.setTripRuntimeMetadataForTrip(
+                    trip.tripId(), runtimeMetadata(snapshot));
+            updatedCount++;
+        }
+        return updatedCount;
+    }
+
+    private Map<String, Object> runtimeMetadata(
+            VehicleTripRuntimeService.CompositeTripSnapshot snapshot
+    ) {
+        if (snapshot == null || snapshot.trip() == null) return Map.of();
+        VehicleTripRuntimeService.VehicleTripRuntime trip = snapshot.trip();
+        VehicleTripTopologyService.TripStop target = tripRuntimeService.currentTargetStop(trip);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("tripId", trip.tripId());
+        metadata.put("visualKey", trip.tripId());
+        metadata.put("runtimeLineId", trip.runtimeLineId());
+        if (trip.currentLegId() != null) metadata.put("currentLegId", trip.currentLegId());
+        metadata.put("planVersion", trip.planVersion());
+        metadata.put("tripPhase", trip.phase().name());
+        metadata.put("tripDecision", snapshot.presence().name());
+        metadata.put("positionQuality", trip.positionQuality().name());
+        if (target != null) {
+            metadata.put("targetStopId", target.stopId());
+            metadata.put("targetOrderInstanceId", target.orderInstanceId());
+            metadata.put("targetAction", target.action().name());
+        }
+        metadata.put("tripStatusText", snapshot.statusText());
+        metadata.put("tripStops", snapshot.stops());
+        metadata.put("pendingOrderCount", trip.pendingPickupOrderIds().size());
+        metadata.put("onboardOrderCount", trip.onboardOrderIds().size());
+        metadata.put("completedOrderCount", trip.completedOrderIds().size());
+        return Map.copyOf(metadata);
     }
 
     public EligibilityReport analyzeLatestVehicleOrders() {

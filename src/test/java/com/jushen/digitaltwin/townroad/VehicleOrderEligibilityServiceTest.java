@@ -11,6 +11,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -179,6 +180,40 @@ class VehicleOrderEligibilityServiceTest {
         assertThat(report.decisions().get(0).currentLegOriginPosition()).containsExactly(113.05, 23.0);
         verify(fixture.routePush).freshProviderPosition("first");
         verifyNoInteractions(fixture.trajectory);
+    }
+
+    @Test
+    void localSimulatedHistoryAdvancesThroughTheSameDwellAndDepartureStateMachine() {
+        Instant now = Instant.parse("2026-07-28T02:00:00Z");
+        VehicleOrderChainStore.StoredOrder transporting = stored(
+                record("transporting", "粤E54972", "运输中", now.minusSeconds(120), 113.1), 1);
+        VehicleOrderChainStore.StoredOrder waiting = stored(
+                record("waiting", "粤E54972", "待装载", now.minusSeconds(60), 113.0), 2);
+        Fixture fixture = fixture(List.of(transporting, waiting));
+        when(fixture.routePush.providerVehicleIdForLineId("transporting")).thenReturn("54972");
+        when(fixture.routePush.freshProviderPosition("transporting")).thenReturn(
+                PositionSnapshot.fromProvider("transporting", "54972", "粤E54972", "粤E54972",
+                        113.1, 23.0, 20));
+        VehicleOrderEligibilityService.VehicleDecision initial =
+                fixture.service.analyzeLatestVehicleOrders().decisions().get(0);
+        when(fixture.routePush.localPositionHistoryForTrip(initial.tripId())).thenReturn(List.of(
+                new RoutePushService.RoutePositionHistorySample(
+                        now, new double[]{113.0, 23.0}, "simulated-arrival", 0.2),
+                new RoutePushService.RoutePositionHistorySample(
+                        now.plusSeconds(60), new double[]{113.0, 23.0}, "simulated-dwell", 0.2),
+                new RoutePushService.RoutePositionHistorySample(
+                        now.plusSeconds(61), new double[]{113.02, 23.0}, "simulated-departure", 0.22)
+        ));
+
+        int updated = fixture.service.advanceTripsFromLocalPositionHistory();
+
+        assertThat(updated).isEqualTo(1);
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, Object>> metadata =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(fixture.routePush).setTripRuntimeMetadataForTrip(eq(initial.tripId()), metadata.capture());
+        assertThat(metadata.getValue().get("targetStopId")).isNotEqualTo(initial.targetStopId());
+        assertThat(metadata.getValue().get("tripStatusText")).isNotEqualTo(initial.tripStatusText());
     }
 
     @Test
