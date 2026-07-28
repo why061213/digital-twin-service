@@ -1159,13 +1159,17 @@ public class RoutePushService {
                     continue;
                 }
                 lastRouteReplanAt.put(lineId, now);
+                RoutePlanningService.PlannedRoute plannedPrefix = routePlanningService.plan(
+                        baselineCoordinates.get(0), snapshot.position());
                 RoutePlanningService.PlannedRoute replanned = routePlanningService.plan(
                         snapshot.position(), baselineCoordinates.get(baselineCoordinates.size() - 1));
-                if (replanned.success()) {
-                    RouteCorrectionPathBuilder.Result displaySplice = RouteCorrectionPathBuilder.splice(
-                            route.coordinates(), pathProgress, snapshot.position(), replanned.coordinates());
-                    RouteCorrectionPathBuilder.Result matchingSplice = RouteCorrectionPathBuilder.splice(
-                            route.matchingCoordinates(), pathProgress, snapshot.position(), replanned.matchingCoordinates());
+                if (plannedPrefix.success() && replanned.success()) {
+                    RouteCorrectionPathBuilder.Result displaySplice = RouteCorrectionPathBuilder.joinPlanned(
+                            route.coordinates(), snapshot.position(),
+                            plannedPrefix.coordinates(), replanned.coordinates());
+                    RouteCorrectionPathBuilder.Result matchingSplice = RouteCorrectionPathBuilder.joinPlanned(
+                            route.matchingCoordinates(), snapshot.position(),
+                            plannedPrefix.matchingCoordinates(), replanned.matchingCoordinates());
                     List<double[]> correctedCoordinates = displaySplice.coordinates();
                     List<double[]> correctedMatchingCoordinates = matchingSplice.coordinates();
                     double correctedProgress = matchingSplice.progress();
@@ -1196,15 +1200,16 @@ public class RoutePushService {
                     if (route.scope() == RouteScope.ROAD) {
                         webSocketHandler.broadcast(routeMessage(correctedRoute, false));
                     }
-                    log.warn("[RouteCorrection] replanned remaining route with fixed order endpoints: lineId={}, provider={}, offRouteKm={}, completedKm={}, totalKm={}, progress={}%, durationMs={}",
-                            lineId, replanned.provider(), String.format(Locale.ROOT, "%.3f", offRouteKm),
+                    log.warn("[RouteCorrection] replanned full route through vehicle position: lineId={}, prefixProvider={}, remainingProvider={}, offRouteKm={}, completedKm={}, totalKm={}, progress={}%, durationMs={}",
+                            lineId, plannedPrefix.provider(), replanned.provider(), String.format(Locale.ROOT, "%.3f", offRouteKm),
                             String.format(Locale.ROOT, "%.2f", completedDistanceKm),
                             String.format(Locale.ROOT, "%.2f", totalDistanceKm),
                             Math.round(correctedProgress * 100), durationMs);
                     calibrated++;
                 } else {
-                    log.warn("[RouteCorrection] replan failed: lineId={}, offRouteKm={}, reason={}",
-                            lineId, String.format(Locale.ROOT, "%.3f", offRouteKm), replanned.error());
+                    log.warn("[RouteCorrection] full replan failed without straight-line fallback: lineId={}, offRouteKm={}, prefixReason={}, remainingReason={}",
+                            lineId, String.format(Locale.ROOT, "%.3f", offRouteKm),
+                            plannedPrefix.error(), replanned.error());
                 }
                 continue;
             }

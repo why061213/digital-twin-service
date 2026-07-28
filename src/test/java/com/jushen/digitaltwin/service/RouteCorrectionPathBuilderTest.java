@@ -65,6 +65,31 @@ class RouteCorrectionPathBuilderTest {
     }
 
     @Test
+    void joinsRoadPlannedPrefixAndRemainingWithoutStraightConnector() {
+        List<double[]> original = List.of(
+                new double[]{112.9, 23.0},
+                new double[]{113.5, 23.4}
+        );
+        double[] confirmed = new double[]{113.1, 23.3};
+        double[] prefixRoadBend = new double[]{112.95, 23.18};
+        double[] remainingRoadBend = new double[]{113.32, 23.36};
+
+        RouteCorrectionPathBuilder.Result result = RouteCorrectionPathBuilder.joinPlanned(
+                original,
+                confirmed,
+                List.of(original.get(0), prefixRoadBend, confirmed),
+                List.of(confirmed, remainingRoadBend, original.get(1))
+        );
+
+        assertArrayEquals(original.get(0), result.coordinates().get(0), 0.000001);
+        assertArrayEquals(prefixRoadBend, result.coordinates().get(1), 0.000001);
+        assertArrayEquals(confirmed, result.coordinates().get(2), 0.000001);
+        assertArrayEquals(remainingRoadBend, result.coordinates().get(3), 0.000001);
+        assertArrayEquals(original.get(1), result.coordinates().get(4), 0.000001);
+        assertTrue(result.progress() > 0 && result.progress() < 1);
+    }
+
+    @Test
     void partitionsStitchedRouteAtTheSameBoundaryWithoutDroppingHistory() {
         List<double[]> route = List.of(
                 new double[]{112.9, 23.0},

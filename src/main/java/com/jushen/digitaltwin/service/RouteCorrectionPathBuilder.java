@@ -50,6 +50,53 @@ final class RouteCorrectionPathBuilder {
         return new Result(List.copyOf(result), completedDistanceKm, totalDistanceKm, correctedProgress);
     }
 
+    /**
+     * 用两段真实道路规划结果拼出“订单起点 -> 车辆当前位置 -> 订单终点”。
+     * 首次真实定位偏离基准路线时，不能把车辆位置直接连到旧路线前缀，否则地图会出现穿越道路的直线。
+     */
+    static Result joinPlanned(
+            List<double[]> currentRoute,
+            double[] confirmedPosition,
+            List<double[]> plannedPrefix,
+            List<double[]> plannedRemaining
+    ) {
+        if (currentRoute == null || currentRoute.size() < 2) {
+            throw new IllegalArgumentException("currentRoute must contain at least two coordinates");
+        }
+        if (!valid(confirmedPosition)) {
+            throw new IllegalArgumentException("confirmedPosition is invalid");
+        }
+        if (plannedPrefix == null || plannedPrefix.size() < 2
+                || plannedRemaining == null || plannedRemaining.size() < 2) {
+            throw new IllegalArgumentException("both planned route segments must contain at least two coordinates");
+        }
+
+        double[] orderStart = copy(currentRoute.get(0));
+        double[] orderEnd = copy(currentRoute.get(currentRoute.size() - 1));
+        List<double[]> result = new ArrayList<>();
+        for (double[] coordinate : plannedPrefix) {
+            if (valid(coordinate)) addDistinct(result, coordinate);
+        }
+        addDistinct(result, confirmedPosition);
+        int confirmedIndex = result.size() - 1;
+        for (double[] coordinate : plannedRemaining) {
+            if (valid(coordinate)) addDistinct(result, coordinate);
+        }
+
+        if (result.size() < 2) {
+            throw new IllegalArgumentException("planned route segments contain no usable path");
+        }
+        result.set(0, orderStart);
+        if (!same(result.get(result.size() - 1), orderEnd)) result.add(orderEnd);
+        else result.set(result.size() - 1, orderEnd);
+
+        double completedDistanceKm = pathLengthKm(result.subList(0, confirmedIndex + 1));
+        double totalDistanceKm = pathLengthKm(result);
+        double correctedProgress = totalDistanceKm <= 0
+                ? 0 : Math.max(0, Math.min(1, completedDistanceKm / totalDistanceKm));
+        return new Result(List.copyOf(result), completedDistanceKm, totalDistanceKm, correctedProgress);
+    }
+
     static Partition partition(List<double[]> route, double progress) {
         if (route == null || route.size() < 2) {
             throw new IllegalArgumentException("route must contain at least two coordinates");
