@@ -197,9 +197,11 @@ class TownRoadRenderServicePipelineCutTest {
         assertThat(pipelineInput.getValue()).extracting(ExternalOrderRecord::lineId)
                 .containsExactly("trip::trip-粤A10001", "trip::trip-粤A10002");
         assertThat(pipelineInput.getValue()).extracting(order -> order.from().coords())
-                .allSatisfy(coords -> assertThat(coords).containsExactly(113.0, 23.0));
+                .allSatisfy(coords -> assertThat(coords).containsExactly(113.1, 23.1));
         assertThat(pipelineInput.getValue()).extracting(order -> order.from().province())
-                .containsOnly("江西省");
+                .containsOnly("广东省");
+        assertThat(pipelineInput.getValue()).extracting(order -> order.vehicle().currentCoords())
+                .allSatisfy(coords -> assertThat(coords).containsExactly(113.0, 23.0));
         assertThat(pipelineInput.getValue()).extracting(ExternalOrderRecord::status)
                 .containsExactly("运输中", "运输中");
         verify(routePush, never()).warmPositionCacheForLineIds(anySet());

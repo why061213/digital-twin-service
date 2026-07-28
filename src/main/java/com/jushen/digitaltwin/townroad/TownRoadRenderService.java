@@ -559,25 +559,17 @@ public class TownRoadRenderService {
         if (decision.runtimeLineId() != null
                 && decision.currentLegOriginPosition() != null
                 && decision.currentLegDestinationPosition() != null) {
-            ExternalOrderRecord.Location template = targetLocation(decision, order);
-            ExternalOrderRecord.Location from = amapGeocodeClient.reverseGeocode(
-                    decision.currentLegOriginPosition());
-            if (from == null) {
-                // 反查失败时行政区保持未知，宁可进入 RM1，也不能复制目标省份误判 RM2。
-                from = new ExternalOrderRecord.Location(
-                        "车辆当前位置", null, null, null, null,
-                        decision.currentLegOriginPosition());
-            }
-            ExternalOrderRecord.Location to = new ExternalOrderRecord.Location(
-                    decision.currentLegDestination(), template == null ? null : template.province(),
-                    template == null ? null : template.city(), template == null ? null : template.district(),
-                    template == null ? null : template.adcode(), decision.currentLegDestinationPosition());
             ExternalOrderRecord.Vehicle vehicle = order.vehicle() == null ? null : new ExternalOrderRecord.Vehicle(
                     order.vehicle().plate(), order.vehicle().carId(), order.vehicle().cargo(),
                     order.vehicle().cargoWeight(), order.vehicle().cargoUnit(),
                     decision.currentPosition(), order.vehicle().speedKmh());
+            // 单订单进入 Trip 后仍必须保留稳定的业务 OD 作为完整路线基线。
+            // currentLeg 只描述“车辆当前位置 -> 当前目标”，若用它覆盖 from/to，刷新或重启后
+            // 本地轨迹会因 pathKey 改变而无法接回，地图也只剩当前位置之后的路线。
+            // RoutePushService 会基于该完整基线校准当前位置；确认偏航时再通过道路规划拼接
+            // “订单起点 -> 车辆当前位置 -> 订单终点”，不会退化成直线。
             return new ExternalOrderRecord(
-                    decision.tripId(), decision.runtimeLineId(), null, from, to, vehicle,
+                    decision.tripId(), decision.runtimeLineId(), null, order.from(), order.to(), vehicle,
                     effectiveStatus, order.updatedAt(), order.deleted(), order.upToDate(), 0, 0);
         }
         if (safeEquals(effectiveStatus, order.status())) return order;
@@ -585,19 +577,6 @@ public class TownRoadRenderService {
                 order.orderId(), order.lineId(), order.lines(), order.from(), order.to(), order.vehicle(),
                 effectiveStatus, order.updatedAt(), order.deleted(), order.upToDate(),
                 order.lineIndex(), order.vehicleIndex());
-    }
-
-    private ExternalOrderRecord.Location targetLocation(
-            VehicleOrderEligibilityService.VehicleDecision decision,
-            ExternalOrderRecord fallbackOrder
-    ) {
-        for (VehicleOrderChainStore.StoredOrder stored : vehicleOrderChainStore.recentStoredOrders()) {
-            if (stored == null || !safeEquals(stored.key(), decision.targetOrderInstanceId())) continue;
-            ExternalOrderRecord targetOrder = stored.record();
-            if (targetOrder == null) break;
-            return "PICKUP".equals(decision.targetAction()) ? targetOrder.from() : targetOrder.to();
-        }
-        return fallbackOrder.to() == null ? fallbackOrder.from() : fallbackOrder.to();
     }
 
     private Map<String, Object> vehicleOrderChainSummary(VehicleOrderChainPipelineContext context) {
