@@ -251,6 +251,32 @@ class VehicleTripRuntimeServiceTest {
     }
 
     @Test
+    void retainsPreviousOrderWhenDynamicReplanCannotBeValidatedByRoadPlanner() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        RoutePlanningService planner = mock(RoutePlanningService.class);
+        when(planner.plan(any(double[].class), any(double[].class)))
+                .thenReturn(RoutePlanningService.PlannedRoute.unavailable("planner unavailable"));
+        ExternalOrderRecord nearerFromOrigin = record(
+                "order-near", "line-near", "运输中",
+                new double[]{113.0, 23.0}, new double[]{114.0, 23.0});
+        ExternalOrderRecord fartherFromOrigin = record(
+                "order-far", "line-far", "运输中",
+                new double[]{113.1, 23.0}, new double[]{116.0, 23.0});
+        VehicleTripRuntimeService service = new VehicleTripRuntimeService(
+                store, new VehicleTripTopologyService(), planner);
+        VehicleTripRuntimeService.VehicleTripRuntime initial = service.reconcile(List.of(
+                stored(nearerFromOrigin, 1_000), stored(fartherFromOrigin, 2_000))).get(0);
+
+        VehicleTripRuntimeService.VehicleTripRuntime result = service.replanRemainingRoute(
+                initial, new double[]{115.8, 23.0});
+
+        assertThat(result.topology().planSignature()).isEqualTo(initial.topology().planSignature());
+        assertThat(result.topology().plannedStopIds().get(0))
+                .isEqualTo(key(nearerFromOrigin) + "::DELIVERY");
+        verify(planner).plan(any(double[].class), any(double[].class));
+    }
+
+    @Test
     void deliveryRequiresValidDwellBeforeOnlyThatOrderCompletes() {
         VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
         ExternalOrderRecord onboard = record("order-1", "line-1", "运输中",

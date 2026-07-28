@@ -35,6 +35,11 @@ public class VehicleTripRuntimeService {
     private static final double MAX_INSERTION_DETOUR_KM = 30d;
     private static final double MAX_INSERTION_DETOUR_RATIO = 0.20d;
     private static final double DIRECTION_TOLERANCE_KM = 10d;
+    private static final long DYNAMIC_REPLAN_COOLDOWN_MS = 120_000L;
+    private static final double MIN_DYNAMIC_REPLAN_GAIN_KM = 0.5d;
+    private static final double MIN_DYNAMIC_REPLAN_GAIN_RATIO = 0.02d;
+    private static final double MAX_ROAD_TO_STRAIGHT_RATIO = 2.5d;
+    private static final double MAX_ROAD_TO_STRAIGHT_EXTRA_KM = 50d;
     private static final long ABSOLUTE_MIN_VALID_DWELL_MS = 60_000L;
     private final VehicleOrderChainStore orderStore;
     private final VehicleTripTopologyService topologyService;
@@ -47,6 +52,7 @@ public class VehicleTripRuntimeService {
     private final Set<String> restoreAttempted = new LinkedHashSet<>();
     private final Map<String, VehicleTripRuntime> currentByVehicle = new LinkedHashMap<>();
     private final Map<String, StopPresenceEvidence> stopPresenceByTripStop = new LinkedHashMap<>();
+    private final Map<String, Long> lastDynamicReplanAtByTrip = new LinkedHashMap<>();
 
     @Autowired
     public VehicleTripRuntimeService(
@@ -448,16 +454,10 @@ public class VehicleTripRuntimeService {
             double[] currentPosition
     ) {
         if (trip == null || currentPosition == null || currentPosition.length < 2) return trip;
-        VehicleTripTopologyService.TripTopology baselineTopology = topologyService.build(
-                trip.ordersByInstanceId(), trip.orderMembers(), trip.onboardOrderIds(),
-                trip.completedOrderIds(), trip.topology(), currentPosition, null);
+        VehicleTripRuntime baselineTrip = replanRemainingRoute(trip, currentPosition);
+        VehicleTripTopologyService.TripTopology baselineTopology = baselineTrip.topology();
         double baselineKm = topologyDistanceKm(baselineTopology);
         if (!Double.isFinite(baselineKm)) return trip;
-        // 即使没有候选订单可插入，也必须采用当前位置重排后的剩余路线。
-        // 旧逻辑在 selectedOrderId 为空时返回原 trip，导致首次建组退回 stopId 顺序。
-        VehicleTripRuntime baselineTrip = withTopology(trip, baselineTopology);
-        currentByVehicle.put(baselineTrip.vehicleKey(), baselineTrip);
-        persist(baselineTrip);
         String selectedOrderId = null;
         double selectedExtraKm = Double.MAX_VALUE;
         VehicleTripTopologyService.TripTopology selectedTopology = null;
@@ -521,6 +521,101 @@ public class VehicleTripRuntimeService {
         log.info("[VehicleTrip] inserted along route: trip={}, order={}, extraKm={}",
                 trip.tripId(), selectedOrderId, String.format(Locale.ROOT, "%.2f", selectedExtraKm));
         return updated;
+    }
+
+    /**
+     * 根据最新有效位置重排未完成后缀。候选顺序先用直线距离贪心生成，再用道路规划校验；
+     * 已完成前缀不参与重排，道路规划失败或收益过小都保留旧顺序，避免定位抖动造成跳序。
+     */
+    public synchronized VehicleTripRuntime replanRemainingRoute(
+            VehicleTripRuntime trip,
+            double[] currentPosition
+    ) {
+        if (trip == null || !hasCoordinates(currentPosition)) return trip;
+        VehicleTripTopologyService.TripTopology candidate = topologyService.build(
+                trip.ordersByInstanceId(), trip.orderMembers(), trip.onboardOrderIds(),
+                trip.completedOrderIds(), trip.topology(), currentPosition, null);
+        String oldSignature = trip.topology() == null ? "" : trip.topology().planSignature();
+        if (candidate.planSignature().equals(oldSignature)) {
+            boolean alreadyPositionAnchored = trip.topology() != null && !trip.topology().legs().isEmpty()
+                    && "CURRENT_POSITION".equals(trip.topology().legs().get(0).fromStopId());
+            // 已经锚定过车辆位置且顺序不变时不重复请求道路服务，也不覆盖已有道路折线。
+            if (alreadyPositionAnchored) return trip;
+            if (routePlanningService == null || candidate.legs().isEmpty()) {
+                return storeTopology(trip, candidate);
+            }
+            PlannedTopology road = planTopology(candidate);
+            double straightKm = topologyDistanceKm(candidate);
+            double allowedRoadKm = Math.max(straightKm * MAX_ROAD_TO_STRAIGHT_RATIO,
+                    straightKm + MAX_ROAD_TO_STRAIGHT_EXTRA_KM);
+            return road.success() && Double.isFinite(road.distanceKm()) && road.distanceKm() <= allowedRoadKm
+                    ? storeTopology(trip, road.topology()) : trip;
+        }
+
+        long now = System.currentTimeMillis();
+        Long lastAcceptedAt = lastDynamicReplanAtByTrip.get(trip.tripId());
+        if (lastAcceptedAt != null && now - lastAcceptedAt < DYNAMIC_REPLAN_COOLDOWN_MS) {
+            return trip;
+        }
+        double previousKm = remainingDistanceKm(trip.topology(), currentPosition);
+        double candidateStraightKm = topologyDistanceKm(candidate);
+        double requiredGainKm = Math.max(MIN_DYNAMIC_REPLAN_GAIN_KM,
+                previousKm * MIN_DYNAMIC_REPLAN_GAIN_RATIO);
+        if (Double.isFinite(previousKm) && Double.isFinite(candidateStraightKm)
+                && previousKm - candidateStraightKm < requiredGainKm) {
+            log.info("[VehicleTrip] dynamic replan retained: trip={}, reason=insufficient-gain, oldKm={}, candidateKm={}",
+                    trip.tripId(), formatKm(previousKm), formatKm(candidateStraightKm));
+            return trip;
+        }
+
+        VehicleTripTopologyService.TripTopology accepted = candidate;
+        if (routePlanningService != null && !candidate.legs().isEmpty()) {
+            PlannedTopology road = planTopology(candidate);
+            double allowedRoadKm = Math.max(candidateStraightKm * MAX_ROAD_TO_STRAIGHT_RATIO,
+                    candidateStraightKm + MAX_ROAD_TO_STRAIGHT_EXTRA_KM);
+            if (!road.success() || !Double.isFinite(road.distanceKm()) || road.distanceKm() > allowedRoadKm) {
+                log.warn("[VehicleTrip] dynamic replan retained: trip={}, reason=road-risk, straightKm={}, roadKm={}, success={}",
+                        trip.tripId(), formatKm(candidateStraightKm), formatKm(road.distanceKm()), road.success());
+                return trip;
+            }
+            accepted = road.topology();
+        }
+        lastDynamicReplanAtByTrip.put(trip.tripId(), now);
+        log.info("[VehicleTrip] dynamic replan accepted: trip={}, oldKm={}, newStraightKm={}, signature={}",
+                trip.tripId(), formatKm(previousKm), formatKm(candidateStraightKm), accepted.planSignature());
+        return storeTopology(trip, accepted);
+    }
+
+    private VehicleTripRuntime storeTopology(
+            VehicleTripRuntime trip,
+            VehicleTripTopologyService.TripTopology topology
+    ) {
+        VehicleTripRuntime updated = withTopology(trip, topology);
+        currentByVehicle.put(updated.vehicleKey(), updated);
+        persist(updated);
+        return updated;
+    }
+
+    private double remainingDistanceKm(
+            VehicleTripTopologyService.TripTopology topology,
+            double[] currentPosition
+    ) {
+        if (topology == null || !hasCoordinates(currentPosition)) return Double.NaN;
+        Map<String, VehicleTripTopologyService.TripStop> stops = new LinkedHashMap<>();
+        for (VehicleTripTopologyService.TripStop stop : topology.stops()) stops.put(stop.stopId(), stop);
+        double[] cursor = currentPosition;
+        double totalKm = 0d;
+        for (String stopId : topology.plannedStopIds()) {
+            VehicleTripTopologyService.TripStop stop = stops.get(stopId);
+            if (stop == null || !hasCoordinates(stop.coordinates())) return Double.NaN;
+            totalKm += VehicleTripTopologyService.haversineKm(cursor, stop.coordinates());
+            cursor = stop.coordinates();
+        }
+        return totalKm;
+    }
+
+    private String formatKm(double distanceKm) {
+        return Double.isFinite(distanceKm) ? String.format(Locale.ROOT, "%.2f", distanceKm) : "n/a";
     }
 
     private double topologyDistanceKm(VehicleTripTopologyService.TripTopology topology) {

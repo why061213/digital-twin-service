@@ -37,9 +37,11 @@ public class VehicleTripTopologyService {
         List<TripStop> stops = buildStops(orders, memberStates, onboardOrderIds, completedOrderIds, previous);
         List<TripNode> nodes = mergeNodes(stops, DEFAULT_NODE_MERGE_RADIUS_KM,
                 previous == null ? List.of() : previous.nodes());
-        List<String> plannedStopIds = planStops(stops, onboardOrderIds, currentPosition, forcedFirstStopId);
+        double[] planningPosition = hasCoordinates(currentPosition)
+                ? currentPosition : fallbackPlanningPosition(stops);
+        List<String> plannedStopIds = planStops(stops, onboardOrderIds, planningPosition, forcedFirstStopId);
         List<TripLeg> legs = reusePlannedLegs(
-                buildLegs(plannedStopIds, stops, onboardOrderIds, currentPosition), previous);
+                buildLegs(plannedStopIds, stops, onboardOrderIds, currentPosition, planningPosition), previous);
         // 计划版本只描述节点顺序；普通 GPS 位移不得制造新 planVersion/currentLegId。
         String signature = String.join(">", plannedStopIds);
         long version = previous == null ? 1L
@@ -210,8 +212,8 @@ public class VehicleTripTopologyService {
     }
 
     /**
-     * 满足先取后送与载荷非负约束的最短合法后缀。
-     * 十个待访问节点以内做精确搜索；更大任务才降级为带约束贪心，防止阶乘爆炸。
+     * 从车辆有效位置开始做带订单级先取后送约束的最近邻规划。
+     * 已经装车的订单可以先送，再去提取另一订单；但任一订单自身绝不允许先送后取。
      */
     private List<String> planStops(
             List<TripStop> stops,
@@ -228,22 +230,12 @@ public class VehicleTripTopologyService {
                 remaining.put(stop.stopId(), stop);
             }
         }
-        if (remaining.size() <= 10 && hasCoordinates(currentPosition)) {
-            PlanSearch best = new PlanSearch();
-            searchPlan(remaining, pickedOrders, new ArrayList<>(), currentPosition,
-                    initialLoad(stops, onboardOrderIds), 0d, forcedFirstStopId, best);
-            if (best.stopIds != null) return List.copyOf(best.stopIds);
-        }
-
         List<String> plan = new ArrayList<>();
         double[] cursor = hasCoordinates(currentPosition) ? currentPosition : null;
         while (!remaining.isEmpty()) {
-            boolean pickupsRemain = remaining.values().stream()
-                    .anyMatch(stop -> stop.action() == StopAction.PICKUP);
             List<TripStop> legal = remaining.values().stream()
-                    .filter(stop -> pickupsRemain
-                            ? stop.action() == StopAction.PICKUP
-                            : pickedOrders.contains(stop.orderInstanceId()))
+                    .filter(stop -> stop.action() == StopAction.PICKUP
+                            || pickedOrders.contains(stop.orderInstanceId()))
                     .toList();
             if (legal.isEmpty()) break;
             final double[] current = cursor;
@@ -251,6 +243,8 @@ public class VehicleTripTopologyService {
             TripStop selected = forced != null && legal.contains(forced) ? forced : legal.stream().min(Comparator
                     .comparingDouble((TripStop stop) -> current == null ? 0d : distanceOrMax(current, stop.coordinates()))
                     .thenComparing(stop -> stop.action() == StopAction.PICKUP ? 0 : 1)
+                    .thenComparingDouble(stop -> coordinate(stop.coordinates(), 0))
+                    .thenComparingDouble(stop -> coordinate(stop.coordinates(), 1))
                     .thenComparing(TripStop::stopId)).orElseThrow();
             plan.add(selected.stopId());
             remaining.remove(selected.stopId());
@@ -260,68 +254,38 @@ public class VehicleTripTopologyService {
         return List.copyOf(plan);
     }
 
-    private void searchPlan(
-            Map<String, TripStop> remaining,
-            Set<String> pickedOrders,
-            List<String> path,
-            double[] cursor,
-            double currentLoad,
-            double distanceKm,
-            String forcedFirstStopId,
-            PlanSearch best
-    ) {
-        if (distanceKm >= best.distanceKm) return;
-        if (remaining.isEmpty()) {
-            best.distanceKm = distanceKm;
-            best.stopIds = List.copyOf(path);
-            return;
-        }
-        boolean pickupsRemain = remaining.values().stream()
-                .anyMatch(stop -> stop.action() == StopAction.PICKUP);
-        List<TripStop> legal = remaining.values().stream()
-                .filter(stop -> pickupsRemain
-                        ? stop.action() == StopAction.PICKUP
-                        : pickedOrders.contains(stop.orderInstanceId()))
-                .filter(stop -> path.isEmpty() && forcedFirstStopId != null
-                        ? forcedFirstStopId.equals(stop.stopId()) : true)
+    private double[] fallbackPlanningPosition(List<TripStop> stops) {
+        List<TripStop> pending = stops.stream()
+                .filter(stop -> stop.visitState() != VisitState.VISITED)
                 .filter(stop -> hasCoordinates(stop.coordinates()))
-                .sorted(Comparator.comparingDouble(stop -> haversineKm(cursor, stop.coordinates())))
                 .toList();
-        for (TripStop stop : legal) {
-            double delta = stop.cargoDelta() == null ? 0d : stop.cargoDelta();
-            double nextLoad = currentLoad + delta;
-            if (nextLoad < -0.001d) continue;
-            Map<String, TripStop> nextRemaining = new LinkedHashMap<>(remaining);
-            nextRemaining.remove(stop.stopId());
-            Set<String> nextPicked = new LinkedHashSet<>(pickedOrders);
-            if (stop.action() == StopAction.PICKUP) nextPicked.add(stop.orderInstanceId());
-            path.add(stop.stopId());
-            searchPlan(nextRemaining, nextPicked, path, stop.coordinates(), nextLoad,
-                    distanceKm + haversineKm(cursor, stop.coordinates()), null, best);
-            path.remove(path.size() - 1);
-        }
+        List<TripStop> visited = stops.stream()
+                .filter(stop -> stop.visitState() == VisitState.VISITED)
+                .filter(stop -> hasCoordinates(stop.coordinates()))
+                .toList();
+        List<TripStop> anchors = visited.isEmpty()
+                ? pending.stream().filter(stop -> stop.action() == StopAction.PICKUP).toList()
+                : visited;
+        return anchors.stream().min(Comparator
+                        .comparingDouble((TripStop anchor) -> pending.stream()
+                                .mapToDouble(stop -> haversineKm(anchor.coordinates(), stop.coordinates())).sum())
+                        .thenComparingDouble(anchor -> coordinate(anchor.coordinates(), 0))
+                        .thenComparingDouble(anchor -> coordinate(anchor.coordinates(), 1)))
+                .map(TripStop::coordinates)
+                .map(double[]::clone)
+                .orElse(null);
     }
 
-    private double initialLoad(List<TripStop> stops, Set<String> onboardOrderIds) {
-        return stops.stream()
-                .filter(stop -> stop.action() == StopAction.PICKUP)
-                .filter(stop -> onboardOrderIds.contains(stop.orderInstanceId()))
-                .map(TripStop::cargoDelta)
-                .filter(java.util.Objects::nonNull)
-                .mapToDouble(Double::doubleValue)
-                .sum();
-    }
-
-    private static final class PlanSearch {
-        private double distanceKm = Double.MAX_VALUE;
-        private List<String> stopIds;
+    private double coordinate(double[] coordinates, int index) {
+        return hasCoordinates(coordinates) ? coordinates[index] : Double.MAX_VALUE;
     }
 
     private List<TripLeg> buildLegs(
             List<String> plannedStopIds,
             List<TripStop> stops,
             Set<String> onboardOrderIds,
-            double[] currentPosition
+            double[] currentPosition,
+            double[] planningPosition
     ) {
         Map<String, TripStop> byId = new LinkedHashMap<>();
         for (TripStop stop : stops) byId.put(stop.stopId(), stop);
@@ -331,9 +295,12 @@ public class VehicleTripTopologyService {
                     .filter(stop -> stop.action() == StopAction.PICKUP)
                     .filter(stop -> stop.visitState() == VisitState.VISITED)
                     .filter(stop -> onboardOrderIds.contains(stop.orderInstanceId()))
+                    .min(Comparator
+                            .comparingDouble((TripStop stop) -> hasCoordinates(planningPosition)
+                                    ? distanceOrMax(planningPosition, stop.coordinates()) : 0d)
+                            .thenComparingDouble(stop -> coordinate(stop.coordinates(), 0))
+                            .thenComparingDouble(stop -> coordinate(stop.coordinates(), 1)))
                     .map(TripStop::stopId)
-                    .sorted()
-                    .reduce((first, second) -> second)
                     .ifPresent(executionSequence::add);
         }
         executionSequence.addAll(plannedStopIds);

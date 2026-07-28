@@ -62,11 +62,13 @@ public class VehicleOrderEligibilityService {
             VehicleTripRuntimeService.TargetPresenceState presence =
                     VehicleTripRuntimeService.TargetPresenceState.EN_ROUTE;
             Instant newest = lastProcessed;
+            double[] latestPosition = null;
             boolean consumed = false;
             for (RoutePushService.RoutePositionHistorySample sample : history) {
                 if (sample == null || sample.position() == null || sample.position().length < 2) continue;
                 if (lastProcessed != null && !sample.observedAt().isAfter(lastProcessed)) continue;
                 consumed = true;
+                latestPosition = sample.position().clone();
                 if (newest == null || sample.observedAt().isAfter(newest)) newest = sample.observedAt();
                 VehicleTripRuntimeService.TargetPresenceObservation observation =
                         tripRuntimeService.observeCurrentTarget(trip, sample.position(), sample.observedAt());
@@ -89,6 +91,7 @@ public class VehicleOrderEligibilityService {
                 }
             }
             if (!consumed) continue;
+            trip = tripRuntimeService.replanRemainingRoute(trip, latestPosition);
             lastLocalEvidenceAtByTrip.put(initial.tripId(), newest);
             VehicleTripRuntimeService.CompositeTripSnapshot snapshot =
                     tripRuntimeService.describeCompositeTrip(trip, presence);

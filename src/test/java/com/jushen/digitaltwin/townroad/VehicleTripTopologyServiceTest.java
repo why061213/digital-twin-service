@@ -57,6 +57,54 @@ class VehicleTripTopologyServiceTest {
                 .containsOnly(confirmed.key());
     }
 
+    @Test
+    void mayDeliverLoadedOrderBeforeAnotherPickupButNeverDeliverAnOrderBeforeItsOwnPickup() {
+        VehicleOrderChainStore.StoredOrder loaded = stored("LOADED", "L1", 113.0, 23.0, 113.02, 23.0);
+        VehicleOrderChainStore.StoredOrder waiting = stored("WAITING", "L2", 114.0, 23.0, 114.5, 23.0);
+        Map<String, VehicleOrderChainStore.StoredOrder> orders = orders(loaded, waiting);
+        VehicleTripTopologyService.TripTopology topology = new VehicleTripTopologyService().build(
+                orders,
+                Map.of(loaded.key(), VehicleTripRuntimeService.TripMemberState.CONFIRMED,
+                        waiting.key(), VehicleTripRuntimeService.TripMemberState.CONFIRMED),
+                Set.of(loaded.key()), Set.of(), null, new double[]{113.01, 23.0}, null);
+
+        assertThat(topology.plannedStopIds().get(0)).isEqualTo(loaded.key() + "::DELIVERY");
+        assertBefore(topology.plannedStopIds(), waiting.key() + "::PICKUP", waiting.key() + "::DELIVERY");
+    }
+
+    @Test
+    void identicalCoordinatesProduceIdenticalSpatialOrderWithoutLivePosition() {
+        VehicleOrderChainStore.StoredOrder firstA = stored("A1", "LA1", 113.0, 23.0, 113.13, 23.56);
+        VehicleOrderChainStore.StoredOrder firstB = stored("A2", "LA2", 113.0, 23.0, 113.14, 23.62);
+        VehicleOrderChainStore.StoredOrder secondA = stored("Z9", "LZ9", 113.0, 23.0, 113.13, 23.56);
+        VehicleOrderChainStore.StoredOrder secondB = stored("Z8", "LZ8", 113.0, 23.0, 113.14, 23.62);
+        VehicleTripTopologyService service = new VehicleTripTopologyService();
+
+        VehicleTripTopologyService.TripTopology first = service.build(
+                orders(firstA, firstB),
+                Map.of(firstA.key(), VehicleTripRuntimeService.TripMemberState.CONFIRMED,
+                        firstB.key(), VehicleTripRuntimeService.TripMemberState.CONFIRMED),
+                Set.of(firstA.key(), firstB.key()), Set.of(), null);
+        VehicleTripTopologyService.TripTopology second = service.build(
+                orders(secondA, secondB),
+                Map.of(secondA.key(), VehicleTripRuntimeService.TripMemberState.CONFIRMED,
+                        secondB.key(), VehicleTripRuntimeService.TripMemberState.CONFIRMED),
+                Set.of(secondA.key(), secondB.key()), Set.of(), null);
+
+        assertThat(spatialPlan(first)).containsExactlyElementsOf(spatialPlan(second));
+        assertThat(spatialPlan(first)).containsExactly("113.13000,23.56000", "113.14000,23.62000");
+    }
+
+    private List<String> spatialPlan(VehicleTripTopologyService.TripTopology topology) {
+        Map<String, VehicleTripTopologyService.TripStop> byId = topology.stops().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        VehicleTripTopologyService.TripStop::stopId, stop -> stop));
+        return topology.plannedStopIds().stream().map(byId::get)
+                .map(stop -> String.format(java.util.Locale.ROOT, "%.5f,%.5f",
+                        stop.coordinates()[0], stop.coordinates()[1]))
+                .toList();
+    }
+
     private void assertBefore(List<String> values, String first, String second) {
         assertThat(values.indexOf(first)).isLessThan(values.indexOf(second));
     }
