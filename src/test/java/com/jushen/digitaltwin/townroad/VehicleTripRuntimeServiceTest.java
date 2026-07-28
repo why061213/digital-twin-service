@@ -413,6 +413,43 @@ class VehicleTripRuntimeServiceTest {
                 .isEqualTo(key(farther));
     }
 
+    @Test
+    void compositeViewReopensUpstreamCompletedDeliveryAndPlansItAfterNearerDestination() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        ExternalOrderRecord fartherTransporting = record(
+                "order-a-far", "line-a-far", "运输中",
+                new double[]{113.0, 23.0}, new double[]{113.14, 23.62});
+        ExternalOrderRecord nearer = record(
+                "order-z-near", "line-z-near", "运输中",
+                new double[]{113.1, 23.15}, new double[]{113.13, 23.56});
+        VehicleTripRuntimeService service = new VehicleTripRuntimeService(store);
+        VehicleTripRuntimeService.VehicleTripRuntime initial = service.reconcile(List.of(
+                stored(fartherTransporting, 1_000), stored(nearer, 2_000))).get(0);
+        ExternalOrderRecord fartherCompleted = record(
+                "order-a-far", "line-a-far", "已完成",
+                new double[]{113.0, 23.0}, new double[]{113.14, 23.62});
+        VehicleTripRuntimeService.VehicleTripRuntime upstreamCompleted = service.reconcile(List.of(
+                stored(fartherCompleted, 1_000), stored(nearer, 2_000))).get(0);
+
+        assertThat(initial.orderMembers()).hasSize(2);
+        assertThat(upstreamCompleted.completedOrderIds()).contains(key(fartherCompleted));
+
+        VehicleTripRuntimeService.VehicleTripRuntime composite =
+                service.includeAllActiveOrdersForCompositeView(upstreamCompleted);
+        VehicleTripRuntimeService.VehicleTripRuntime replanned = service.evaluateDynamicInsertions(
+                composite, new double[]{112.98, 23.08});
+
+        assertThat(replanned.completedOrderIds()).doesNotContain(key(fartherCompleted));
+        assertThat(replanned.topology().plannedStopIds()).containsExactly(
+                key(nearer) + "::DELIVERY",
+                key(fartherCompleted) + "::DELIVERY");
+        assertThat(replanned.topology().stops().stream()
+                .filter(stop -> stop.orderInstanceId().equals(key(fartherCompleted)))
+                .filter(stop -> stop.action() == VehicleTripTopologyService.StopAction.DELIVERY)
+                .findFirst().orElseThrow().visitState())
+                .isEqualTo(VehicleTripTopologyService.VisitState.PENDING);
+    }
+
     private VehicleTripRuntimeService.CompositeTripSnapshot resolveComposite(
             VehicleOrderChainStore store,
             List<VehicleOrderChainStore.StoredOrder> route,

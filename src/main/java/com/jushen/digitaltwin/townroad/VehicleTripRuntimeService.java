@@ -159,31 +159,51 @@ public class VehicleTripRuntimeService {
     }
 
     /**
-     * 真实位置过滤关闭时，所有同时存在的未完成订单都属于同一展示行程。
-     * 这里只补齐聚合视图，不改写动态插单判定保存的运行态。
+     * 真实位置过滤关闭时，同时存在的订单生成独立的合并展示行程。
+     * 上游完成状态不代表车辆已经实际到过卸货点；复合行程仍须把这些卸货点纳入
+     * 当前坐标驱动的路线重排，避免路线提前结束、较远目的地变成孤立节点。
      */
     public synchronized VehicleTripRuntime includeAllActiveOrdersForCompositeView(VehicleTripRuntime trip) {
         if (trip == null || trip.ordersByInstanceId() == null || trip.ordersByInstanceId().size() < 2) return trip;
         Map<String, TripMemberState> members = new LinkedHashMap<>(trip.orderMembers());
         Set<String> activeOrderIds = new LinkedHashSet<>();
         Set<String> pendingPickup = new LinkedHashSet<>(trip.pendingPickupOrderIds());
+        Set<String> onboard = new LinkedHashSet<>(trip.onboardOrderIds());
+        Set<String> pendingDelivery = new LinkedHashSet<>(trip.pendingDeliveryOrderIds());
+        Set<String> completed = new LinkedHashSet<>(trip.completedOrderIds());
+        Set<String> upstreamCompleted = new LinkedHashSet<>();
+        boolean hasUnfinishedMember = false;
         for (Map.Entry<String, VehicleOrderChainStore.StoredOrder> entry : trip.ordersByInstanceId().entrySet()) {
             String instanceId = entry.getKey();
             VehicleOrderChainStore.StoredOrder stored = entry.getValue();
-            if (stored == null || stored.record() == null || isCompleted(stored.record().status())) continue;
+            if (stored == null || stored.record() == null) continue;
+            TripMemberState existingState = members.get(instanceId);
+            if (existingState == TripMemberState.QUEUED || existingState == TripMemberState.REJECTED) continue;
             members.put(instanceId, TripMemberState.CONFIRMED);
             activeOrderIds.add(instanceId);
-            if (!trip.onboardOrderIds().contains(instanceId)) pendingPickup.add(instanceId);
+            if (isCompleted(stored.record().status())) {
+                upstreamCompleted.add(instanceId);
+                onboard.add(instanceId);
+                pendingDelivery.add(instanceId);
+                pendingPickup.remove(instanceId);
+            } else {
+                hasUnfinishedMember = true;
+                if (!onboard.contains(instanceId)) pendingPickup.add(instanceId);
+            }
         }
-        if (activeOrderIds.size() < 2) return trip;
+        if (activeOrderIds.size() < 2 || !hasUnfinishedMember || upstreamCompleted.isEmpty()) return trip;
+        completed.removeAll(upstreamCompleted);
+        VehicleTripTopologyService.TripTopology planningPrevious =
+                topologyService.reopenDeliveriesForCompositePlanning(trip.topology(), upstreamCompleted);
         VehicleTripTopologyService.TripTopology topology = topologyService.build(
-                trip.ordersByInstanceId(), Map.copyOf(members), trip.onboardOrderIds(),
-                trip.completedOrderIds(), trip.topology());
+                trip.ordersByInstanceId(), Map.copyOf(members), Set.copyOf(onboard),
+                Set.copyOf(completed), planningPrevious);
         VehicleTripRuntime compositeView = new VehicleTripRuntime(
                 trip.tripId(), trip.vehicleKey(), List.copyOf(activeOrderIds), trip.ordersByInstanceId(),
                 Map.copyOf(members), Set.of(), trip.rejectedOrderIds(),
-                trip.visitedPickupOrderIds(), trip.onboardOrderIds(), Set.copyOf(pendingPickup),
-                trip.pendingDeliveryOrderIds(), trip.completedOrderIds(), List.copyOf(pendingPickup),
+                trip.visitedPickupOrderIds(), Set.copyOf(onboard), Set.copyOf(pendingPickup),
+                Set.copyOf(pendingDelivery), Set.copyOf(completed),
+                pendingPickup.isEmpty() ? List.copyOf(pendingDelivery) : List.copyOf(pendingPickup),
                 trip.anchorOrderInstanceId(), trip.phase(), trip.openedAt(), trip.closedAt(),
                 trip.runtimeLineId(), trip.currentNodeId(), trip.currentLegId(), topology.planVersion(),
                 trip.positionQuality(), topology);

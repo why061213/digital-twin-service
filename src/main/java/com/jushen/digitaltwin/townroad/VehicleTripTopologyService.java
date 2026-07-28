@@ -139,6 +139,35 @@ public class VehicleTripTopologyService {
                 topology.planVersion(), topology.planSignature());
     }
 
+    /**
+     * 合并订单初始化时，上游“已完成”不能直接充当车辆到过卸货点的轨迹证据。
+     * 该方法只供复合展示行程重建计划前使用，显式解除指定订单卸货点的完成态；
+     * 装载点仍由 onboard 集合保持为已访问，单订单与正常轨迹推进不走这里。
+     */
+    public TripTopology reopenDeliveriesForCompositePlanning(
+            TripTopology topology,
+            Set<String> orderInstanceIds
+    ) {
+        if (topology == null || orderInstanceIds == null || orderInstanceIds.isEmpty()) return topology;
+        List<TripStop> stops = topology.stops().stream()
+                .map(stop -> orderInstanceIds.contains(stop.orderInstanceId())
+                        && stop.action() == StopAction.DELIVERY
+                        ? new TripStop(stop.stopId(), stop.orderInstanceId(), stop.orderId(), stop.action(),
+                        stop.locationName(), stop.coordinates(), stop.timeWindow(), stop.cargoDelta(),
+                        VisitState.PENDING)
+                        : stop)
+                .toList();
+        Map<String, TripStop> byId = new LinkedHashMap<>();
+        for (TripStop stop : stops) byId.put(stop.stopId(), stop);
+        List<TripNode> nodes = topology.nodes().stream()
+                .map(node -> new TripNode(node.nodeId(), node.stops().stream()
+                        .map(stop -> byId.getOrDefault(stop.stopId(), stop)).toList(),
+                        node.coordinates(), node.internalVisitSequence()))
+                .toList();
+        return new TripTopology(stops, nodes, topology.plannedStopIds(), topology.legs(),
+                topology.planVersion(), topology.planSignature());
+    }
+
     private List<TripNode> mergeNodes(List<TripStop> stops, double radiusKm, List<TripNode> previousNodes) {
         List<List<TripStop>> clusters = new ArrayList<>();
         for (TripStop stop : stops) {
