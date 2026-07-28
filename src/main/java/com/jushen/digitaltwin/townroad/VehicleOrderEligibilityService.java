@@ -17,6 +17,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** 按车辆当前任务簇执行严格真实定位筛选，并用稳定锚点兼容旧单路线协议。 */
 @Service
@@ -30,6 +31,7 @@ public class VehicleOrderEligibilityService {
     private final ProviderTrajectoryClient trajectoryClient;
     private final VehicleTripRuntimeService tripRuntimeService;
     private final Map<String, Instant> lastLocalEvidenceAtByTrip = new ConcurrentHashMap<>();
+    private final AtomicBoolean completionRefreshRequired = new AtomicBoolean();
 
     public VehicleOrderEligibilityService(
             RoutePushService routePushService,
@@ -78,11 +80,18 @@ public class VehicleOrderEligibilityService {
                 String decision = switch (observation.state()) {
                     case ARRIVED -> "ARRIVED";
                     case DWELLING -> target.action() == VehicleTripTopologyService.StopAction.PICKUP
-                            ? "LOADING" : "UNLOADING";
+                            ? "LOADING" : "COMPLETED_INFERRED";
                     case DEPARTED -> "DEPARTED";
                     default -> null;
                 };
                 if (decision != null) {
+                    if ("COMPLETED_INFERRED".equals(decision)) {
+                        VehicleOrderChainStore.StoredOrder completed =
+                                trip.ordersByInstanceId().get(target.orderInstanceId());
+                        if (completed != null && orderStore.recordInferredCompletion(completed.record())) {
+                            completionRefreshRequired.set(true);
+                        }
+                    }
                     trip = tripRuntimeService.applyEligibilityEvidence(
                             trip, target.stopId(), target.orderInstanceId(), decision, sample.position());
                     if ("DEPARTED".equals(decision)) {
@@ -100,6 +109,10 @@ public class VehicleOrderEligibilityService {
             updatedCount++;
         }
         return updatedCount;
+    }
+
+    public boolean consumeCompletionRefreshRequired() {
+        return completionRefreshRequired.getAndSet(false);
     }
 
     private Map<String, Object> runtimeMetadata(
@@ -243,8 +256,12 @@ public class VehicleOrderEligibilityService {
             }
             if (observation.state() == VehicleTripRuntimeService.TargetPresenceState.DWELLING) {
                 boolean pickup = target.action() == VehicleTripTopologyService.StopAction.PICKUP;
+                if (!pickup && targetOrder != null
+                        && orderStore.recordInferredCompletion(targetOrder.record())) {
+                    completionRefreshRequired.set(true);
+                }
                 return decision(trip, current, instanceId, providerVehicleId, alreadyCarrying,
-                        pickup ? "LOADING" : "UNLOADING",
+                        pickup ? "LOADING" : "COMPLETED_INFERRED",
                         pickup ? "pickup-valid-dwell-confirmed" : "delivery-valid-dwell-confirmed",
                         position, null, null);
             }
@@ -420,7 +437,8 @@ public class VehicleOrderEligibilityService {
         double[] legDestination = effectiveTarget == null ? null : effectiveTarget.coordinates();
         VehicleTripRuntimeService.TargetPresenceState presence = switch (effectiveDecision) {
             case "ARRIVED" -> VehicleTripRuntimeService.TargetPresenceState.ARRIVED;
-            case "LOADING", "UNLOADING" -> VehicleTripRuntimeService.TargetPresenceState.DWELLING;
+            case "LOADING", "UNLOADING", "COMPLETED_INFERRED" ->
+                    VehicleTripRuntimeService.TargetPresenceState.DWELLING;
             default -> VehicleTripRuntimeService.TargetPresenceState.EN_ROUTE;
         };
         VehicleTripRuntimeService.CompositeTripSnapshot composite =

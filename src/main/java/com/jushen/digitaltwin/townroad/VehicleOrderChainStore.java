@@ -39,7 +39,9 @@ public class VehicleOrderChainStore {
     private static final String STATUS_WAITING = "待装载";
     private static final String STATUS_TRANSIT_CONFIRMED = "在途-1";
     private static final String STATUS_TRANSIT_INFERRED = "在途-2";
-    private static final String STATUS_COMPLETED = "已完成";
+    private static final String STATUS_COMPLETED_LEGACY = "已完成";
+    private static final String STATUS_COMPLETED_CONFIRMED = "已完成-1";
+    private static final String STATUS_COMPLETED_INFERRED = "已完成-2";
     private static final Duration TRACKING_HISTORY_RETENTION = Duration.ofHours(48);
 
     private final ObjectMapper objectMapper;
@@ -102,14 +104,16 @@ public class VehicleOrderChainStore {
             ExternalOrderRecord record = entry.getValue();
             String plate = vehicleKey(record);
             affectedPlates.add(plate);
-            if (isCompleted(record)) completedCount++; else otherCount++;
+            boolean effectivelyCompleted = isCompleted(record) || recordedCompletionStatus(record) != null;
+            if (effectivelyCompleted) completedCount++; else otherCount++;
 
             // 纯订单快照 diff 只比较上游订单；车辆库中的“在途-2”是本地推断事件，
             // 不得因上游仍返回同一条“待装载”而触发订单更新或覆盖推断状态。
             StoredOrder current = recentOrdersByKey.get(key);
             if (current != null && compareRecordTime(record, current.record()) < 0) {
                 staleCount++;
-            } else if (current != null && sameRecord(record, current.record())) {
+            } else if (current != null && sameRecord(record, current.record())
+                    && effectivelyCompleted == "COMPLETED".equals(current.category())) {
                 unchangedCount++;
             } else {
                 StoredOrder stored = new StoredOrder(
@@ -117,7 +121,7 @@ public class VehicleOrderChainStore {
                         safe(record.orderId()),
                         routeKey(record),
                         plate,
-                        isCompleted(record) ? "COMPLETED" : "OTHER",
+                        effectivelyCompleted ? "COMPLETED" : "OTHER",
                         current == null ? observedAt : current.firstObservedAtMs(),
                         observedAt,
                         record
@@ -200,6 +204,34 @@ public class VehicleOrderChainStore {
         }
         if (entries.containsKey(vehicleEventKey(orderId, STATUS_TRANSIT_INFERRED))) {
             return STATUS_TRANSIT_INFERRED;
+        }
+        return null;
+    }
+
+    /** 目的地持续驻留达到阈值时追加轨迹推定完成事件；不改写后续正式确认。 */
+    public synchronized boolean recordInferredCompletion(ExternalOrderRecord record) {
+        if (record == null) return false;
+        String plate = vehicleKey(record);
+        boolean changed = appendVehicleStatus(
+                plate, record, STATUS_COMPLETED_INFERRED, clock.millis(), false);
+        if (changed) {
+            writeVehicleFile(plate);
+            writeTrackingIndex();
+        }
+        return changed;
+    }
+
+    /** 返回订单链的完成级别；正式确认优先，但已完成-2会作为独立审计事件永久保留。 */
+    public synchronized String recordedCompletionStatus(ExternalOrderRecord record) {
+        if (record == null || safe(record.orderId()).isBlank()) return null;
+        Map<String, VehicleOrderEntry> entries = loadVehicleEntries(vehicleKey(record));
+        String orderId = safe(record.orderId());
+        if (entries.containsKey(vehicleEventKey(orderId, STATUS_COMPLETED_CONFIRMED))
+                || entries.containsKey(vehicleEventKey(orderId, STATUS_COMPLETED_LEGACY))) {
+            return STATUS_COMPLETED_CONFIRMED;
+        }
+        if (entries.containsKey(vehicleEventKey(orderId, STATUS_COMPLETED_INFERRED))) {
+            return STATUS_COMPLETED_INFERRED;
         }
         return null;
     }
@@ -492,7 +524,7 @@ public class VehicleOrderChainStore {
 
     private String externalVehicleStatus(String rawStatus) {
         String status = safe(rawStatus).replace(" ", "");
-        if (status.contains("已完成") || status.equals("完成")) return STATUS_COMPLETED;
+        if (status.contains("已完成") || status.equals("完成")) return STATUS_COMPLETED_CONFIRMED;
         if (status.contains("运输中") || status.contains("运行中") || status.contains("在途")) {
             return STATUS_TRANSIT_CONFIRMED;
         }

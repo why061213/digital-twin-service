@@ -130,7 +130,32 @@ class VehicleOrderChainStoreTest {
         assertThat(vehicleFile.orders()).extracting(VehicleOrderChainStore.VehicleOrderEntry::orderId)
                 .containsExactly("order-1", "order-1", "order-1", "order-2");
         assertThat(vehicleFile.orders()).extracting(VehicleOrderChainStore.VehicleOrderEntry::status)
-                .containsExactly("待装载", "在途-1", "已完成", "待装载");
+                .containsExactly("待装载", "在途-1", "已完成-1", "待装载");
+    }
+
+    @Test
+    void inferredCompletionIsPreservedWhenFormalCompletionIsLaterAppended() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        VehicleOrderChainStore store = store(objectMapper, temporaryDirectory, "2026-07-22T08:00:00Z");
+        ExternalOrderRecord transporting = record(
+                "order-1", "route-1", "粤A12345", "运输中", "2026-07-22T07:30:00Z");
+
+        store.ingest(List.of(transporting));
+        assertThat(store.recordInferredCompletion(transporting)).isTrue();
+        assertThat(store.recordedCompletionStatus(transporting)).isEqualTo("已完成-2");
+        store.ingest(List.of(record(
+                "order-1", "route-1", "粤A12345", "已完成", "2026-07-22T10:30:00Z")));
+        store.ingest(List.of(record(
+                "order-1", "route-1", "粤A12345", "运输中", "2026-07-22T11:30:00Z")));
+
+        assertThat(store.recordedCompletionStatus(transporting)).isEqualTo("已完成-1");
+        assertThat(store.recentStoredOrders()).singleElement()
+                .extracting(VehicleOrderChainStore.StoredOrder::category).isEqualTo("COMPLETED");
+        VehicleOrderChainStore.VehicleFile vehicleFile = objectMapper.readValue(
+                temporaryDirectory.resolve("vehicles/粤/A/12345.json").toFile(),
+                VehicleOrderChainStore.VehicleFile.class);
+        assertThat(vehicleFile.orders()).extracting(VehicleOrderChainStore.VehicleOrderEntry::status)
+                .contains("已完成-2", "已完成-1");
     }
 
     @Test

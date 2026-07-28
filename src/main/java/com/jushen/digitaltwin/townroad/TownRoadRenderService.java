@@ -92,6 +92,14 @@ public class TownRoadRenderService {
         if (updated > 0) {
             log.debug("[TownRoad] advanced trip milestones from local position history: count={}", updated);
         }
+        if (vehicleOrderEligibilityService.consumeCompletionRefreshRequired()) {
+            try {
+                log.info("[TownRoad] inferred destination completion recorded, refreshing active order chains");
+                fetchProcessAndBroadcast();
+            } catch (Exception exception) {
+                log.warn("[TownRoad] inferred completion refresh failed", exception);
+            }
+        }
     }
 
     private void onLoadingVehicleDeparted() {
