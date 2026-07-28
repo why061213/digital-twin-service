@@ -18,8 +18,8 @@ class TripRouteAnchorResolverTest {
         );
         Map<String, Object> metadata = Map.of("tripStops", List.of(
                 stop(route.get(0), "VISITED"),
-                stop(route.get(1), "VISITED"),
-                stop(route.get(2), "PENDING"),
+                stop(route.get(1), "PENDING"),
+                stop(route.get(2), "VISITED"),
                 stop(route.get(3), "PENDING")
         ));
 

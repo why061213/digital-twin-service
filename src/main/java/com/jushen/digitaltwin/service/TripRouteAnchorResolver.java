@@ -36,7 +36,6 @@ final class TripRouteAnchorResolver {
             if (coordinates == null) continue;
             stops.add(new ProjectedStop(
                     coordinates,
-                    "VISITED".equals(String.valueOf(stop.get("visitState"))),
                     RouteProgressProjector.project(baselineCoordinates, coordinates, -1)));
         }
         stops.sort(Comparator.comparingDouble(ProjectedStop::progress));
@@ -45,9 +44,11 @@ final class TripRouteAnchorResolver {
         for (ProjectedStop stop : stops) {
             if (distanceKm(stop.coordinates(), origin) < 0.05
                     || distanceKm(stop.coordinates(), destination) < 0.05) continue;
-            if (stop.visited() && stop.progress() <= currentProgress + 0.01) {
+            // 以车辆在基准路线上的空间进度切分，不能只看 visitState。
+            // 上游状态和实时位置短暂不一致时，也必须保证每个业务节点仍落在修正路线中。
+            if (stop.progress() <= currentProgress + 0.01) {
                 addDistinct(prefix, stop.coordinates());
-            } else if (!stop.visited()) {
+            } else {
                 addDistinct(remaining, stop.coordinates());
             }
         }
@@ -80,7 +81,7 @@ final class TripRouteAnchorResolver {
         return 6_371.0088 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
     }
 
-    private record ProjectedStop(double[] coordinates, boolean visited, double progress) {
+    private record ProjectedStop(double[] coordinates, double progress) {
     }
 
     record Anchors(List<double[]> completedWaypoints, List<double[]> remainingWaypoints) {
