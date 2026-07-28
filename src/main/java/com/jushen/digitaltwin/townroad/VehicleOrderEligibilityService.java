@@ -51,34 +51,11 @@ public class VehicleOrderEligibilityService {
         List<VehicleOrderChainStore.StoredOrder> currentSnapshot = orderStore.latestObservedStoredOrders();
         List<VehicleTripRuntimeService.VehicleTripRuntime> trips = tripRuntimeService.reconcile(
                 currentSnapshot == null || currentSnapshot.isEmpty() ? history : currentSnapshot);
-        if (!properties.isIgnoreOrdersWithoutRealPosition()) {
-            List<VehicleDecision> structuralDecisions = new ArrayList<>();
-            for (VehicleTripRuntimeService.VehicleTripRuntime trip : trips) {
-                VehicleOrderChainStore.StoredOrder current = trip.anchorOrder();
-                if (current == null || current.record() == null) continue;
-                VehicleTripRuntimeService.VehicleTripRuntime compositeView =
-                        tripRuntimeService.includeAllActiveOrdersForCompositeView(trip);
-                structuralDecisions.add(decision(
-                        compositeView,
-                        current,
-                        middleLayer.instanceIdFor(current.record()),
-                        null,
-                        false,
-                        "POSITION_FILTER_DISABLED",
-                        "real-position-filter-disabled",
-                        null,
-                        null,
-                        null));
-            }
-            structuralDecisions.sort(Comparator.comparing(VehicleDecision::vehicleKey));
-            EligibilityReport disabled = new EligibilityReport(
-                    now.toString(), false, Map.of("skipped", true), Map.of("skipped", true),
-                    trips.size(), 0, 0, List.copyOf(structuralDecisions), null);
-            return disabled;
-        }
 
+        // “不过滤无定位车辆”只控制展示准入，不能关闭已有真实位置对行程顺序的校准。
+        // 两种模式都先尽力预热位置；严格模式仍会剔除无定位车辆，宽松模式则稳定降级。
         Map<String, Object> directory = routePushService.refreshProviderVehicleDirectoryNow();
-
+        if (directory == null) directory = Map.of();
         Set<String> preparedLineIds = new LinkedHashSet<>();
         for (VehicleTripRuntimeService.VehicleTripRuntime trip : trips) {
             VehicleOrderChainStore.StoredOrder stored = trip.anchorOrder();
@@ -93,6 +70,39 @@ public class VehicleOrderEligibilityService {
             }
         }
         Map<String, Object> positionWarmup = routePushService.warmPositionCacheForLineIds(preparedLineIds);
+        if (positionWarmup == null) positionWarmup = Map.of();
+
+        if (!properties.isIgnoreOrdersWithoutRealPosition()) {
+            List<VehicleDecision> structuralDecisions = new ArrayList<>();
+            for (VehicleTripRuntimeService.VehicleTripRuntime trip : trips) {
+                VehicleOrderChainStore.StoredOrder current = trip.anchorOrder();
+                if (current == null || current.record() == null) continue;
+                String instanceId = middleLayer.instanceIdFor(current.record());
+                PositionSnapshot position = routePushService.freshProviderPosition(instanceId);
+                VehicleTripRuntimeService.VehicleTripRuntime compositeView =
+                        tripRuntimeService.includeAllActiveOrdersForCompositeView(trip);
+                if (position != null) {
+                    compositeView = tripRuntimeService.evaluateDynamicInsertions(
+                            compositeView, position.position());
+                }
+                structuralDecisions.add(decision(
+                        compositeView,
+                        current,
+                        instanceId,
+                        null,
+                        false,
+                        "POSITION_FILTER_DISABLED",
+                        "real-position-filter-disabled",
+                        position,
+                        null,
+                        null));
+            }
+            structuralDecisions.sort(Comparator.comparing(VehicleDecision::vehicleKey));
+            EligibilityReport disabled = new EligibilityReport(
+                    now.toString(), false, directory, positionWarmup,
+                    trips.size(), 0, 0, List.copyOf(structuralDecisions), null);
+            return disabled;
+        }
 
         List<VehicleDecision> decisions = new ArrayList<>();
         int groupEligible = 0;

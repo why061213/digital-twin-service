@@ -166,6 +166,8 @@ class VehicleOrderEligibilityServiceTest {
                 record("second", "桂L91622", "待装载", now.minusSeconds(30), 113.1), 2);
         Fixture fixture = fixture(List.of(first, second));
         fixture.properties.setIgnoreOrdersWithoutRealPosition(false);
+        when(fixture.routePush.freshProviderPosition("first")).thenReturn(
+                snapshot("first", "vehicle-91622", 113.05, 23.0, now));
 
         VehicleOrderEligibilityService.EligibilityReport report = fixture.service.analyzeLatestVehicleOrders();
 
@@ -173,7 +175,10 @@ class VehicleOrderEligibilityServiceTest {
         assertThat(report.decisions()).hasSize(1);
         assertThat(report.decisions().get(0).tripOrderInstanceIds()).hasSize(2);
         assertThat(report.decisions().get(0).tripStops()).hasSize(4);
-        verifyNoInteractions(fixture.routePush, fixture.trajectory);
+        assertThat(report.decisions().get(0).currentPosition()).containsExactly(113.05, 23.0);
+        assertThat(report.decisions().get(0).currentLegOriginPosition()).containsExactly(113.05, 23.0);
+        verify(fixture.routePush).freshProviderPosition("first");
+        verifyNoInteractions(fixture.trajectory);
     }
 
     @Test
