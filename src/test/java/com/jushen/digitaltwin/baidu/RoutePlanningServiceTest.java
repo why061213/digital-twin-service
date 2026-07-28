@@ -131,4 +131,33 @@ class RoutePlanningServiceTest {
         assertThat(route.coordinates().get(0)).containsExactly(origin);
         assertThat(route.coordinates().get(route.coordinates().size() - 1)).containsExactly(destination);
     }
+
+    @Test
+    void preservesEveryCompositeWaypointInTheFirstRenderingRouteAfterSimplification() {
+        BaiduRoutePlanService baidu = mock(BaiduRoutePlanService.class);
+        AmapRoutePlanService amap = mock(AmapRoutePlanService.class);
+        double[] pickupWaypoint = {113.18, 23.08};
+        double[] deliveryWaypoint = {113.15, 23.05};
+        List<double[]> detailed = new ArrayList<>();
+        for (int index = 0; index < 600; index++) {
+            double ratio = index / 599.0;
+            detailed.add(new double[]{
+                    origin[0] + (destination[0] - origin[0]) * ratio,
+                    origin[1] + (destination[1] - origin[1]) * ratio
+            });
+        }
+        when(baidu.planRoute(eq(origin[1]), eq(origin[0]), eq(destination[1]), eq(destination[0]), anyList()))
+                .thenReturn(BaiduRoutePlanService.RoutePlanResult.success(
+                        25_000, 2_100, detailed, List.of()));
+        RoutePlanningService service = new RoutePlanningService(baidu, amap, true, 60_000, 0);
+
+        RoutePlanningService.PlannedRoute route = service.plan(
+                origin, destination, List.of(pickupWaypoint, deliveryWaypoint));
+
+        assertThat(route.coordinates()).hasSizeLessThanOrEqualTo(240);
+        assertThat(route.coordinates()).anySatisfy(point -> assertThat(point).containsExactly(pickupWaypoint));
+        assertThat(route.coordinates()).anySatisfy(point -> assertThat(point).containsExactly(deliveryWaypoint));
+        assertThat(route.matchingCoordinates()).anySatisfy(point -> assertThat(point).containsExactly(pickupWaypoint));
+        assertThat(route.matchingCoordinates()).anySatisfy(point -> assertThat(point).containsExactly(deliveryWaypoint));
+    }
 }

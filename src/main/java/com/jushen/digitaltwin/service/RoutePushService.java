@@ -2398,7 +2398,9 @@ public class RoutePushService {
         // 外部订单快照会反复抵达。相同 lineId 的短途任务必须沿用第一次注册的
         // startTime，否则模拟进度会被重新随机并回跳到路线起点附近。
         ScheduledRoute existingRoute = activeRoutes.get(lineId);
-        if (isSameTownOrderRoute(existingRoute, from, to, fromCoords, toCoords)) {
+        List<double[]> registeredBaseline = baselineRouteCoordinates.get(lineId);
+        if (isSameTownOrderRoute(existingRoute, from, to, fromCoords, toCoords)
+                && sameRouteCoordinates(registeredBaseline, matchingCoordinates)) {
             log.debug("[TownRoad] retained active simulation: lineId={}, startTime={}, speedKmh={}",
                     lineId, existingRoute.startTime(), existingRoute.speedKmh());
             return;
@@ -2470,6 +2472,19 @@ public class RoutePushService {
                 && safeRouteText(route.to()).equals(safeRouteText(to))
                 && distanceKm(route.getFromCoords(), fromCoords) < 0.1
                 && distanceKm(route.getToCoords(), toCoords) < 0.1;
+    }
+
+    /** 相同首尾但途经节点或道路几何已变化时，不得复用旧运行路线。 */
+    private boolean sameRouteCoordinates(List<double[]> first, List<double[]> second) {
+        if (first == null || second == null || first.size() != second.size()) return false;
+        for (int index = 0; index < first.size(); index++) {
+            double[] left = first.get(index);
+            double[] right = second.get(index);
+            if (left == null || right == null || left.length < 2 || right.length < 2) return false;
+            if (Math.abs(left[0] - right[0]) > 0.000001
+                    || Math.abs(left[1] - right[1]) > 0.000001) return false;
+        }
+        return true;
     }
 
     /** 真实速度优先，0 表示停车；订单速度只作已校验的兜底。 */

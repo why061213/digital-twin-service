@@ -111,8 +111,12 @@ public class RoutePlanningService {
         if (!result.success || result.path == null || result.path.size() < 2) {
             return PlannedRoute.unavailable("baidu: " + result.error);
         }
+        List<double[]> exactCoordinates = waypoints.isEmpty()
+                ? withExactEndpoints(result.path, origin, destination)
+                : withExactStops(result.path, origin, waypoints, destination);
         return PlannedRoute.success(
-                "baidu", withExactEndpoints(result.path, origin, destination), result.totalDistance, result.totalDuration);
+                "baidu", exactCoordinates,
+                waypoints, result.totalDistance, result.totalDuration);
     }
 
     private PlannedRoute planAmap(double[] origin, double[] destination, List<double[]> waypoints) {
@@ -123,18 +127,77 @@ public class RoutePlanningService {
         if (!result.success || result.path == null || result.path.size() < 2) {
             return PlannedRoute.unavailable("amap: " + result.error);
         }
+        List<double[]> exactCoordinates = waypoints.isEmpty()
+                ? withExactEndpoints(result.path, origin, destination)
+                : withExactStops(result.path, origin, waypoints, destination);
         return PlannedRoute.success(
-                "amap", withExactEndpoints(result.path, origin, destination), result.totalDistance, result.totalDuration);
+                "amap", exactCoordinates,
+                waypoints, result.totalDistance, result.totalDuration);
     }
 
     private List<double[]> withExactEndpoints(List<double[]> path, double[] origin, double[] destination) {
-        List<double[]> result = new ArrayList<>(path.size() + 2);
+        List<double[]> result = new ArrayList<>((path == null ? 0 : path.size()) + 2);
         result.add(new double[]{origin[0], origin[1]});
-        for (double[] coordinate : path) {
-            if (validCoordinate(coordinate)) result.add(new double[]{coordinate[0], coordinate[1]});
+        if (path != null) {
+            for (double[] coordinate : path) {
+                if (validCoordinate(coordinate)) result.add(new double[]{coordinate[0], coordinate[1]});
+            }
         }
         result.add(new double[]{destination[0], destination[1]});
         return result;
+    }
+
+    /** 将每个业务节点按供应商路线中的最近顺序位置钉入坐标，避免首轮只保留总起终点。 */
+    private List<double[]> withExactStops(
+            List<double[]> path,
+            double[] origin,
+            List<double[]> waypoints,
+            double[] destination
+    ) {
+        List<double[]> validPath = path == null ? List.of() : path.stream()
+                .filter(this::validCoordinate)
+                .map(point -> new double[]{point[0], point[1]})
+                .toList();
+        List<double[]> result = new ArrayList<>(validPath.size() + waypoints.size() + 2);
+        result.add(new double[]{origin[0], origin[1]});
+        int cursor = 0;
+        for (double[] waypoint : waypoints) {
+            int nearest = nearestForwardIndex(validPath, cursor, waypoint);
+            if (nearest >= cursor) {
+                for (int index = cursor; index <= nearest; index++) addDistinct(result, validPath.get(index));
+                cursor = nearest + 1;
+            }
+            addDistinct(result, waypoint);
+        }
+        for (int index = cursor; index < validPath.size(); index++) addDistinct(result, validPath.get(index));
+        addDistinct(result, destination);
+        return List.copyOf(result);
+    }
+
+    private int nearestForwardIndex(List<double[]> path, int fromIndex, double[] target) {
+        if (path == null || path.isEmpty() || fromIndex >= path.size()) return -1;
+        int nearest = fromIndex;
+        double best = Double.MAX_VALUE;
+        for (int index = Math.max(0, fromIndex); index < path.size(); index++) {
+            double dx = path.get(index)[0] - target[0];
+            double dy = path.get(index)[1] - target[1];
+            double distanceSquared = dx * dx + dy * dy;
+            if (distanceSquared < best) {
+                best = distanceSquared;
+                nearest = index;
+            }
+        }
+        return nearest;
+    }
+
+    private void addDistinct(List<double[]> coordinates, double[] coordinate) {
+        if (!validCoordinate(coordinate)) return;
+        if (!coordinates.isEmpty()) {
+            double[] previous = coordinates.get(coordinates.size() - 1);
+            if (Math.abs(previous[0] - coordinate[0]) < 0.0000001
+                    && Math.abs(previous[1] - coordinate[1]) < 0.0000001) return;
+        }
+        coordinates.add(new double[]{coordinate[0], coordinate[1]});
     }
 
     private boolean awaitProviderRequestSlot() {
@@ -200,6 +263,16 @@ public class RoutePlanningService {
             String error
     ) {
         static PlannedRoute success(String provider, List<double[]> coordinates, int distanceMeters, int durationSeconds) {
+            return success(provider, coordinates, List.of(), distanceMeters, durationSeconds);
+        }
+
+        static PlannedRoute success(
+                String provider,
+                List<double[]> coordinates,
+                List<double[]> requiredAnchors,
+                int distanceMeters,
+                int durationSeconds
+        ) {
             List<double[]> copy = new ArrayList<>(coordinates.size());
             for (double[] coordinate : coordinates) {
                 if (coordinate != null && coordinate.length >= 2) {
@@ -207,7 +280,8 @@ public class RoutePlanningService {
                 }
             }
             List<double[]> matching = List.copyOf(copy);
-            return new PlannedRoute(true, provider, simplifyForRendering(matching, 240), matching,
+            return new PlannedRoute(true, provider,
+                    simplifyForRenderingPreservingAnchors(matching, requiredAnchors, 240), matching,
                     Math.max(0, distanceMeters) / 1000.0,
                     Math.max(0L, durationSeconds) * 1000L, null);
         }
@@ -242,6 +316,68 @@ public class RoutePlanningService {
                 }
             }
             return List.copyOf(simplified);
+        }
+
+        private static List<double[]> simplifyForRenderingPreservingAnchors(
+                List<double[]> coordinates,
+                List<double[]> requiredAnchors,
+                int maxPoints
+        ) {
+            if (requiredAnchors == null || requiredAnchors.isEmpty() || coordinates.size() <= maxPoints) {
+                return simplifyForRendering(coordinates, maxPoints);
+            }
+            List<Integer> anchorIndexes = new ArrayList<>();
+            anchorIndexes.add(0);
+            int cursor = 1;
+            for (double[] anchor : requiredAnchors) {
+                for (int index = cursor; index < coordinates.size() - 1; index++) {
+                    double[] point = coordinates.get(index);
+                    if (Math.abs(point[0] - anchor[0]) < 0.0000001
+                            && Math.abs(point[1] - anchor[1]) < 0.0000001) {
+                        anchorIndexes.add(index);
+                        cursor = index + 1;
+                        break;
+                    }
+                }
+            }
+            anchorIndexes.add(coordinates.size() - 1);
+            if (anchorIndexes.size() <= 2) return simplifyForRendering(coordinates, maxPoints);
+
+            double lowKm = 0;
+            double highKm = 0.01;
+            List<double[]> simplified = simplifySections(coordinates, anchorIndexes, highKm);
+            while (simplified.size() > maxPoints && highKm < 1_000) {
+                highKm *= 2;
+                simplified = simplifySections(coordinates, anchorIndexes, highKm);
+            }
+            for (int iteration = 0; iteration < 32; iteration++) {
+                double middleKm = (lowKm + highKm) / 2;
+                List<double[]> candidate = simplifySections(coordinates, anchorIndexes, middleKm);
+                if (candidate.size() > maxPoints) {
+                    lowKm = middleKm;
+                } else {
+                    highKm = middleKm;
+                    simplified = candidate;
+                }
+            }
+            return List.copyOf(simplified);
+        }
+
+        private static List<double[]> simplifySections(
+                List<double[]> coordinates,
+                List<Integer> anchorIndexes,
+                double toleranceKm
+        ) {
+            boolean[] kept = new boolean[coordinates.size()];
+            for (int index : anchorIndexes) kept[index] = true;
+            for (int index = 1; index < anchorIndexes.size(); index++) {
+                simplifySection(coordinates, anchorIndexes.get(index - 1), anchorIndexes.get(index), toleranceKm, kept);
+            }
+            List<double[]> result = new ArrayList<>();
+            for (int index = 0; index < coordinates.size(); index++) {
+                if (kept[index]) result.add(copyOf(coordinates.get(index)));
+            }
+            return result;
         }
 
         private static List<double[]> douglasPeucker(List<double[]> coordinates, double toleranceKm) {
