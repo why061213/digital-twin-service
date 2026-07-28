@@ -103,11 +103,13 @@ class TownRoadRenderServicePipelineCutTest {
         assertThat(synthetic.lineId()).isEqualTo("trip::" + synthetic.orderId());
         assertThat(synthetic.status()).isEqualTo("运输中");
         assertThat(synthetic.from().coords()).containsExactly(113.10, 23.00);
-        assertThat(synthetic.to().coords()).containsExactly(112.80, 23.00);
+        // 从插入装载点 112.95 出发，112.80 比 112.70 更近，因此先途经 112.80，
+        // 更远的 112.70 才是合并路线最终终点。
+        assertThat(synthetic.to().coords()).containsExactly(112.70, 23.00);
         assertThat(synthetic.vehicle().cargoWeight()).isEqualTo(20d);
         assertThat(waypointInput.getValue()).containsOnlyKeys(synthetic.lineId());
         assertThat(waypointInput.getValue().get(synthetic.lineId()))
-                .containsExactly(new double[]{112.95, 23.00}, new double[]{112.70, 23.00});
+                .containsExactly(new double[]{112.95, 23.00}, new double[]{112.80, 23.00});
 
         assertThat(service.getLatestRm2Snapshot().routes()).hasSize(1);
         Map<String, Object> meta = service.getLatestRm2Snapshot().routes().get(0).meta();

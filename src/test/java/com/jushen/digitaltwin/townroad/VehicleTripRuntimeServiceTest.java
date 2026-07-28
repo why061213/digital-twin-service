@@ -380,6 +380,39 @@ class VehicleTripRuntimeServiceTest {
                 status, Instant.now().toString(), false, true);
     }
 
+    @Test
+    void reordersConfirmedDeliveriesFromCurrentPositionAndExposesFarthestAsFinalStop() {
+        VehicleOrderChainStore store = mock(VehicleOrderChainStore.class);
+        ExternalOrderRecord farther = record(
+                "order-a-far", "line-a-far", "运输中",
+                new double[]{113.0, 23.0}, new double[]{116.0, 23.0});
+        ExternalOrderRecord nearer = record(
+                "order-z-near", "line-z-near", "运输中",
+                new double[]{113.1, 23.0}, new double[]{114.0, 23.0});
+        VehicleTripRuntimeService service = new VehicleTripRuntimeService(store);
+        VehicleTripRuntimeService.VehicleTripRuntime initial = service.reconcile(List.of(
+                stored(farther, 1_000), stored(nearer, 2_000))).get(0);
+
+        VehicleTripRuntimeService.VehicleTripRuntime replanned = service.evaluateDynamicInsertions(
+                initial, new double[]{113.5, 23.0});
+
+        assertThat(replanned.topology().plannedStopIds()).containsExactly(
+                key(nearer) + "::DELIVERY",
+                key(farther) + "::DELIVERY");
+        assertThat(replanned.topology().legs().get(0).fromStopId()).isEqualTo("CURRENT_POSITION");
+        assertThat(replanned.topology().legs().get(0).coordinates().get(0))
+                .containsExactly(113.5, 23.0);
+
+        VehicleTripRuntimeService.CompositeTripSnapshot snapshot = service.describeCompositeTrip(
+                replanned, VehicleTripRuntimeService.TargetPresenceState.EN_ROUTE);
+        assertThat(snapshot.stops().stream()
+                .filter(stop -> stop.action() == VehicleTripTopologyService.StopAction.DELIVERY)
+                .map(VehicleTripRuntimeService.CompositeStopView::orderInstanceId)
+                .toList()).containsExactly(key(nearer), key(farther));
+        assertThat(snapshot.stops().get(snapshot.stops().size() - 1).orderInstanceId())
+                .isEqualTo(key(farther));
+    }
+
     private VehicleTripRuntimeService.CompositeTripSnapshot resolveComposite(
             VehicleOrderChainStore store,
             List<VehicleOrderChainStore.StoredOrder> route,

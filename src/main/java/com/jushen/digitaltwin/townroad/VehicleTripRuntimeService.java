@@ -324,12 +324,29 @@ public class VehicleTripRuntimeService {
     ) {
         Map<VehicleTripTopologyService.StopAction, Integer> indexes = new LinkedHashMap<>();
         List<CompositeStopView> result = new ArrayList<>();
-        List<VehicleTripTopologyService.TripStop> orderedStops = trip.topology().stops().stream()
+        Map<String, VehicleTripTopologyService.TripStop> stopsById = new LinkedHashMap<>();
+        trip.topology().stops().forEach(stop -> stopsById.put(stop.stopId(), stop));
+        List<VehicleTripTopologyService.TripStop> orderedStops = new ArrayList<>();
+        Set<String> emittedStopIds = new LinkedHashSet<>();
+        // 已访问节点属于已经发生的前缀；剩余节点必须严格沿用基于实时位置生成的执行顺序，
+        // 不能再按订单 ID 排序，否则展示终点和初始化途经点都会覆盖拓扑规划结果。
+        trip.topology().stops().stream()
+                .filter(stop -> stop.visitState() == VehicleTripTopologyService.VisitState.VISITED)
                 .sorted(Comparator
                         .comparingInt((VehicleTripTopologyService.TripStop stop) ->
                                 stop.action() == VehicleTripTopologyService.StopAction.PICKUP ? 0 : 1)
                         .thenComparing(VehicleTripTopologyService.TripStop::orderInstanceId))
-                .toList();
+                .forEach(stop -> {
+                    orderedStops.add(stop);
+                    emittedStopIds.add(stop.stopId());
+                });
+        for (String stopId : trip.topology().plannedStopIds()) {
+            VehicleTripTopologyService.TripStop stop = stopsById.get(stopId);
+            if (stop != null && emittedStopIds.add(stop.stopId())) orderedStops.add(stop);
+        }
+        trip.topology().stops().stream()
+                .filter(stop -> emittedStopIds.add(stop.stopId()))
+                .forEach(orderedStops::add);
         for (VehicleTripTopologyService.TripStop stop : orderedStops) {
             int sequence = indexes.merge(stop.action(), 1, Integer::sum);
             result.add(new CompositeStopView(
@@ -416,6 +433,11 @@ public class VehicleTripRuntimeService {
                 trip.completedOrderIds(), trip.topology(), currentPosition, null);
         double baselineKm = topologyDistanceKm(baselineTopology);
         if (!Double.isFinite(baselineKm)) return trip;
+        // 即使没有候选订单可插入，也必须采用当前位置重排后的剩余路线。
+        // 旧逻辑在 selectedOrderId 为空时返回原 trip，导致首次建组退回 stopId 顺序。
+        VehicleTripRuntime baselineTrip = withTopology(trip, baselineTopology);
+        currentByVehicle.put(baselineTrip.vehicleKey(), baselineTrip);
+        persist(baselineTrip);
         String selectedOrderId = null;
         double selectedExtraKm = Double.MAX_VALUE;
         VehicleTripTopologyService.TripTopology selectedTopology = null;
@@ -443,7 +465,7 @@ public class VehicleTripRuntimeService {
                 selectedTopology = candidateTopology;
             }
         }
-        if (selectedOrderId == null || selectedTopology == null) return trip;
+        if (selectedOrderId == null || selectedTopology == null) return baselineTrip;
 
         Map<String, TripMemberState> members = new LinkedHashMap<>(trip.orderMembers());
         members.put(selectedOrderId, TripMemberState.CONFIRMED);
@@ -461,7 +483,7 @@ public class VehicleTripRuntimeService {
                 double roadExtraKm = insertedRoad.distanceKm() - baselineRoad.distanceKm();
                 double roadAllowedKm = Math.max(MAX_INSERTION_DETOUR_KM,
                         baselineRoad.distanceKm() * MAX_INSERTION_DETOUR_RATIO);
-                if (roadExtraKm > roadAllowedKm) return trip;
+                if (roadExtraKm > roadAllowedKm) return baselineTrip;
                 topology = insertedRoad.topology();
                 selectedExtraKm = roadExtraKm;
             }
