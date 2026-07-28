@@ -5,6 +5,7 @@ import com.jushen.digitaltwin.townroad.NormalizedTownRoadOrder;
 import com.jushen.digitaltwin.townroad.TownRoadRenderCommand;
 import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.TownRoadOrder;
 import com.jushen.digitaltwin.townroad.TownRoadRenderCommand.TownRoadRouteGroup;
+import com.jushen.digitaltwin.townroad.VehicleTripRuntimeService;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -292,6 +293,7 @@ public final class RouteDtoConverter {
             int selectedPage = -1;
             int selectedConflict = Integer.MAX_VALUE;
             int selectedSize = Integer.MAX_VALUE;
+            double selectedMinimumSeparationKm = -1.0;
             boolean thresholdSafePageAvailable = false;
             for (int page = 0; page < pages.size(); page++) {
                 List<Map.Entry<String, List<RenderRouteDTO>>> current = pages.get(page);
@@ -308,11 +310,20 @@ public final class RouteDtoConverter {
                 int conflict = current.stream()
                         .mapToInt(existing -> endpointConflictScore(candidate, existing))
                         .sum();
-                if (conflict < selectedConflict
-                        || (conflict == selectedConflict && current.size() < selectedSize)) {
+                double minimumSeparationKm = current.stream()
+                        .mapToDouble(existing -> minimumNodeDistanceKm(candidate, existing))
+                        .min()
+                        .orElse(Double.POSITIVE_INFINITY);
+                int separationComparison = Double.compare(
+                        minimumSeparationKm, selectedMinimumSeparationKm);
+                if (separationComparison > 0
+                        || (separationComparison == 0 && conflict < selectedConflict)
+                        || (separationComparison == 0 && conflict == selectedConflict
+                        && current.size() < selectedSize)) {
                     selectedPage = page;
                     selectedConflict = conflict;
                     selectedSize = current.size();
+                    selectedMinimumSeparationKm = minimumSeparationKm;
                 }
             }
             if (selectedPage >= 0) pages.get(selectedPage).add(candidate);
@@ -385,16 +396,65 @@ public final class RouteDtoConverter {
         RenderRouteDTO leftRoute = representativeRoute(left);
         RenderRouteDTO rightRoute = representativeRoute(right);
         if (leftRoute == null || rightRoute == null) return 0;
-        boolean originToOrigin = coordinatesNear(leftRoute.fromCoords(), rightRoute.fromCoords());
-        boolean destinationToDestination = coordinatesNear(leftRoute.toCoords(), rightRoute.toCoords());
-        boolean originToDestination = coordinatesNear(leftRoute.fromCoords(), rightRoute.toCoords());
-        boolean destinationToOrigin = coordinatesNear(leftRoute.toCoords(), rightRoute.fromCoords());
-        if ((originToOrigin && destinationToDestination)
-                || (originToDestination && destinationToOrigin)) return 4;
-        return (originToOrigin ? 1 : 0)
-                + (destinationToDestination ? 1 : 0)
-                + (originToDestination ? 1 : 0)
-                + (destinationToOrigin ? 1 : 0);
+        List<double[]> leftNodes = displayNodes(left);
+        List<double[]> rightNodes = displayNodes(right);
+        int nearbyPairs = 0;
+        for (double[] leftNode : leftNodes) {
+            for (double[] rightNode : rightNodes) {
+                if (coordinatesNear(leftNode, rightNode)) nearbyPairs++;
+            }
+        }
+        return Math.min(4, nearbyPairs);
+    }
+
+    private static double minimumNodeDistanceKm(
+            Map.Entry<String, List<RenderRouteDTO>> left,
+            Map.Entry<String, List<RenderRouteDTO>> right
+    ) {
+        double minimum = Double.POSITIVE_INFINITY;
+        for (double[] leftNode : displayNodes(left)) {
+            for (double[] rightNode : displayNodes(right)) {
+                minimum = Math.min(minimum, coordinateDistanceKm(leftNode, rightNode));
+            }
+        }
+        return minimum;
+    }
+
+    /** 地图上会产生标签/地图钉的全部业务节点；聚合订单优先使用 tripStops。 */
+    private static List<double[]> displayNodes(
+            Map.Entry<String, List<RenderRouteDTO>> businessLine
+    ) {
+        List<double[]> nodes = new ArrayList<>();
+        for (RenderRouteDTO route : businessLine.getValue()) {
+            Object rawStops = route.meta() == null ? null : route.meta().get("tripStops");
+            if (rawStops instanceof List<?> stops) {
+                for (Object stop : stops) addDistinctCoordinate(nodes, tripStopCoordinate(stop));
+            }
+            addDistinctCoordinate(nodes, route.fromCoords());
+            addDistinctCoordinate(nodes, route.toCoords());
+        }
+        return nodes;
+    }
+
+    private static double[] tripStopCoordinate(Object stop) {
+        if (stop instanceof VehicleTripRuntimeService.CompositeStopView view) {
+            return view.coordinates();
+        }
+        if (!(stop instanceof Map<?, ?> map)) return null;
+        Object coordinates = map.get("coordinates");
+        if (coordinates instanceof double[] values) return values;
+        if (coordinates instanceof List<?> values && values.size() >= 2
+                && values.get(0) instanceof Number lng && values.get(1) instanceof Number lat) {
+            return new double[]{lng.doubleValue(), lat.doubleValue()};
+        }
+        return null;
+    }
+
+    private static void addDistinctCoordinate(List<double[]> target, double[] coordinate) {
+        if (!validCoordinate(coordinate)) return;
+        boolean duplicate = target.stream()
+                .anyMatch(existing -> coordinateDistanceKm(existing, coordinate) < 0.01);
+        if (!duplicate) target.add(new double[]{coordinate[0], coordinate[1]});
     }
 
     private static RenderRouteDTO representativeRoute(Map.Entry<String, List<RenderRouteDTO>> businessLine) {
@@ -402,7 +462,11 @@ public final class RouteDtoConverter {
     }
 
     private static boolean coordinatesNear(double[] left, double[] right) {
-        if (!validCoordinate(left) || !validCoordinate(right)) return false;
+        return coordinateDistanceKm(left, right) <= NEARBY_ENDPOINT_KM;
+    }
+
+    private static double coordinateDistanceKm(double[] left, double[] right) {
+        if (!validCoordinate(left) || !validCoordinate(right)) return Double.POSITIVE_INFINITY;
         double lat1 = Math.toRadians(left[1]);
         double lat2 = Math.toRadians(right[1]);
         double deltaLat = lat2 - lat1;
@@ -411,9 +475,8 @@ public final class RouteDtoConverter {
         double sinLng = Math.sin(deltaLng / 2.0);
         double haversine = sinLat * sinLat
                 + Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng;
-        double distanceKm = 6371.0088 * 2.0
+        return 6371.0088 * 2.0
                 * Math.atan2(Math.sqrt(haversine), Math.sqrt(Math.max(0.0, 1.0 - haversine)));
-        return distanceKm <= NEARBY_ENDPOINT_KM;
     }
 
     private static boolean validCoordinate(double[] coordinate) {

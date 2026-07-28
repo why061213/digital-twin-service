@@ -6,7 +6,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -64,6 +66,25 @@ class Rm2StableGroupsTest {
             result.add(new double[]{vals[i], vals[i + 1]});
         }
         return result;
+    }
+
+    private static RenderRouteDTO withTripStops(
+            NormalizedTownRoadOrder order,
+            double[]... stopCoordinates
+    ) {
+        RenderRouteDTO route = RouteDtoConverter.fromNormalizedOrder(order);
+        Map<String, Object> meta = new LinkedHashMap<>(route.meta());
+        meta.put("tripStops", java.util.Arrays.stream(stopCoordinates)
+                .map(coordinate -> Map.of(
+                        "coordinates", List.of(coordinate[0], coordinate[1])))
+                .toList());
+        return new RenderRouteDTO(
+                route.lineId(), route.orderId(), route.businessLineId(), route.plate(), route.vehicleId(),
+                route.from(), route.to(), route.fromCoords(), route.toCoords(), route.coordinates(),
+                route.routeLengthKm(), route.speedKmh(), route.status(), route.cargo(),
+                route.cargoWeight(), route.cargoUnit(), route.travelDurationMs(), route.pathKey(),
+                route.scope(), route.groupId(), route.role(), route.coordinateSystem(), route.updatedAt(),
+                route.routeSignature(), Map.copyOf(meta));
     }
 
     // ---------------------------------------------------------------
@@ -350,6 +371,47 @@ class Rm2StableGroupsTest {
                         .filter(lineId -> lineId.startsWith("z-near-"))
                         .count() == 1),
                 "容量只有 1 的尾组也应优先用于打散相近 OD 订单");
+    }
+
+    @Test
+    void spatialDistributionRegroupsFarApartOrdersInsteadOfSequentialSlicing() {
+        double[] origins = {100.0, 120.0, 120.5, 100.5, 110.0, 110.5};
+        List<NormalizedTownRoadOrder> orders = new ArrayList<>();
+        for (int index = 0; index < origins.length; index++) {
+            double origin = origins[index];
+            orders.add(makeOrder(
+                    "spatial-" + index, "line-" + index, "运输中", "440000", "360000",
+                    coords(origin, 20.0, origin + 0.1, 20.1),
+                    50, 60, "2026-07-14", "粤S" + index, 10));
+        }
+
+        List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(
+                RouteDtoConverter.shortHaulOrdersToRoutes(orders), 3);
+
+        assertEquals(2, groups.size());
+        assertEquals(List.of("line-0::spatial-0", "line-2::spatial-2", "line-4::spatial-4"),
+                groups.get(0).orderLineIds());
+        assertEquals(List.of("line-1::spatial-1", "line-3::spatial-3", "line-5::spatial-5"),
+                groups.get(1).orderLineIds());
+    }
+
+    @Test
+    void compositeTripIntermediateStopsParticipateInSpatialSeparation() {
+        List<RenderRouteDTO> routes = List.of(
+                withTripStops(makeOrder("multi-a", "multi-a", "运输中", "440000", "360000",
+                                coords(100, 10, 101, 11), 50, 60, "2026-07-14", "粤M1", 10),
+                        new double[]{113.000, 23.000}),
+                withTripStops(makeOrder("multi-b", "multi-b", "运输中", "440000", "360000",
+                                coords(120, 30, 121, 31), 50, 60, "2026-07-14", "粤M2", 10),
+                        new double[]{113.005, 23.005}),
+                withTripStops(makeOrder("multi-c", "multi-c", "运输中", "440000", "360000",
+                                coords(140, 40, 141, 41), 50, 60, "2026-07-14", "粤M3", 10),
+                        new double[]{113.010, 23.010}));
+
+        List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(routes, 12);
+
+        assertEquals(2, groups.size(), "三个聚合订单的相近中间节点也必须触发打散");
+        assertEquals(List.of(2, 1), groups.stream().map(Rm2RouteGroupDTO::count).toList());
     }
 
     @Test
