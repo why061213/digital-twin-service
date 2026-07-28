@@ -121,7 +121,10 @@ public class TownRoadRenderService {
         boolean downstreamInputAlreadyExpanded = false;
         if (externalOrderProperties.isVehicleOrderChainExperimentEnabled()) {
             List<ExternalOrderRecord> expanded = middleLayer.expandVehicleInstances(
-                    rawOrders == null ? List.of() : rawOrders);
+                            rawOrders == null ? List.of() : rawOrders).stream()
+                    .map(middleLayer::resolveOrderLocations)
+                    .filter(java.util.Objects::nonNull)
+                    .toList();
             VehicleOrderChainStore.IngestResult stored = vehicleOrderChainStore.ingest(expanded);
             VehicleOrderEligibilityService.EligibilityReport eligibility =
                     vehicleOrderEligibilityService.analyzeLatestVehicleOrders();

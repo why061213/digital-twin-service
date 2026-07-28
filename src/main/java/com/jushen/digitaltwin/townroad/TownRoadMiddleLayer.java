@@ -214,6 +214,22 @@ public class TownRoadMiddleLayer {
         );
     }
 
+    /**
+     * 在车辆订单链构建拓扑前补齐装卸点坐标。
+     *
+     * <p>订单链早于完整路线规划执行，但 Stop/Leg 的排序与道路规划同样依赖地点坐标。
+     * 若把上游的空坐标直接写入订单链，复合订单会退化为端点直连。</p>
+     */
+    public ExternalOrderRecord resolveOrderLocations(ExternalOrderRecord raw) {
+        if (raw == null) return null;
+        ExternalOrderRecord.Location resolvedFrom = coordinateResolver.resolveLocation(raw.from());
+        ExternalOrderRecord.Location resolvedTo = coordinateResolver.resolveLocation(raw.to());
+        return new ExternalOrderRecord(
+                raw.orderId(), raw.lineId(), raw.lines(), resolvedFrom, resolvedTo, raw.vehicle(),
+                raw.status(), raw.updatedAt(), raw.deleted(), raw.upToDate(),
+                raw.lineIndex(), raw.vehicleIndex());
+    }
+
     public List<NormalizedTownRoadOrder> findSameOd(String fromKey, String toKey) {
         Set<String> instanceIds = odIndex
                 .getOrDefault(fromKey, Map.of())
