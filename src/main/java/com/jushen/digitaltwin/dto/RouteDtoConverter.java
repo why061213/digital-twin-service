@@ -22,6 +22,8 @@ public final class RouteDtoConverter {
     private static final double MAX_ROUTE_SPEED_KMH = 140.0;
     private static final double DEFAULT_SIMULATION_SPEED_KMH = 80.0;
     private static final double NEARBY_ENDPOINT_KM = 15.0;
+    /** 不同业务订单的起终点几乎一致时，路线会完全重叠，必须拆到不同展示组。 */
+    private static final double SAME_ROUTE_ENDPOINT_KM = 0.75;
     private static final int MAX_NEARBY_BUSINESS_LINES_PER_GROUP = 2;
 
     private RouteDtoConverter() {}
@@ -353,6 +355,10 @@ public final class RouteDtoConverter {
             List<Map.Entry<String, List<RenderRouteDTO>>> page,
             Map.Entry<String, List<RenderRouteDTO>> candidate
     ) {
+        // 同一个 businessLine 已在上游折叠为一个原子 entry；这里比较到的一定是不同业务订单。
+        // 对完全同向或反向重合的路线执行硬拆分，否则三条线路会视觉上只剩两条。
+        if (page.stream().anyMatch(existing -> sameRouteEndpoints(existing, candidate))) return false;
+
         long candidateNearbyCount = page.stream()
                 .filter(existing -> endpointConflictScore(candidate, existing) > 0)
                 .count();
@@ -367,6 +373,24 @@ public final class RouteDtoConverter {
             if (existingNearbyCount >= MAX_NEARBY_BUSINESS_LINES_PER_GROUP - 1L) return false;
         }
         return true;
+    }
+
+    private static boolean sameRouteEndpoints(
+            Map.Entry<String, List<RenderRouteDTO>> left,
+            Map.Entry<String, List<RenderRouteDTO>> right
+    ) {
+        RenderRouteDTO leftRoute = representativeRoute(left);
+        RenderRouteDTO rightRoute = representativeRoute(right);
+        if (leftRoute == null || rightRoute == null) return false;
+        boolean sameDirection = coordinateDistanceKm(leftRoute.fromCoords(), rightRoute.fromCoords())
+                <= SAME_ROUTE_ENDPOINT_KM
+                && coordinateDistanceKm(leftRoute.toCoords(), rightRoute.toCoords())
+                <= SAME_ROUTE_ENDPOINT_KM;
+        boolean reverseDirection = coordinateDistanceKm(leftRoute.fromCoords(), rightRoute.toCoords())
+                <= SAME_ROUTE_ENDPOINT_KM
+                && coordinateDistanceKm(leftRoute.toCoords(), rightRoute.fromCoords())
+                <= SAME_ROUTE_ENDPOINT_KM;
+        return sameDirection || reverseDirection;
     }
 
     private static List<Map.Entry<String, List<RenderRouteDTO>>> prioritizeByEndpointConflict(

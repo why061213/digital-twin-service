@@ -181,6 +181,12 @@ VehicleOrderChainStore 启动时恢复最近日库；VehicleTripRuntimeService �
 
 ## 12. 常见故障
 
+### 展示分组不变量
+
+- `businessLineId` 是不可拆原子单元：同订单、同业务线路的多辆车必须位于同一展示组。
+- 不同业务订单若起终点同向或反向均在 0.75km 内，则在地图上会完全重合，必须拆到不同展示组。
+- 其余 15km 内的相近业务节点使用软约束尽量分散；容量与原子性优先于软约束。
+
 ### 首轮只有起点到最终终点
 
 检查传给 RoutePlanningService 的 waypointCount。复合 Trip 必须在第一次规划前完成 topology.build，不能等第二次刷新才补 stop。
@@ -219,4 +225,3 @@ mvn test
 - VehicleOrderEligibilityServiceTest：真实/模拟轨迹推进。
 - TownRoadRenderServicePipelineCutTest：复合 Trip 接入正式 RM2 管线。
 - RoutePlanningServiceTest：多途经点、精确锚点与路线简化。
-

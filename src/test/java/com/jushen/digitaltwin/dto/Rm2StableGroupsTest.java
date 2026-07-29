@@ -350,6 +350,30 @@ class Rm2StableGroupsTest {
     }
 
     @Test
+    void identicalRoutesFromDifferentOrdersAreForcedIntoDifferentPages() {
+        List<NormalizedTownRoadOrder> orders = List.of(
+                makeOrder("same-route-a", "order-a", "运输中", "440000", "440000",
+                        coords(112.89608, 23.015338, 113.131307, 23.558038),
+                        80, 60, "2026-07-29", "粤E39432", 10),
+                makeOrder("same-route-b", "order-b", "运输中", "440000", "440000",
+                        coords(112.89608, 23.015338, 113.131307, 23.558038),
+                        80, 60, "2026-07-29", "粤Y39001", 10),
+                makeOrder("other-route", "order-c", "运输中", "440000", "440000",
+                        coords(113.206418, 23.000013, 112.857321, 23.333059),
+                        60, 60, "2026-07-29", "粤Y39546", 10)
+        );
+
+        List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(
+                RouteDtoConverter.shortHaulOrdersToRoutes(orders), 3);
+
+        assertEquals(2, groups.size(), "完全重叠的不同订单必须主动增加分页");
+        assertTrue(groups.stream().allMatch(group -> group.orderLineIds().stream()
+                        .filter(lineId -> lineId.startsWith("order-a::") || lineId.startsWith("order-b::"))
+                        .count() == 1),
+                "两条完全重叠路线不能出现在同一展示组");
+    }
+
+    @Test
     void nearbyOrdersTakePriorityWhenLastPageHasOnlyOneSlot() {
         List<NormalizedTownRoadOrder> orders = List.of(
                 makeOrder("far-0", "a-far-0", "运输中", "440000", "360000",
@@ -441,7 +465,7 @@ class Rm2StableGroupsTest {
                         coords(106.20, 23.10, 106.40, 23.30),
                         30, 60, "2026-07-14", "桂A1", 10),
                 makeOrder("factory-to-station", "line-b", "运输中", "450000", "450000",
-                        coords(106.40, 23.30, 106.20, 23.10),
+                        coords(106.25, 23.15, 106.45, 23.35),
                         30, 60, "2026-07-14", "桂A2", 10));
 
         List<Rm2RouteGroupDTO> groups = RouteDtoConverter.buildStableGroups(
