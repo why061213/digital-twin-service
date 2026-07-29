@@ -1,5 +1,7 @@
 # 聚神数字孪生项目技术文档
 
+> **历史基线文档（2026-07-02）**：本文保留用于追溯早期设计，当前鉴权、RM2 原子快照、复合订单 Trip 和车辆轨迹逻辑请以仓库上级 TECHNICAL_DOCUMENTATION.md 与本目录 RM2_COMPOSITE_TRIP_TECHNICAL_GUIDE.md 为准。
+
 > 更新时间：2026-07-02  
 > 后端目录：`E:\wendang\jushen-digital-twin`  
 > 前端目录：`E:\jushen\data-showing-web\jishen-digital-twin`
@@ -794,4 +796,3 @@ npm run build
    - 运输订单
    - 车辆实时位置快照
    - group 分配状态
-

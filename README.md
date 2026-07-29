@@ -1,120 +1,72 @@
-# 巨神数字孪生后端
+# 聚申数字孪生后端
 
-这是基于 Spring Boot 的后端服务，负责向前端大屏主动推送实时模拟数据和业务线路飞线事件。
+Spring Boot 3.3.5 / Java 17 后端，为数字孪生大屏提供订单同步、RM1/RM2 路线、车辆位置、仓储数据、REST API 与 WebSocket 推送。
 
-## 1. 在 IntelliJ IDEA 2023 中打开
+## 文档
 
-1. 打开 IntelliJ IDEA 2023。
-2. 选择 `Open`。
-3. 选择当前项目目录：`E:\wendang\jushen-digital-twin`。
-4. IntelliJ 识别到 `pom.xml` 后，选择以 Maven 项目导入。
-5. 等待右下角 Maven 依赖下载完成。
+- 系统总览与完整交接：../TECHNICAL_DOCUMENTATION.md
+- RM2 多订单复合行程：docs/RM2_COMPOSITE_TRIP_TECHNICAL_GUIDE.md
+- 仓库聚焦协议：docs/WAREHOUSE_FOCUS_API.md
+- 早期阶段文档：TECHNICAL_DOCUMENTATION.md、docs/PROJECT_TECHNICAL_DOCUMENTATION.md（仅供追溯）
 
-## 2. 运行后端
+## 本地运行
 
-在 IntelliJ 左侧找到启动类：
+~~~powershell
+mvn spring-boot:run
+~~~
 
-`src/main/java/com/jushen/digitaltwin/DigitalTwinBackendApplication.java`
+默认地址：
 
-点击类左侧绿色运行按钮，或右键选择 `Run DigitalTwinBackendApplication`。
+- 服务：http://localhost:8080
+- 健康检查：http://localhost:8080/api/health
+- WebSocket：ws://localhost:8080/ws/realtime
 
-启动成功后，服务地址是：
+真实密钥和外部接口配置放在 src/main/resources/application-private.yml，不要提交到仓库。
 
-```text
-http://localhost:8080
-```
+## 鉴权
 
-健康检查地址：
+本机或白名单设备通过以下接口取得会话：
 
-```text
-http://localhost:8080/api/health
-```
+~~~http
+POST /api/auth/session
+~~~
 
-## 3. WebSocket 连接方式
+后续 REST 请求携带：
 
-后端 WebSocket 地址：
+~~~http
+Authorization: Bearer <accessToken>
+~~~
 
-```text
-ws://localhost:8080/ws/realtime?token=jushen-screen-token
-```
+WebSocket 使用同一会话密钥。会话校验和刷新接口分别是 GET /api/auth/session、POST /api/auth/session/refresh。
 
-前端示例：
+## RM2 常用接口
 
-```js
-const token = 'jushen-screen-token'
-const socket = new WebSocket(`ws://localhost:8080/ws/realtime?token=${token}`)
+- GET /api/road/groups/structure?scope=rm2
+- GET /api/road/groups?scope=rm2&snapshotVersion={version}
+- GET /api/road/groups/{groupId}/routes?scope=rm2&snapshotVersion={version}
+- GET /api/public/vehicle-order-chain/trips
+- GET /api/public/vehicle-order-chain/transit-metrics
+- POST /api/road/town/provinces/raw
 
-socket.onmessage = (event) => {
-  const message = JSON.parse(event.data)
+## 测试与打包
 
-  switch (message.type) {
-    case 'kpi':
-      console.log('KPI', message.data)
-      break
-    case 'inventory':
-      console.log('库存', message.data)
-      break
-    case 'vehicle':
-      console.log('车辆', message.data)
-      break
-    case 'energy':
-      console.log('能耗', message.data)
-      break
-    case 'city_raise':
-      console.log('城市升起/飞线出现', message.data)
-      break
-    case 'city_fall':
-      console.log('城市回落/飞线移除', message.data.routeId)
-      break
-  }
-}
-```
+~~~powershell
+mvn test
+mvn -DskipTests package
+~~~
 
-## 4. 当前推送内容
+可执行包生成在 target/digital-twin-service-0.0.1-SNAPSHOT.jar。
 
-每 3 秒推送一次：
+## 运行数据
 
-- `kpi`：产值、订单完成率、设备开动率、良品率、活跃订单、在线车辆
-- `inventory`：原料、半成品、成品、预警数量、周转率
-- `vehicle`：车辆总数、运行、空闲、充电、故障、平均速度
-- `energy`：电、水、气、碳排、负载率
+~~~text
+runtime-data/
+  daily-order-statistics.json
+  vehicle-order-chain/
+    records/
+    vehicles/
+    trips/
+  vehicle-position-history/
+~~~
 
-每 5 到 10 秒随机生成一条业务线路：
-
-- `city_raise`：城市升起，同时携带起点、终点、经纬度和飞线业务值
-- `city_fall`：5 到 10 秒后自动回落，使用同一个 `routeId`
-
-## 5. 修改 token
-
-打开：
-
-`src/main/resources/application.yml`
-
-修改：
-
-```yaml
-dashboard:
-  websocket:
-    token: jushen-screen-token
-```
-
-前端连接时带上同一个 token 即可。
-
-## 6. 开发阶段跨域
-
-当前 WebSocket 允许任意前端来源连接，但必须带正确 token。
-
-如果项目上线，建议把：
-
-```yaml
-allowed-origin-patterns:
-  - "*"
-```
-
-改成你的正式前端地址，例如：
-
-```yaml
-allowed-origin-patterns:
-  - "https://your-screen-domain.com"
-```
-"# digital-twin-service" 
+运行数据属于业务缓存和审计证据。排障前先核对文件更新时间，不要直接删除 Trip 或位置历史。
