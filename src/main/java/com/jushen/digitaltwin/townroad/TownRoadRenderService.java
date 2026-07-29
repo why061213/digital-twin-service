@@ -423,10 +423,11 @@ public class TownRoadRenderService {
                         .filter(this::hasCoordinates)
                         .map(this::copyCoordinate)
                         .toList();
+                List<double[]> routingCoordinates = distinctConsecutiveCoordinates(stopCoordinates);
                 routeWaypointsByInstanceId.put(mergedInstanceId,
-                        stopCoordinates.size() <= 2
+                        routingCoordinates.size() <= 2
                                 ? List.of()
-                                : List.copyOf(stopCoordinates.subList(1, stopCoordinates.size() - 1)));
+                                : List.copyOf(routingCoordinates.subList(1, routingCoordinates.size() - 1)));
                 for (String memberId : decision.tripOrderInstanceIds()) {
                     VehicleOrderChainStore.StoredOrder member = storedByKey.get(memberId);
                     if (member == null || member.record() == null) continue;
@@ -534,6 +535,18 @@ public class TownRoadRenderService {
 
     private double[] copyCoordinate(double[] coordinates) {
         return new double[]{coordinates[0], coordinates[1]};
+    }
+
+    private List<double[]> distinctConsecutiveCoordinates(List<double[]> coordinates) {
+        List<double[]> result = new ArrayList<>();
+        for (double[] coordinate : coordinates == null ? List.<double[]>of() : coordinates) {
+            if (!hasCoordinates(coordinate)) continue;
+            if (result.isEmpty()
+                    || VehicleTripTopologyService.haversineKm(result.get(result.size() - 1), coordinate) > 0.01d) {
+                result.add(copyCoordinate(coordinate));
+            }
+        }
+        return List.copyOf(result);
     }
 
     private String effectiveVehicleStatus(

@@ -434,6 +434,8 @@ class VehicleTripRuntimeServiceTest {
 
         VehicleTripRuntimeService.CompositeTripSnapshot snapshot = service.describeCompositeTrip(
                 replanned, VehicleTripRuntimeService.TargetPresenceState.EN_ROUTE);
+        assertThat(snapshot.stops()).extracting(VehicleTripRuntimeService.CompositeStopView::sequence)
+                .containsExactly(1, 2, 3, 4);
         assertThat(snapshot.stops().stream()
                 .filter(stop -> stop.action() == VehicleTripTopologyService.StopAction.DELIVERY)
                 .map(VehicleTripRuntimeService.CompositeStopView::orderInstanceId)

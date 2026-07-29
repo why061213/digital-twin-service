@@ -13,7 +13,7 @@ import java.util.Set;
 /** 从任务成员生成装卸 Stop、融合 Node，并用本地距离生成满足先取后送约束的初始计划。 */
 @Service
 public class VehicleTripTopologyService {
-    static final double DEFAULT_NODE_MERGE_RADIUS_KM = 5d;
+    static final double DEFAULT_NODE_MERGE_RADIUS_KM = 0.3d;
 
     public TripTopology build(
             Map<String, VehicleOrderChainStore.StoredOrder> orders,
@@ -162,7 +162,10 @@ public class VehicleTripTopologyService {
         List<TripNode> nodes = new ArrayList<>();
         for (List<TripStop> cluster : clusters) {
             List<TripStop> internal = cluster.stream()
-                    .sorted(Comparator.comparing(TripStop::action).thenComparing(TripStop::stopId))
+                    .sorted(Comparator
+                            .comparingInt((TripStop stop) -> stop.visitState() == VisitState.VISITED
+                                    ? 0 : stop.action() == StopAction.DELIVERY ? 1 : 2)
+                            .thenComparing(TripStop::stopId))
                     .toList();
             String stableKey = internal.stream().map(TripStop::stopId).sorted().reduce((a, b) -> a + "|" + b).orElse("empty");
             Set<String> internalStopIds = internal.stream().map(TripStop::stopId)
@@ -211,9 +214,13 @@ public class VehicleTripTopologyService {
             if (legal.isEmpty()) break;
             final double[] current = cursor;
             TripStop forced = forcedFirstStopId == null ? null : remaining.get(forcedFirstStopId);
-            TripStop selected = forced != null && legal.contains(forced) ? forced : legal.stream().min(Comparator
+            boolean keepForced = forced != null && legal.contains(forced)
+                    && !hasSameSiteDeliveryPrecedence(forced, legal);
+            TripStop selected = keepForced ? forced : legal.stream().min(Comparator
                     .comparingDouble((TripStop stop) -> current == null ? 0d : distanceOrMax(current, stop.coordinates()))
-                    .thenComparing(stop -> stop.action() == StopAction.PICKUP ? 0 : 1)
+                    // 同一地点同时可卸货和装货时，先卸掉车上已有订单，再装下一单。
+                    // legal 已保证任一订单自身仍然严格先取后送。
+                    .thenComparing(stop -> stop.action() == StopAction.DELIVERY ? 0 : 1)
                     .thenComparingDouble(stop -> coordinate(stop.coordinates(), 0))
                     .thenComparingDouble(stop -> coordinate(stop.coordinates(), 1))
                     .thenComparing(TripStop::stopId)).orElseThrow();
@@ -223,6 +230,14 @@ public class VehicleTripTopologyService {
             if (hasCoordinates(selected.coordinates())) cursor = selected.coordinates();
         }
         return List.copyOf(plan);
+    }
+
+    private boolean hasSameSiteDeliveryPrecedence(TripStop forced, List<TripStop> legalStops) {
+        if (forced.action() != StopAction.PICKUP || !hasCoordinates(forced.coordinates())) return false;
+        return legalStops.stream()
+                .filter(stop -> stop.action() == StopAction.DELIVERY)
+                .filter(stop -> hasCoordinates(stop.coordinates()))
+                .anyMatch(stop -> haversineKm(forced.coordinates(), stop.coordinates()) <= 0.01d);
     }
 
     private double[] fallbackPlanningPosition(List<TripStop> stops) {

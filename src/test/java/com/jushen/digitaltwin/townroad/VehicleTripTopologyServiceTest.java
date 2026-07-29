@@ -13,7 +13,7 @@ class VehicleTripTopologyServiceTest {
     @Test
     void mergesNearbyStopsButKeepsInternalStopsAndPickupBeforeDelivery() {
         VehicleOrderChainStore.StoredOrder first = stored("O1", "L1", 113.10, 23.10, 113.50, 23.30);
-        VehicleOrderChainStore.StoredOrder second = stored("O2", "L2", 113.11, 23.10, 113.60, 23.40);
+        VehicleOrderChainStore.StoredOrder second = stored("O2", "L2", 113.101, 23.10, 113.60, 23.40);
         Map<String, VehicleOrderChainStore.StoredOrder> orders = orders(first, second);
         Map<String, VehicleTripRuntimeService.TripMemberState> members = Map.of(
                 first.key(), VehicleTripRuntimeService.TripMemberState.CONFIRMED,
@@ -70,6 +70,35 @@ class VehicleTripTopologyServiceTest {
 
         assertThat(topology.plannedStopIds().get(0)).isEqualTo(loaded.key() + "::DELIVERY");
         assertBefore(topology.plannedStopIds(), waiting.key() + "::PICKUP", waiting.key() + "::DELIVERY");
+    }
+
+    @Test
+    void deliversOnboardOrderBeforePickupAtSamePlaceAndKeepsDistinctNearbySitesSeparate() {
+        VehicleOrderChainStore.StoredOrder loaded = stored(
+                "LOADED", "L1", 106.417666, 23.134375, 106.391457, 23.146570);
+        VehicleOrderChainStore.StoredOrder waiting = stored(
+                "WAITING", "L2", 106.391457, 23.146570, 106.417666, 23.134375);
+        VehicleTripTopologyService.TripTopology topology = new VehicleTripTopologyService().build(
+                orders(loaded, waiting),
+                Map.of(loaded.key(), VehicleTripRuntimeService.TripMemberState.CONFIRMED,
+                        waiting.key(), VehicleTripRuntimeService.TripMemberState.CONFIRMED),
+                Set.of(loaded.key()), Set.of(), null,
+                new double[]{106.367729, 23.189929}, null);
+
+        assertThat(topology.nodes()).hasSize(2);
+        assertThat(topology.plannedStopIds()).containsExactly(
+                loaded.key() + "::DELIVERY",
+                waiting.key() + "::PICKUP",
+                waiting.key() + "::DELIVERY");
+
+        VehicleTripTopologyService.TripTopology restoredOldPlan = new VehicleTripTopologyService().build(
+                orders(loaded, waiting),
+                Map.of(loaded.key(), VehicleTripRuntimeService.TripMemberState.CONFIRMED,
+                        waiting.key(), VehicleTripRuntimeService.TripMemberState.CONFIRMED),
+                Set.of(loaded.key()), Set.of(), topology,
+                new double[]{106.367729, 23.189929}, waiting.key() + "::PICKUP");
+        assertThat(restoredOldPlan.plannedStopIds()).startsWith(
+                loaded.key() + "::DELIVERY", waiting.key() + "::PICKUP");
     }
 
     @Test

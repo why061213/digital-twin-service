@@ -288,7 +288,6 @@ public class VehicleTripRuntimeService {
             VehicleTripRuntime trip,
             VehicleTripTopologyService.TripStop target
     ) {
-        Map<VehicleTripTopologyService.StopAction, Integer> indexes = new LinkedHashMap<>();
         List<CompositeStopView> result = new ArrayList<>();
         Map<String, VehicleTripTopologyService.TripStop> stopsById = new LinkedHashMap<>();
         trip.topology().stops().forEach(stop -> stopsById.put(stop.stopId(), stop));
@@ -314,7 +313,8 @@ public class VehicleTripRuntimeService {
                 .filter(stop -> emittedStopIds.add(stop.stopId()))
                 .forEach(orderedStops::add);
         for (VehicleTripTopologyService.TripStop stop : orderedStops) {
-            int sequence = indexes.merge(stop.action(), 1, Integer::sum);
+            // sequence 是整条 Trip 的全局执行序号，不能让装货和卸货分别从 1 编号。
+            int sequence = result.size() + 1;
             result.add(new CompositeStopView(
                     stop.stopId(), stop.orderInstanceId(), stop.action(), sequence,
                     stop.locationName(), stop.coordinates(), stop.visitState(),
