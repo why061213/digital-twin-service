@@ -6,7 +6,8 @@ Spring Boot 3.3.5 / Java 17 后端，为数字孪生大屏提供订单同步、R
 
 - 系统总览与完整交接：../TECHNICAL_DOCUMENTATION.md
 - RM2 多订单复合行程：docs/RM2_COMPOSITE_TRIP_TECHNICAL_GUIDE.md
-- 仓库聚焦协议：docs/WAREHOUSE_FOCUS_API.md
+- ChinaMap 仓库六接口：docs/CHINA_MAP_MANAGEMENT_API.md
+- 仓库聚焦协议：docs/WAREHOUSE_FOCUS_TECHNICAL_DOCUMENTATION.md
 - 早期阶段文档：TECHNICAL_DOCUMENTATION.md、docs/PROJECT_TECHNICAL_DOCUMENTATION.md（仅供追溯）
 
 ## 本地运行

@@ -3,9 +3,14 @@ package com.jushen.digitaltwin.service;
 import com.jushen.digitaltwin.config.WarehouseProperties;
 import com.jushen.digitaltwin.model.WarehouseData;
 import com.jushen.digitaltwin.websocket.RealtimeWebSocketHandler;
+import com.jushen.digitaltwin.web.dto.WarehouseChartManagementRequest;
+import com.jushen.digitaltwin.web.dto.WarehouseCityManagementRequest;
+import com.jushen.digitaltwin.web.dto.WarehouseDataAdjustmentRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClient;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -16,6 +21,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 @Service
 public class WarehousePushService {
@@ -26,6 +34,10 @@ public class WarehousePushService {
     private final WarehouseDataProvider dataProvider;
     private final WarehouseProperties warehouseProperties;
     private final List<WarehouseProperties.WarehouseConfig> warehouseConfigs;
+    private final Map<String, TreeMap<Integer, Map<String, Object>>> centerCharts = new ConcurrentHashMap<>();
+    private final Map<String, TreeMap<Integer, Map<String, Object>>> sidePanels = new ConcurrentHashMap<>();
+    private final Map<String, String> cityNameById = new ConcurrentHashMap<>();
+    private final RestClient restClient = RestClient.create();
     private final Random random = new Random();
 
     public WarehousePushService(
@@ -36,16 +48,232 @@ public class WarehousePushService {
         this.webSocketHandler = webSocketHandler;
         this.dataProvider = dataProvider;
         this.warehouseProperties = warehouseProperties;
-        this.warehouseConfigs = warehouseProperties.getWarehouses();
+        this.warehouseConfigs = new CopyOnWriteArrayList<>();
+        warehouseProperties.getWarehouses().forEach(config -> {
+            WarehouseProperties.WarehouseConfig copy = new WarehouseProperties.WarehouseConfig();
+            copy.setCity(config.getCity());
+            copy.setLabel(config.getLabel());
+            this.warehouseConfigs.add(copy);
+        });
     }
 
     public List<Map<String, Object>> getWarehouseSnapshot() {
-        List<WarehouseData> allData = dataProvider.fetchAllWarehouseData();
+        Map<String, WarehouseData> configuredData = new LinkedHashMap<>();
+        dataProvider.fetchAllWarehouseData().forEach(data -> configuredData.put(data.getCityName(), data));
         List<Map<String, Object>> messages = new ArrayList<>();
-        for (WarehouseData data : allData) {
-            messages.add(warehouseMessage(data));
+        for (WarehouseProperties.WarehouseConfig config : warehouseConfigs) {
+            WarehouseData source = configuredData.get(config.getCity());
+            Map<String, Object> displayData = new LinkedHashMap<>();
+            if (source != null) displayData.putAll(source.getDisplayData());
+            displayData.put("label", config.getLabel());
+            TreeMap<Integer, Map<String, Object>> charts = centerCharts.get(config.getCity());
+            if (charts != null && !charts.isEmpty()) displayData.put("charts", positionedValues(charts));
+            messages.add(warehouseMessage(new WarehouseData(config.getCity(), displayData)));
         }
         return messages;
+    }
+
+    public synchronized Map<String, Object> applyCityManagement(WarehouseCityManagementRequest request) {
+        String operation = normalizeOperation(request == null ? null : request.operation());
+        List<WarehouseCityManagementRequest.CityItem> items = request == null ? null : request.cities();
+        if (items == null || items.isEmpty()) throw new IllegalArgumentException("cities must not be empty");
+        List<String> replacedCities = "REPLACE".equals(operation)
+                ? warehouseConfigs.stream().map(WarehouseProperties.WarehouseConfig::getCity).toList()
+                : List.of();
+        if ("REPLACE".equals(operation)) {
+            warehouseConfigs.clear();
+            cityNameById.clear();
+        }
+        int applied = 0;
+        for (WarehouseCityManagementRequest.CityItem item : items) {
+            String city = requireText(item.cityName(), "cityName");
+            if ("DELETE".equals(operation)) {
+                warehouseConfigs.removeIf(config -> city.equals(config.getCity()));
+                centerCharts.remove(city);
+                sidePanels.remove(city);
+                cityNameById.entrySet().removeIf(entry -> city.equals(entry.getValue()));
+                webSocketHandler.broadcast(Map.of("type", "warehouse_update", "cityName", city, "action", "fall"));
+                applied++;
+                continue;
+            }
+            String warehouseName = requireText(item.warehouseName(), "warehouseName");
+            warehouseConfigs.removeIf(config -> city.equals(config.getCity()));
+            WarehouseProperties.WarehouseConfig config = new WarehouseProperties.WarehouseConfig();
+            config.setCity(city);
+            config.setLabel(warehouseName);
+            warehouseConfigs.add(config);
+            if (item.cityId() != null && !item.cityId().isBlank()) {
+                cityNameById.put(item.cityId().trim(), city);
+            }
+            webSocketHandler.broadcast(warehouseMessage(new WarehouseData(city, Map.of("label", warehouseName))));
+            applied++;
+        }
+        if ("REPLACE".equals(operation)) {
+            replacedCities.stream()
+                    .filter(oldCity -> warehouseConfigs.stream().noneMatch(config -> oldCity.equals(config.getCity())))
+                    .forEach(oldCity -> webSocketHandler.broadcast(Map.of(
+                            "type", "warehouse_update", "cityName", oldCity, "action", "fall"
+                    )));
+        }
+        return result("cities", operation, applied, getWarehouseSnapshot());
+    }
+
+    public synchronized Map<String, Object> applyChartManagement(List<WarehouseChartManagementRequest> requests) {
+        if (requests == null || requests.isEmpty()) throw new IllegalArgumentException("request body must not be empty");
+        int applied = 0;
+        for (WarehouseChartManagementRequest request : requests) {
+            String city = requireKnownCity(request.cityName(), null);
+            String operation = normalizeOperation(request.operation());
+            List<WarehouseChartManagementRequest.ChartItem> charts = request.charts();
+            if (charts == null || charts.isEmpty()) throw new IllegalArgumentException("charts must not be empty");
+            TreeMap<Integer, Map<String, Object>> slots = centerCharts.computeIfAbsent(city, ignored -> new TreeMap<>());
+            if ("REPLACE".equals(operation)) slots.clear();
+            int sequentialPosition = 1;
+            for (WarehouseChartManagementRequest.ChartItem chart : charts) {
+                Integer position = chart.position();
+                if ("DELETE".equals(operation)) {
+                    validatePosition(position, 8, "chart delete position");
+                    slots.remove(position);
+                } else {
+                    if (position == null) {
+                        while (slots.containsKey(sequentialPosition) && sequentialPosition <= 8) sequentialPosition++;
+                        position = sequentialPosition;
+                    }
+                    validatePosition(position, 8, "chart position");
+                    String chartType = requireText(chart.chartType(), "chartType");
+                    if (chart.chartData() == null) throw new IllegalArgumentException("chartData is required");
+                    slots.put(position, normalizeChart(position, chartType, chart.chartData()));
+                    sequentialPosition = position + 1;
+                }
+                applied++;
+            }
+            broadcastChartUpdate(city, false, slots);
+        }
+        return result("charts", "BATCH", applied, requests.size());
+    }
+
+    public synchronized Map<String, Object> applyDataAdjustments(List<WarehouseDataAdjustmentRequest> requests) {
+        if (requests == null || requests.isEmpty()) throw new IllegalArgumentException("request body must not be empty");
+        int applied = 0;
+        for (WarehouseDataAdjustmentRequest request : requests) {
+            if (request.sidePanel() == null) throw new IllegalArgumentException("sidePanel is required");
+            String city = requireKnownCity(request.cityName(), request.cityId());
+            int maxPosition = request.sidePanel() ? 4 : 8;
+            validatePosition(request.position(), maxPosition, "position");
+            if (request.chartData() == null) throw new IllegalArgumentException("chartData is required");
+            Map<String, TreeMap<Integer, Map<String, Object>>> target = request.sidePanel() ? sidePanels : centerCharts;
+            TreeMap<Integer, Map<String, Object>> slots = target.computeIfAbsent(city, ignored -> new TreeMap<>());
+            Map<String, Object> merged = new LinkedHashMap<>(slots.getOrDefault(request.position(), Map.of()));
+            merged.putAll(request.chartData());
+            merged.put("position", request.position());
+            slots.put(request.position(), merged);
+            if (request.sidePanel()) {
+                webSocketHandler.broadcast(warehouseFocusMessage(city, positionedValues(slots)));
+            } else {
+                broadcastChartUpdate(city, false, slots);
+            }
+            applied++;
+        }
+        return result("data", "ADJUST", applied, requests.size());
+    }
+
+    public Map<String, Object> pullCities() {
+        String url = warehouseProperties.getExternalSync().getCitiesUrl();
+        if (url == null || url.isBlank()) return unconfigured("cities");
+        WarehouseCityManagementRequest body = restClient.get().uri(url).retrieve().body(WarehouseCityManagementRequest.class);
+        return applyCityManagement(body);
+    }
+
+    public Map<String, Object> pullCharts() {
+        String url = warehouseProperties.getExternalSync().getChartsUrl();
+        if (url == null || url.isBlank()) return unconfigured("charts");
+        List<WarehouseChartManagementRequest> body = restClient.get().uri(url).retrieve()
+                .body(new ParameterizedTypeReference<>() {});
+        return applyChartManagement(body);
+    }
+
+    public Map<String, Object> pullData() {
+        String url = warehouseProperties.getExternalSync().getDataUrl();
+        if (url == null || url.isBlank()) return unconfigured("data");
+        List<WarehouseDataAdjustmentRequest> body = restClient.get().uri(url).retrieve()
+                .body(new ParameterizedTypeReference<>() {});
+        return applyDataAdjustments(body);
+    }
+
+    private String normalizeOperation(String operation) {
+        String value = requireText(operation, "operation").trim().toUpperCase();
+        return switch (value) {
+            case "ADD", "添加" -> "ADD";
+            case "DELETE", "REMOVE", "删减", "删除" -> "DELETE";
+            case "REPLACE", "OVERWRITE", "覆盖" -> "REPLACE";
+            default -> throw new IllegalArgumentException("operation must be ADD/DELETE/REPLACE (添加/删减/覆盖)");
+        };
+    }
+
+    private String requireText(String value, String field) {
+        if (value == null || value.isBlank()) throw new IllegalArgumentException(field + " is required");
+        return value.trim();
+    }
+
+    private String requireKnownCity(String cityName, String cityId) {
+        String city = cityName;
+        if ((city == null || city.isBlank()) && cityId != null && !cityId.isBlank()) {
+            city = cityNameById.get(cityId.trim());
+        }
+        String resolvedCity = requireText(city, "cityName or known cityId");
+        boolean known = warehouseConfigs.stream().anyMatch(config -> resolvedCity.equals(config.getCity()));
+        if (!known) throw new IllegalArgumentException("Unknown cityName: " + resolvedCity);
+        return resolvedCity;
+    }
+
+    private void validatePosition(Integer position, int max, String field) {
+        if (position == null || position < 1 || position > max) {
+            throw new IllegalArgumentException(field + " must be between 1 and " + max);
+        }
+    }
+
+    private Map<String, Object> normalizeChart(int position, String chartType, Map<String, Object> chartData) {
+        Map<String, Object> chart = new LinkedHashMap<>(chartData);
+        chart.put("position", position);
+        chart.put("chartType", chartType);
+        chart.putIfAbsent("id", "managed-chart-" + position);
+        chart.putIfAbsent("title", "图表 " + position);
+        return chart;
+    }
+
+    private List<Map<String, Object>> positionedValues(TreeMap<Integer, Map<String, Object>> slots) {
+        return slots.entrySet().stream().map(entry -> {
+            Map<String, Object> value = new LinkedHashMap<>(entry.getValue());
+            value.put("position", entry.getKey());
+            return value;
+        }).toList();
+    }
+
+    private void broadcastChartUpdate(String city, boolean sidePanel, TreeMap<Integer, Map<String, Object>> slots) {
+        Map<String, Object> message = new LinkedHashMap<>();
+        message.put("type", "warehouse_chart_update");
+        message.put("cityName", city);
+        message.put("sidePanel", sidePanel);
+        message.put("charts", positionedValues(slots));
+        webSocketHandler.broadcast(message);
+    }
+
+    private Map<String, Object> result(String resource, String operation, int applied, Object data) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("resource", resource);
+        response.put("operation", operation);
+        response.put("applied", applied);
+        response.put("data", data);
+        return response;
+    }
+
+    private Map<String, Object> unconfigured(String resource) {
+        return Map.of(
+                "resource", resource,
+                "configured", false,
+                "applied", 0,
+                "message", "external sync URL is not configured"
+        );
     }
 
     public List<Map<String, Object>> pushWarehouseSnapshot() {
@@ -111,6 +339,8 @@ public class WarehousePushService {
     }
 
     private List<Map<String, Object>> createFocusPanels(String cityName) {
+        TreeMap<Integer, Map<String, Object>> managedPanels = sidePanels.get(cityName);
+        if (managedPanels != null && !managedPanels.isEmpty()) return positionedValues(managedPanels);
         int limit = Math.max(0, warehouseProperties.getFocusPanels().getCount());
         List<Map<String, Object>> panels = new ArrayList<>();
         for (WarehouseProperties.PanelConfig config : warehouseProperties.getFocusPanels().getPanels()) {
