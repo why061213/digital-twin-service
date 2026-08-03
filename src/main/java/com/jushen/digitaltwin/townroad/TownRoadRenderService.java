@@ -28,7 +28,7 @@ import java.util.Set;
 public class TownRoadRenderService {
 
     private static final Logger log = LoggerFactory.getLogger(TownRoadRenderService.class);
-    public static final int RM2_GROUP_SIZE = 1; // 临时：每辆车单独一组
+    public static final int RM2_GROUP_SIZE = 3; // 每个展示组最多 3 个业务订单（同订单多车不重复占位）
 
     private final TownRoadExternalOrderClient townRoadExternalOrderClient;
     private final TownRoadMiddleLayer middleLayer;
@@ -52,6 +52,8 @@ public class TownRoadRenderService {
     /** 上一版 lineId→groupId 索引，用于反查 changedGroupIds */
     private volatile Map<String, String> previousGroupIdByLineId = Map.of();
     private volatile Map<String, VehicleOrderEligibilityService.VehicleDecision> tripDecisionByLineId = Map.of();
+    /** 业务订单、联运订单与运行时 Trip 的显式分层，避免 Trip 覆盖原始订单号。 */
+    private volatile Map<String, TripOrderIdentity> tripOrderIdentityByLineId = Map.of();
     /** 上一版快照内容指纹 */
     private volatile String previousFingerprint = "";
 
@@ -400,6 +402,7 @@ public class TownRoadRenderService {
         List<ExternalOrderRecord> result = new ArrayList<>();
         Map<String, List<double[]>> routeWaypointsByInstanceId = new LinkedHashMap<>();
         Map<String, VehicleOrderEligibilityService.VehicleDecision> decisionsByRuntimeLine = new LinkedHashMap<>();
+        Map<String, TripOrderIdentity> identitiesByRuntimeLine = new LinkedHashMap<>();
         Set<String> emittedCompositeTripIds = new LinkedHashSet<>();
         for (VehicleOrderChainStore.StoredOrder stored : storedOrders) {
             if (stored == null || stored.record() == null) continue;
@@ -437,6 +440,8 @@ public class TownRoadRenderService {
                             merged.vehicle() == null ? null : merged.vehicle().carId());
                 }
                 decisionsByRuntimeLine.put(mergedInstanceId, decision);
+                identitiesByRuntimeLine.put(mergedInstanceId,
+                        tripOrderIdentity(decision, storedByKey, merged.orderId()));
                 log.info("[VehicleOrderChain] merged composite trip for rendering: trip={}, orders={}, stops={}, waypoints={}, lineId={}",
                         decision.tripId(), decision.tripOrderInstanceIds().size(), stopCoordinates.size(),
                         routeWaypointsByInstanceId.get(mergedInstanceId).size(), mergedInstanceId);
@@ -451,8 +456,11 @@ public class TownRoadRenderService {
                     effective.vehicle() == null ? null : effective.vehicle().plate(),
                     effective.vehicle() == null ? null : effective.vehicle().carId());
             decisionsByRuntimeLine.put(runtimeInstanceId, decision);
+            identitiesByRuntimeLine.put(runtimeInstanceId,
+                    tripOrderIdentity(decision, storedByKey, null));
         }
         this.tripDecisionByLineId = Map.copyOf(decisionsByRuntimeLine);
+        this.tripOrderIdentityByLineId = Map.copyOf(identitiesByRuntimeLine);
         return new EligiblePipelineInput(List.copyOf(result), Map.copyOf(routeWaypointsByInstanceId));
     }
 
@@ -506,11 +514,48 @@ public class TownRoadRenderService {
                 hasCoordinates(decision.currentPosition()) ? copyCoordinate(decision.currentPosition()) : baseVehicle.currentCoords(),
                 baseVehicle.speedKmh());
         String status = effectiveVehicleStatus(fallbackOrder, decision);
-        String runtimeLineId = decision.runtimeLineId() == null || decision.runtimeLineId().isBlank()
-                ? "trip::" + decision.tripId() : decision.runtimeLineId();
+        String transportOrderId = stableIntermodalOrderId(decision.tripOrderInstanceIds());
         return new ExternalOrderRecord(
-                decision.tripId(), runtimeLineId, null, from, to, vehicle,
+                transportOrderId, "intermodal::" + transportOrderId, null, from, to, vehicle,
                 status, decision.orderUpdatedAt(), false, true, 0, 0);
+    }
+
+    private String stableIntermodalOrderId(List<String> orderInstanceIds) {
+        String identity = (orderInstanceIds == null ? List.<String>of() : orderInstanceIds).stream()
+                .filter(value -> value != null && !value.isBlank())
+                .sorted()
+                .collect(java.util.stream.Collectors.joining("|"));
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(identity.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder("LY-");
+            for (int i = 0; i < 6; i++) hex.append(String.format("%02X", digest[i]));
+            return hex.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            return "LY-" + Integer.toUnsignedString(identity.hashCode(), 16).toUpperCase();
+        }
+    }
+
+    private TripOrderIdentity tripOrderIdentity(
+            VehicleOrderEligibilityService.VehicleDecision decision,
+            Map<String, VehicleOrderChainStore.StoredOrder> storedByKey,
+            String transportOrderId
+    ) {
+        List<String> originalOrderIds = (decision.tripOrderInstanceIds() == null
+                ? List.<String>of() : decision.tripOrderInstanceIds()).stream()
+                .map(storedByKey::get)
+                .filter(java.util.Objects::nonNull)
+                .map(VehicleOrderChainStore.StoredOrder::record)
+                .filter(java.util.Objects::nonNull)
+                .map(ExternalOrderRecord::orderId)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct()
+                .sorted()
+                .toList();
+        if (originalOrderIds.isEmpty() && decision.orderId() != null && !decision.orderId().isBlank()) {
+            originalOrderIds = List.of(decision.orderId());
+        }
+        return new TripOrderIdentity(originalOrderIds, transportOrderId);
     }
 
     private ExternalOrderRecord.Location compositeStopLocation(
@@ -582,8 +627,9 @@ public class TownRoadRenderService {
             // RoutePushService 会基于该完整基线校准当前位置；确认偏航时再通过道路规划拼接
             // “订单起点 -> 车辆当前位置 -> 订单终点”，不会退化成直线。
             return new ExternalOrderRecord(
-                    decision.tripId(), decision.runtimeLineId(), null, order.from(), order.to(), vehicle,
-                    effectiveStatus, order.updatedAt(), order.deleted(), order.upToDate(), 0, 0);
+                    order.orderId(), order.lineId(), order.lines(), order.from(), order.to(), vehicle,
+                    effectiveStatus, order.updatedAt(), order.deleted(), order.upToDate(),
+                    order.lineIndex(), order.vehicleIndex());
         }
         if (safeEquals(effectiveStatus, order.status())) return order;
         return new ExternalOrderRecord(
@@ -934,7 +980,7 @@ public class TownRoadRenderService {
         }
         VehicleOrderEligibilityService.VehicleDecision tripDecision = tripDecisionByLineId.get(route.lineId());
         if (tripDecision != null) {
-            meta.putAll(tripMetadata(tripDecision));
+            meta.putAll(tripMetadata(tripDecision, tripOrderIdentityByLineId.get(route.lineId())));
         }
         return new RenderRouteDTO(
                 route.lineId(), route.orderId(), route.businessLineId(),
@@ -948,9 +994,18 @@ public class TownRoadRenderService {
         );
     }
 
-    private Map<String, Object> tripMetadata(VehicleOrderEligibilityService.VehicleDecision decision) {
+    private Map<String, Object> tripMetadata(
+            VehicleOrderEligibilityService.VehicleDecision decision,
+            TripOrderIdentity identity
+    ) {
         if (decision == null) return Map.of();
         Map<String, Object> meta = new LinkedHashMap<>();
+        if (identity != null) {
+            meta.put("originalOrderIds", identity.originalOrderIds());
+            putIfNotNull(meta, "transportOrderId", identity.transportOrderId());
+            meta.put("orderIdentityLevel", identity.transportOrderId() == null ? "ORIGINAL" : "INTERMODAL");
+            meta.put("routeCombinationEligible", identity.transportOrderId() == null);
+        }
         putIfNotNull(meta, "tripId", decision.tripId());
         putIfNotNull(meta, "visualKey", decision.tripId());
         putIfNotNull(meta, "runtimeLineId", decision.runtimeLineId());
@@ -1035,7 +1090,9 @@ public class TownRoadRenderService {
 
             ExternalOrderRecord.Vehicle vehicle = order.vehicle();
             routePushService.setTripRuntimeMetadata(
-                    order.instanceId(), tripMetadata(tripDecisionByLineId.get(order.instanceId())));
+                    order.instanceId(), tripMetadata(
+                            tripDecisionByLineId.get(order.instanceId()),
+                            tripOrderIdentityByLineId.get(order.instanceId())));
             routePushService.dispatchTownRoute(
                     order.instanceId(),
                     order.orderId() != null ? order.orderId() : order.instanceId(),
@@ -1058,7 +1115,8 @@ public class TownRoadRenderService {
         return List.of(
                         "tripId", "visualKey", "currentLegId", "planVersion", "tripPhase",
                         "tripDecision", "positionQuality", "targetAction", "pendingOrderCount",
-                        "onboardOrderCount", "completedOrderCount", "tripStops")
+                        "onboardOrderCount", "completedOrderCount", "tripStops", "originalOrderIds",
+                        "transportOrderId", "orderIdentityLevel", "routeCombinationEligible")
                 .stream()
                 .map(key -> key + "=" + String.valueOf(meta.get(key)))
                 .collect(java.util.stream.Collectors.joining(","));
@@ -1070,6 +1128,8 @@ public class TownRoadRenderService {
         return normalized.contains("运输中") || normalized.contains("运行中")
                 || normalized.equals("在途-1") || normalized.equals("在途-2");
     }
+
+    private record TripOrderIdentity(List<String> originalOrderIds, String transportOrderId) {}
 
     private boolean shouldIncludeOrderForRealPositionMode(NormalizedTownRoadOrder order) {
         return order != null && shouldIncludeOrderForRealPositionMode(order.instanceId(), order.vehicle());

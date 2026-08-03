@@ -99,8 +99,8 @@ class TownRoadRenderServicePipelineCutTest {
         verify(middleLayer).processSnapshot(pipelineInput.capture(), waypointInput.capture());
         assertThat(pipelineInput.getValue()).hasSize(1);
         ExternalOrderRecord synthetic = pipelineInput.getValue().get(0);
-        assertThat(synthetic.orderId()).startsWith("trip-粤A90001");
-        assertThat(synthetic.lineId()).isEqualTo("trip::" + synthetic.orderId());
+        assertThat(synthetic.orderId()).startsWith("LY-");
+        assertThat(synthetic.lineId()).isEqualTo("intermodal::" + synthetic.orderId());
         assertThat(synthetic.status()).isEqualTo("运输中");
         assertThat(synthetic.from().coords()).containsExactly(113.10, 23.00);
         // 从插入装载点 112.95 出发，112.80 比 112.70 更近，因此先途经 112.80，
@@ -113,8 +113,11 @@ class TownRoadRenderServicePipelineCutTest {
 
         assertThat(service.getLatestRm2Snapshot().routes()).hasSize(1);
         Map<String, Object> meta = service.getLatestRm2Snapshot().routes().get(0).meta();
-        assertThat(meta).containsEntry("tripId", synthetic.orderId())
-                .containsEntry("visualKey", synthetic.orderId())
+        assertThat(meta).containsEntry("transportOrderId", synthetic.orderId())
+                .containsEntry("originalOrderIds", List.of("o1", "o2"))
+                .containsEntry("orderIdentityLevel", "INTERMODAL")
+                .containsEntry("routeCombinationEligible", false)
+                .containsEntry("tripId", meta.get("visualKey"))
                 .containsKey("currentLegId")
                 .containsEntry("targetOrderInstanceId", stored.get(1).key())
                 .containsEntry("targetAction", "PICKUP")
@@ -193,9 +196,9 @@ class TownRoadRenderServicePipelineCutTest {
         ArgumentCaptor<List<ExternalOrderRecord>> pipelineInput = ArgumentCaptor.forClass(List.class);
         verify(middleLayer).processSnapshot(pipelineInput.capture());
         assertThat(pipelineInput.getValue()).extracting(ExternalOrderRecord::orderId)
-                .containsExactly("trip-粤A10001", "trip-粤A10002");
+                .containsExactly("confirmed", "inferred");
         assertThat(pipelineInput.getValue()).extracting(ExternalOrderRecord::lineId)
-                .containsExactly("trip::trip-粤A10001", "trip::trip-粤A10002");
+                .containsExactly("line-confirmed", "line-inferred");
         assertThat(pipelineInput.getValue()).extracting(order -> order.from().coords())
                 .allSatisfy(coords -> assertThat(coords).containsExactly(113.1, 23.1));
         assertThat(pipelineInput.getValue()).extracting(order -> order.from().province())
@@ -206,7 +209,7 @@ class TownRoadRenderServicePipelineCutTest {
                 .containsExactly("运输中", "运输中");
         verify(routePush, never()).warmPositionCacheForLineIds(anySet());
         verify(routePush).aliasFreshProviderPosition(
-                "line-confirmed", "trip::trip-粤A10001", "粤A10001", "vehicle-confirmed");
+                "line-confirmed", "line-confirmed", "粤A10001", "vehicle-confirmed");
     }
 
     private VehicleOrderEligibilityService.VehicleDecision decision(
