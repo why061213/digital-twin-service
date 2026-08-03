@@ -13,6 +13,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -226,7 +227,9 @@ class VehicleOrderEligibilityServiceTest {
         when(fixture.routePush.freshProviderPosition("transporting")).thenReturn(
                 PositionSnapshot.fromProvider("transporting", "54972", "粤E54972", "粤E54972",
                         113.1, 23.0, 20));
-        when(fixture.store.recordInferredCompletion(transporting.record())).thenReturn(true);
+        when(fixture.store.canInferCompletion(transporting.record(), now.plusSeconds(60))).thenReturn(true);
+        when(fixture.store.recordInferredCompletion(
+                transporting.record(), now.plusSeconds(60))).thenReturn(true);
         VehicleOrderEligibilityService.VehicleDecision initial =
                 fixture.service.analyzeLatestVehicleOrders().decisions().get(0);
         when(fixture.routePush.localPositionHistoryForTrip(initial.tripId())).thenReturn(List.of(
@@ -237,8 +240,40 @@ class VehicleOrderEligibilityServiceTest {
         ));
 
         assertThat(fixture.service.advanceTripsFromLocalPositionHistory()).isEqualTo(1);
-        verify(fixture.store).recordInferredCompletion(transporting.record());
+        verify(fixture.store).recordInferredCompletion(transporting.record(), now.plusSeconds(60));
         assertThat(fixture.service.consumeCompletionRefreshRequired()).isTrue();
+        assertThat(fixture.service.consumeCompletionRefreshRequired()).isFalse();
+    }
+
+    @Test
+    void localDestinationDwellCannotCompleteWithoutValidTransitSequence() {
+        Instant now = Instant.parse("2026-07-28T02:00:00Z");
+        VehicleOrderChainStore.StoredOrder transporting = stored(
+                record("transporting", "粤E54972", "运输中", now.minusSeconds(120), 113.1), 1);
+        Fixture fixture = fixture(List.of(transporting));
+        when(fixture.routePush.providerVehicleIdForLineId("transporting")).thenReturn("54972");
+        when(fixture.routePush.freshProviderPosition("transporting")).thenReturn(
+                PositionSnapshot.fromProvider("transporting", "54972", "粤E54972", "粤E54972",
+                        113.1, 23.0, 20));
+        VehicleOrderEligibilityService.VehicleDecision initial =
+                fixture.service.analyzeLatestVehicleOrders().decisions().get(0);
+        when(fixture.routePush.localPositionHistoryForTrip(initial.tripId())).thenReturn(List.of(
+                new RoutePushService.RoutePositionHistorySample(
+                        now, new double[]{112.7, 23.3}, "simulated-arrival", 0.98),
+                new RoutePushService.RoutePositionHistorySample(
+                        now.plusSeconds(60), new double[]{112.7, 23.3}, "simulated-dwell", 0.99)
+        ));
+
+        assertThat(fixture.service.advanceTripsFromLocalPositionHistory()).isEqualTo(1);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, Object>> metadata =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(fixture.routePush).setTripRuntimeMetadataForTrip(eq(initial.tripId()), metadata.capture());
+        assertThat(metadata.getValue().get("targetStopId")).isEqualTo(initial.targetStopId());
+        assertThat(metadata.getValue().get("completedOrderCount")).isEqualTo(0);
+        verify(fixture.store, never()).recordInferredCompletion(
+                eq(transporting.record()), any(Instant.class));
         assertThat(fixture.service.consumeCompletionRefreshRequired()).isFalse();
     }
 
@@ -248,6 +283,8 @@ class VehicleOrderEligibilityServiceTest {
         VehicleOrderChainStore.StoredOrder transporting = stored(
                 record("transporting", "粤A60001", "运输中", enteredAt.minusSeconds(60), 113.0), 1);
         Fixture fixture = fixture(List.of(transporting));
+        when(fixture.store.canInferCompletion(
+                eq(transporting.record()), any(Instant.class))).thenReturn(true);
         when(fixture.routePush.providerVehicleIdForLineId("transporting")).thenReturn("60001");
         when(fixture.routePush.freshProviderPosition("transporting")).thenReturn(
                 snapshot("transporting", "60001", 112.70, 23.30, enteredAt),
@@ -268,7 +305,8 @@ class VehicleOrderEligibilityServiceTest {
         assertThat(completed.completedOrderIds()).containsExactly(transporting.key());
         assertThat(staleUpstream.decision()).isEqualTo("TRIP_COMPLETED_LOCAL");
         assertThat(staleUpstream.groupEligible()).isFalse();
-        verify(fixture.store).recordInferredCompletion(transporting.record());
+        verify(fixture.store).recordInferredCompletion(
+                eq(transporting.record()), any(Instant.class));
     }
 
     private Fixture fixture(List<VehicleOrderChainStore.StoredOrder> orders) {

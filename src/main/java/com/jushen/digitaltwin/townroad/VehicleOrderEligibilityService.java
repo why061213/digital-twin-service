@@ -88,7 +88,11 @@ public class VehicleOrderEligibilityService {
                     if ("COMPLETED_INFERRED".equals(decision)) {
                         VehicleOrderChainStore.StoredOrder completed =
                                 trip.ordersByInstanceId().get(target.orderInstanceId());
-                        if (completed != null && orderStore.recordInferredCompletion(completed.record())) {
+                        if (completed == null
+                                || !orderStore.canInferCompletion(completed.record(), sample.observedAt())) {
+                            continue;
+                        }
+                        if (orderStore.recordInferredCompletion(completed.record(), sample.observedAt())) {
                             completionRefreshRequired.set(true);
                         }
                     }
@@ -256,9 +260,17 @@ public class VehicleOrderEligibilityService {
             }
             if (observation.state() == VehicleTripRuntimeService.TargetPresenceState.DWELLING) {
                 boolean pickup = target.action() == VehicleTripTopologyService.StopAction.PICKUP;
-                if (!pickup && targetOrder != null
-                        && orderStore.recordInferredCompletion(targetOrder.record())) {
-                    completionRefreshRequired.set(true);
+                if (!pickup) {
+                    Instant evidenceAt = position.providerTime();
+                    if (targetOrder == null
+                            || !orderStore.canInferCompletion(targetOrder.record(), evidenceAt)) {
+                        return decision(trip, current, instanceId, providerVehicleId, alreadyCarrying,
+                                "UNLOADING", "delivery-dwell-awaiting-valid-transit-sequence",
+                                position, null, null);
+                    }
+                    if (orderStore.recordInferredCompletion(targetOrder.record(), evidenceAt)) {
+                        completionRefreshRequired.set(true);
+                    }
                 }
                 return decision(trip, current, instanceId, providerVehicleId, alreadyCarrying,
                         pickup ? "LOADING" : "COMPLETED_INFERRED",

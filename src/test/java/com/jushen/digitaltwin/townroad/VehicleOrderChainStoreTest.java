@@ -141,7 +141,8 @@ class VehicleOrderChainStoreTest {
                 "order-1", "route-1", "粤A12345", "运输中", "2026-07-22T07:30:00Z");
 
         store.ingest(List.of(transporting));
-        assertThat(store.recordInferredCompletion(transporting)).isTrue();
+        assertThat(store.recordInferredCompletion(
+                transporting, Instant.parse("2026-07-22T08:01:00Z"))).isTrue();
         assertThat(store.recordedCompletionStatus(transporting)).isEqualTo("已完成-2");
         store.ingest(List.of(record(
                 "order-1", "route-1", "粤A12345", "已完成", "2026-07-22T10:30:00Z")));
@@ -156,6 +157,42 @@ class VehicleOrderChainStoreTest {
                 VehicleOrderChainStore.VehicleFile.class);
         assertThat(vehicleFile.orders()).extracting(VehicleOrderChainStore.VehicleOrderEntry::status)
                 .contains("已完成-2", "已完成-1");
+    }
+
+    @Test
+    void inferredCompletionRequiresTransitEvidenceAndStrictlyLaterEvidenceTime() {
+        ObjectMapper objectMapper = new ObjectMapper();
+        VehicleOrderChainStore store = store(objectMapper, temporaryDirectory, "2026-07-22T08:00:00Z");
+        ExternalOrderRecord waiting = record(
+                "order-1", "route-1", "粤A12345", "待装载", "2026-07-22T07:30:00Z");
+        store.ingest(List.of(waiting));
+
+        assertThat(store.canInferCompletion(
+                waiting, Instant.parse("2026-07-22T08:01:00Z"))).isFalse();
+
+        assertThat(store.recordSuspectedInTransit(waiting)).isTrue();
+        assertThat(store.canInferCompletion(
+                waiting, Instant.parse("2026-07-22T08:00:00Z"))).isFalse();
+        assertThat(store.canInferCompletion(
+                waiting, Instant.parse("2026-07-22T08:00:01Z"))).isTrue();
+    }
+
+    @Test
+    void transitEvidenceFromEarlierOrderLifecycleCannotCompleteReusedOrder() {
+        ObjectMapper objectMapper = new ObjectMapper();
+        VehicleOrderChainStore store = store(objectMapper, temporaryDirectory, "2026-07-22T08:00:00Z");
+        ExternalOrderRecord firstLifecycle = record(
+                "order-1", "route-1", "粤A12345", "待装载", "2026-07-22T07:30:00Z");
+        store.ingest(List.of(firstLifecycle));
+        assertThat(store.recordSuspectedInTransit(firstLifecycle)).isTrue();
+
+        ExternalOrderRecord reusedWaiting = record(
+                "order-1", "route-1", "粤A12345", "待装载", "2026-07-22T09:00:00Z");
+
+        assertThat(store.canInferCompletion(
+                reusedWaiting, Instant.parse("2026-07-22T09:10:00Z"))).isFalse();
+        assertThat(store.recordInferredCompletion(
+                reusedWaiting, Instant.parse("2026-07-22T09:10:00Z"))).isFalse();
     }
 
     @Test

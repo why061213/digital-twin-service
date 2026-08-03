@@ -208,12 +208,37 @@ public class VehicleOrderChainStore {
         return null;
     }
 
+    /**
+     * 只有本轮在途证据已经成立，且完成定位时间严格晚于全部在途证据时，才允许推定完成。
+     * 当前快照时间晚于历史在途证据时，视为订单号已进入新一轮生命周期，旧证据不得复用。
+     */
+    public synchronized boolean canInferCompletion(ExternalOrderRecord record, Instant evidenceAt) {
+        if (record == null || evidenceAt == null || safe(record.orderId()).isBlank()) return false;
+        Map<String, VehicleOrderEntry> entries = loadVehicleEntries(vehicleKey(record));
+        String orderId = safe(record.orderId());
+        List<VehicleOrderEntry> transitEntries = Stream.of(
+                        entries.get(vehicleEventKey(orderId, STATUS_TRANSIT_CONFIRMED)),
+                        entries.get(vehicleEventKey(orderId, STATUS_TRANSIT_INFERRED)))
+                .filter(java.util.Objects::nonNull).toList();
+        if (transitEntries.isEmpty()) return false;
+
+        long latestTransitAt = Long.MIN_VALUE;
+        for (VehicleOrderEntry entry : transitEntries) {
+            Long transitAt = parseTime(entry.time());
+            if (transitAt == null) return false;
+            latestTransitAt = Math.max(latestTransitAt, transitAt);
+        }
+        Long lifecycleAt = parseTime(record.updatedAt());
+        if (lifecycleAt != null && latestTransitAt < lifecycleAt) return false;
+        return evidenceAt.toEpochMilli() > latestTransitAt;
+    }
+
     /** 目的地持续驻留达到阈值时追加轨迹推定完成事件；不改写后续正式确认。 */
-    public synchronized boolean recordInferredCompletion(ExternalOrderRecord record) {
-        if (record == null) return false;
+    public synchronized boolean recordInferredCompletion(ExternalOrderRecord record, Instant evidenceAt) {
+        if (!canInferCompletion(record, evidenceAt)) return false;
         String plate = vehicleKey(record);
         boolean changed = appendVehicleStatus(
-                plate, record, STATUS_COMPLETED_INFERRED, clock.millis(), false);
+                plate, record, STATUS_COMPLETED_INFERRED, evidenceAt.toEpochMilli(), false);
         if (changed) {
             writeVehicleFile(plate);
             writeTrackingIndex();
