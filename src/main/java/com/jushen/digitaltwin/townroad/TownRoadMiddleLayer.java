@@ -541,7 +541,7 @@ public class TownRoadMiddleLayer {
                 cityPath,
                 allowedProvinceCodes
         );
-        List<double[]> fallbackCoordinates = routeCoordinatesFor(resolvedFrom, resolvedTo, cityPath, districtPath);
+        List<double[]> fallbackCoordinates = routeCoordinatesFor(resolvedFrom, resolvedTo);
         RoutePlanBundle routePlanBundle = routePlansByOrderLine.get(
                 routePlanKey(raw, resolvedFrom, resolvedTo));
         RoutePlanningService.PlannedRoute baselineRoute = routePlanBundle == null
@@ -1075,48 +1075,21 @@ public class TownRoadMiddleLayer {
         return result;
     }
 
-    private List<double[]> routeCoordinatesFor(
+    List<double[]> routeCoordinatesFor(
             ExternalOrderRecord.Location from,
-            ExternalOrderRecord.Location to,
-            List<String> cityPath,
-            List<String> districtPath
+            ExternalOrderRecord.Location to
     ) {
         List<double[]> coordinates = new ArrayList<>();
         if (hasCoords(from == null ? null : from.coords())) {
             coordinates.add(new double[]{from.coords()[0], from.coords()[1]});
         }
 
-        boolean districtWaypointAdded = false;
-        if (districtPath != null && districtPath.size() > 2) {
-            for (int i = 1; i < districtPath.size() - 1; i++) {
-                DistrictRoadGraph.DistrictInfo districtInfo = districtRoadGraph.getDistrictInfo(districtPath.get(i));
-                if (districtInfo == null) continue;
-                double[] coords = coordinateResolver.resolveDistrictCenter(
-                        districtInfo.provinceName(),
-                        districtInfo.name()
-                );
-                if (hasCoords(coords)) {
-                    addDistinctCoordinate(coordinates, coords);
-                    districtWaypointAdded = true;
-                }
-            }
-        }
-
-        if (!districtWaypointAdded && cityPath != null && cityPath.size() > 2) {
-            for (int i = 1; i < cityPath.size() - 1; i++) {
-                CityRoadGraph.CityInfo cityInfo = cityRoadGraph.getCityInfo(cityPath.get(i));
-                if (cityInfo == null) continue;
-                double[] coords = coordinateResolver.resolveCityCenter(cityInfo.provinceName(), cityInfo.name());
-                if (hasCoords(coords)) {
-                    addDistinctCoordinate(coordinates, coords);
-                }
-            }
-        }
-
         if (hasCoords(to == null ? null : to.coords())) {
             addDistinctCoordinate(coordinates, to.coords());
         }
 
+        // 地图供应商路线是权威道路几何。供应商失败时仅以真实起终点兜底，
+        // 不再把省/市/区拓扑节点的行政中心伪装成道路途经点。
         return coordinates.size() >= 2
                 ? chinaBoundaryConstraint.constrainRoute(coordinates)
                 : List.of();
