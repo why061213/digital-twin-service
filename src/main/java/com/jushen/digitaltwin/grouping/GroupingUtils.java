@@ -200,7 +200,7 @@ final class GroupingUtils {
                 groupKey,
                 index,
                 subIndex,
-                uniqueRouteCount(routes),
+                routes.size(),
                 routes,
                 groupType,
                 scenario,
@@ -261,10 +261,6 @@ final class GroupingUtils {
             values.add(selector.apply(route));
         }
         return values.size();
-    }
-
-    private static int uniqueRouteCount(List<RouteInfo> routes) {
-        return countDistinct(routes, GroupingUtils::pathKey);
     }
 
     private static List<String> collectOrderIds(List<RouteInfo> routes) {

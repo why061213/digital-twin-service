@@ -1,21 +1,16 @@
 server:
   port: 8080
 
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,restart
-  endpoint:
-    restart:
-      enabled: true
-
 spring:
   config:
     import:
       - classpath:simulation.yml
+      - classpath:temp.yml
       - classpath:warehouse.yml
+      - classpath:camera.yml
       - optional:classpath:application-private.yml
+      # 仅作为字段参考，不参与运行；需要核对字段时可临时取消下一行注释。
+      # - optional:classpath:application-position.sample.yml
   application:
     name: jushen-digital-twin-backend
 
@@ -106,7 +101,6 @@ dashboard:
     token-cache-enabled: true
     token-cache-path: target/local-cache/token-cache.json
 
-    # 位置查询间隔（未迁移，保留为静态配置）
     test:
       simulation-speed-kmh: 120
     real:
