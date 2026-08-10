@@ -20,12 +20,77 @@ spring:
     name: jushen-digital-twin-backend
 
 dashboard:
+  daily-statistics:
+    # 仅缓存顶部 KPI 所需的去重订单/车辆记录，不会恢复为地图播放路线。
+    cache-enabled: true
+    cache-path: runtime-data/daily-order-statistics.json
+    retention-days: 3
+  access:
+    # 浏览器无法读取 MAC；后端通过局域网 ARP/邻居表识别客户端并匹配白名单。
+    enabled: true
+    trust-loopback: true
+    # 在 application-private.yml 中填写，例如 ["AA:BB:CC:DD:EE:FF"]。
+    allowed-mac-addresses: []
+    # 跨 VLAN/反向代理时无法取得终端 MAC，可配置设备令牌作为兜底。
+    device-token: ""
+    # 会话密钥提前续期；旧密钥在刷新后保留短暂宽限，避免并发请求瞬间失败。
+    session-ttl: 8h
+    session-refresh-after: 4h
+    session-refresh-grace: 2m
+    max-active-sessions: 256
   websocket:
-    token: jushen-screen-token
+    # WebSocket 默认使用验证页签发的会话密钥；以下固定口令仅作应急兼容。
+    legacy-token-enabled: false
+    token: ""
     allowed-origin-patterns:
       - "*"
+    external-order:
+      # 外部订单 GET 地址；为空时使用 TownRoadExternalOrderClient 内置正式地址。
+      post-url: ""
+
+      # true：如果目的地没有 coords，不进入 town_road_render
+      require-renderable-coords: true
+
+      connect-timeout-ms: 5000
+      request-timeout-ms: 12000
+      max-candidate-province-count: 4
+      max-candidate-path-count: 4
+      candidate-tolerance-ratio: 0.30
+      candidate-absolute-slack: 250
+
+      # RM2 正式订单链路：应用就绪后主动拉取一次，之后持续更新快照。
+      auto-sync-enabled: true
+      auto-sync-initial-delay-ms: 5000
+      auto-sync-fixed-delay-ms: 900000
+      # true 时，仅展示能解析 supplier vehicleId、可进行真实位置批量校准的订单。
+      ignore-orders-without-real-position: false
+      # 待装载自动判定：结合当前真实位置、上一单和36个历史轨迹分位区分前往装载点/装载中/已出发。
+      treat-loading-unloading-as-transporting: true
+      # 新中间层实验分支：只做今昨订单日库 diff 与车辆轻量索引，随后截断后续程序。
+      vehicle-order-chain-experiment-enabled: true
+      vehicle-order-chain-store-path: runtime-data/vehicle-order-chain
+      # Trip 到离站使用独立迟滞半径，不复用 5km 的拓扑节点融合半径。
+      trip-arrival-radius-km: 0.5
+      trip-departure-radius-km: 0.8
+      trip-minimum-dwell-ms: 60000
   route:
-    # 外部车辆位置接口的静态配置（不通过管理页面热改）
+    # 所有档位都使用正常车辆时间尺度；代码层还会把异常配置限制在可信速度内。
+    simulation-profile: real
+    passive-position-push-enabled: true
+    group-size: 12
+    default-group-strategy: province-path
+
+    # 位置批量刷新配置（替代逐车穿透外部接口）
+    position-refresh:
+      enabled: true
+      # 首次订单快照完成后再开始批量校准，避免启动时空跑一次。
+      initial-delay-ms: 10000
+      fixed-delay-ms: 30000
+      batch-size: 50
+      request-timeout-ms: 10000
+      stale-after-ms: 180000
+
+    # 以下为外部车辆位置模块的公开默认值；真实地址、账号、测试车辆请放到 application-private.yml。
     auth-enabled: false
     auth-url: ""
     auth-id: ""
@@ -33,6 +98,8 @@ dashboard:
     external-position-url: ""
     external-position-token: ""
     external-position-batch-size: 50
+    # 车辆字典 vehicle_name -> vehicle_id。0 表示进程启动后仅加载一次；正数才定时刷新。
+    vehicle-dictionary-refresh-ms: 0
     test-plate: ""
     test-car-id: ""
     test-on-startup: false
@@ -41,8 +108,46 @@ dashboard:
 
     # 位置查询间隔（未迁移，保留为静态配置）
     test:
-      position-query-interval-ms: 60000
-      slow-position-query-interval-ms: 15000
+      simulation-speed-kmh: 120
     real:
-      position-query-interval-ms: 1800000
-      slow-position-query-interval-ms: 300000
+      simulation-speed-kmh: 80
+
+  # ===== 本地坐标库 + 高德地图地理编码 =====
+  coord-db:
+    # 高德地图 Web API Key（用于地理编码）
+    # 申请地址：https://console.amap.com/dev/key/app
+    # 真实值请在 application-private.yml 中配置
+    amap-key: ""
+    # 高德地图安全密钥（用于请求 SHA256 签名）
+    amap-secret: ""
+
+  # ===== 地图路线规划 API（百度/高德） =====
+  route-plan:
+    enabled: true
+    # 百度地图 AK：https://lbsyun.baidu.com/apiconsole/key
+    baidu-ak: ""
+    # 高德地图 Key：https://console.amap.com/dev/key/app
+    amap-key: ""
+    # API 调用间隔（毫秒），避免 QPS 超限。3次/秒 ≈ 334ms
+    amap-rate-limit-ms: 334
+    # 相同起终点规划结果缓存一天，groups/routes 查询不会穿透地图供应商。
+    cache-ttl-ms: 86400000
+    # 百度、高德回退及偏航重规划共用全局限速，控制在每秒最多 2.5 次。
+    min-request-interval-ms: 400
+    # true=货车路线规划，false=小轿车路线规划（默认）
+    use-truck-routing: false
+    # 本地库 classpath 路径
+    local-path: coord-db
+    # API 请求超时（毫秒）
+    request-timeout-ms: 12000
+
+  # ===== 路线语义分析（米制，与前端渲染采样数无关） =====
+  route-analysis:
+    resample-step-m: 100
+    grid-size-m: 500
+    shared-tolerance-m: 120
+    shared-min-length-m: 800
+    shared-direction-dot: 0.97
+    deviation-enter-distance-m: 300
+    deviation-exit-distance-m: 150
+    deviation-min-length-m: 300

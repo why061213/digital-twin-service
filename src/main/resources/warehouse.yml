@@ -1,4 +1,9 @@
 warehouses:
+  external-sync:
+    # 三个 GET /sync 接口分别从以下地址拉取；留空时返回 configured=false，不修改运行数据。
+    cities-url: ""
+    charts-url: ""
+    data-url: ""
   warehouses:
     - city: 佛山市
       label: 佛山一号仓

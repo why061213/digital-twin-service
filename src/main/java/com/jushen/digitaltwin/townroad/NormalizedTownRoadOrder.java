@@ -1,0 +1,68 @@
+package com.jushen.digitaltwin.townroad;
+
+import java.util.List;
+
+public record NormalizedTownRoadOrder(
+        String orderId,
+        String lineId,
+        String instanceId,
+        String vehicleKey,
+
+        String fromKey,
+        String toKey,
+        String odKey,
+
+        String fromProvinceKey,
+        String toProvinceKey,
+
+        /**
+         * 该订单在省份路网中的所有等长最短路径。
+         * 例如广东到浙江可能同时存在：
+         * [440000,350000,330000] 和 [440000,360000,330000]。
+        */
+        List<List<String>> provincePaths,
+        List<String> provincePathKeys,
+        List<Integer> provincePathCosts,
+        List<String> cityPath,
+        List<String> cityNames,
+        List<double[]> routeCoordinates,
+        List<double[]> matchingCoordinates,
+        Double routeLengthKm,
+        Double speedKmh,
+        Long travelDurationMs,
+        String routeProvider,
+
+        String groupId,
+        String groupName,
+
+        ExternalOrderRecord.Location from,
+        ExternalOrderRecord.Location to,
+        ExternalOrderRecord.Vehicle vehicle,
+
+        String status,
+        String updatedAt,
+        boolean deleted,
+        boolean upToDate,
+
+        String dataSignature,
+        String routeSignature
+) {
+    public NormalizedTownRoadOrder(
+            String orderId, String lineId, String instanceId, String vehicleKey,
+            String fromKey, String toKey, String odKey,
+            String fromProvinceKey, String toProvinceKey,
+            List<List<String>> provincePaths, List<String> provincePathKeys, List<Integer> provincePathCosts,
+            List<String> cityPath, List<String> cityNames, List<double[]> routeCoordinates,
+            Double routeLengthKm, Double speedKmh,
+            String groupId, String groupName,
+            ExternalOrderRecord.Location from, ExternalOrderRecord.Location to, ExternalOrderRecord.Vehicle vehicle,
+            String status, String updatedAt, boolean deleted, boolean upToDate,
+            String dataSignature, String routeSignature
+    ) {
+        this(orderId, lineId, instanceId, vehicleKey, fromKey, toKey, odKey,
+                fromProvinceKey, toProvinceKey, provincePaths, provincePathKeys, provincePathCosts,
+                cityPath, cityNames, routeCoordinates, routeCoordinates, routeLengthKm, speedKmh,
+                null, "fallback", groupId, groupName, from, to, vehicle, status, updatedAt,
+                deleted, upToDate, dataSignature, routeSignature);
+    }
+}

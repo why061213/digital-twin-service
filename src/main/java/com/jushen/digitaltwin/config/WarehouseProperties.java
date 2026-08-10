@@ -13,6 +13,7 @@ import java.util.List;
 public class WarehouseProperties {
     private List<WarehouseConfig> warehouses = new ArrayList<>();
     private FocusPanelsConfig focusPanels = new FocusPanelsConfig();
+    private ExternalSyncConfig externalSync = new ExternalSyncConfig();
 
     @Data
     public static class WarehouseConfig {
@@ -59,5 +60,13 @@ public class WarehouseProperties {
     public static class ColumnConfig {
         private String key;
         private String label;
+    }
+
+    @Data
+    public static class ExternalSyncConfig {
+        /** 留空表示对应的 GET 主动同步接口暂未接入上游。 */
+        private String citiesUrl = "";
+        private String chartsUrl = "";
+        private String dataUrl = "";
     }
 }

@@ -1,0 +1,1197 @@
+package com.jushen.digitaltwin.townroad;
+
+import com.jushen.digitaltwin.dto.RenderRouteDTO;
+import com.jushen.digitaltwin.dto.Rm2RouteGroupDTO;
+import com.jushen.digitaltwin.dto.Rm2Snapshot;
+import com.jushen.digitaltwin.dto.RouteDtoConverter;
+import com.jushen.digitaltwin.service.PositionSnapshot;
+import com.jushen.digitaltwin.service.RoutePushService;
+import com.jushen.digitaltwin.websocket.RealtimeWebSocketHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+@Service
+public class TownRoadRenderService {
+
+    private static final Logger log = LoggerFactory.getLogger(TownRoadRenderService.class);
+    public static final int RM2_GROUP_SIZE = 3; // 每个展示组最多 3 个业务订单（同订单多车不重复占位）
+
+    private final TownRoadExternalOrderClient townRoadExternalOrderClient;
+    private final TownRoadMiddleLayer middleLayer;
+    private final RealtimeWebSocketHandler realtimeWebSocketHandler;
+    private final AmapGeocodeClient amapGeocodeClient;
+    private final TownRoadCoordinateResolver coordinateResolver;
+    private final RoutePushService routePushService;
+    private final TownRoadExternalOrderProperties externalOrderProperties;
+    private final DailyOrderStatisticsService dailyOrderStatisticsService;
+    private final VehicleOrderChainStore vehicleOrderChainStore;
+    private final VehicleOrderEligibilityService vehicleOrderEligibilityService;
+    private volatile long lastBroadcastDailyKpiRevision = -1;
+    private Map<String, Object> lastResult = Map.of();
+    /** RM2 原子快照 */
+    private volatile Rm2Snapshot latestRm2Snapshot = new Rm2Snapshot(
+            "0", Instant.now(), List.of(), List.of(),
+            com.jushen.digitaltwin.dto.Rm2ChainStructureDTO.empty(), Map.of(), Map.of()
+    );
+    /** 上一版 groupId 集合，用于计算 removed */
+    private volatile Set<String> previousRm2GroupIds = Set.of();
+    /** 上一版 lineId→groupId 索引，用于反查 changedGroupIds */
+    private volatile Map<String, String> previousGroupIdByLineId = Map.of();
+    private volatile Map<String, VehicleOrderEligibilityService.VehicleDecision> tripDecisionByLineId = Map.of();
+    /** 业务订单、联运订单与运行时 Trip 的显式分层，避免 Trip 覆盖原始订单号。 */
+    private volatile Map<String, TripOrderIdentity> tripOrderIdentityByLineId = Map.of();
+    /** 上一版快照内容指纹 */
+    private volatile String previousFingerprint = "";
+
+    public Rm2Snapshot getLatestRm2Snapshot() { return latestRm2Snapshot; }
+
+    public Map<String, Object> latestResult() {
+        return lastResult;
+    }
+
+    public TownRoadRenderService(
+            TownRoadExternalOrderClient townRoadExternalOrderClient,
+            TownRoadMiddleLayer middleLayer,
+            RealtimeWebSocketHandler realtimeWebSocketHandler,
+            AmapGeocodeClient amapGeocodeClient,
+            TownRoadCoordinateResolver coordinateResolver,
+            RoutePushService routePushService,
+            TownRoadExternalOrderProperties externalOrderProperties,
+            DailyOrderStatisticsService dailyOrderStatisticsService,
+            VehicleOrderChainStore vehicleOrderChainStore,
+            VehicleOrderEligibilityService vehicleOrderEligibilityService
+    ) {
+        this.townRoadExternalOrderClient = townRoadExternalOrderClient;
+        this.middleLayer = middleLayer;
+        this.realtimeWebSocketHandler = realtimeWebSocketHandler;
+        this.amapGeocodeClient = amapGeocodeClient;
+        this.coordinateResolver = coordinateResolver;
+        this.routePushService = routePushService;
+        this.externalOrderProperties = externalOrderProperties;
+        this.dailyOrderStatisticsService = dailyOrderStatisticsService;
+        this.vehicleOrderChainStore = vehicleOrderChainStore;
+        this.vehicleOrderEligibilityService = vehicleOrderEligibilityService;
+        routePushService.setOnLoadingVehicleDeparted(this::onLoadingVehicleDeparted);
+        routePushService.setOnRoutePositionHistoryRefreshed(this::onRoutePositionHistoryRefreshed);
+    }
+
+    private void onRoutePositionHistoryRefreshed() {
+        int updated = vehicleOrderEligibilityService.advanceTripsFromLocalPositionHistory();
+        if (updated > 0) {
+            log.debug("[TownRoad] advanced trip milestones from local position history: count={}", updated);
+        }
+        if (vehicleOrderEligibilityService.consumeCompletionRefreshRequired()) {
+            try {
+                log.info("[TownRoad] inferred destination completion recorded, refreshing active order chains");
+                fetchProcessAndBroadcast();
+            } catch (Exception exception) {
+                log.warn("[TownRoad] inferred completion refresh failed", exception);
+            }
+        }
+    }
+
+    private void onLoadingVehicleDeparted() {
+        try {
+            log.info("[TownRoad] loading vehicle departed, triggering order sync");
+            fetchProcessAndBroadcast();
+        } catch (Exception e) {
+            log.warn("[TownRoad] loading vehicle departure sync failed", e);
+        }
+    }
+
+    public Map<String, Object> fetchProcessAndBroadcast() {
+        List<ExternalOrderRecord> rawOrders = townRoadExternalOrderClient.fetchOrders();
+        return processAndBroadcast(rawOrders);
+    }
+
+    public Map<String, Object> processAndBroadcast(List<ExternalOrderRecord> rawOrders) {
+        return processAndBroadcastInternal(rawOrders, false);
+    }
+
+    public Map<String, Object> processAndBroadcastWithTrace(List<ExternalOrderRecord> rawOrders) {
+        return processAndBroadcastInternal(rawOrders, true);
+    }
+
+    private Map<String, Object> processAndBroadcastInternal(List<ExternalOrderRecord> rawOrders, boolean traceEnabled) {
+        long startedAt = System.currentTimeMillis();
+        int inputRawCount = rawOrders == null ? 0 : rawOrders.size();
+        Map<String, Object> pipeline = traceEnabled ? new LinkedHashMap<>() : null;
+        if (traceEnabled) {
+            pipeline.put("input", inputSummary(rawOrders));
+        }
+
+        VehicleOrderChainPipelineContext vehicleOrderChainContext = null;
+        List<ExternalOrderRecord> downstreamInput = rawOrders == null ? List.of() : rawOrders;
+        Map<String, List<double[]>> compositeRouteWaypoints = Map.of();
+        boolean downstreamInputAlreadyExpanded = false;
+        if (externalOrderProperties.isVehicleOrderChainExperimentEnabled()) {
+            List<ExternalOrderRecord> expanded = middleLayer.expandVehicleInstances(
+                            rawOrders == null ? List.of() : rawOrders).stream()
+                    .map(middleLayer::resolveOrderLocations)
+                    .filter(java.util.Objects::nonNull)
+                    .toList();
+            VehicleOrderChainStore.IngestResult stored = vehicleOrderChainStore.ingest(expanded);
+            VehicleOrderEligibilityService.EligibilityReport eligibility =
+                    vehicleOrderEligibilityService.analyzeLatestVehicleOrders();
+            EligiblePipelineInput eligiblePipeline = eligibleVehicleOrdersForPipeline(eligibility);
+            List<ExternalOrderRecord> eligibleOrders = eligiblePipeline.orders();
+            compositeRouteWaypoints = eligiblePipeline.routeWaypointsByInstanceId();
+            downstreamInput = eligibleOrders;
+            downstreamInputAlreadyExpanded = true;
+            vehicleOrderChainContext = new VehicleOrderChainPipelineContext(
+                    stored, eligibility, expanded.size(), eligibleOrders.size());
+            if (traceEnabled) {
+                pipeline.put("vehicleOrderChain", vehicleOrderChainSummary(vehicleOrderChainContext));
+            }
+            log.info("[VehicleOrderChain] downstream pipeline connected: expanded={}, eligible={}, decisions={}",
+                    expanded.size(), eligibleOrders.size(), eligibility.decisions().size());
+        }
+
+        // 入口去重：同订单+同线路+同车牌号，保留 updatedAt 最晚的记录
+        DeduplicationResult deduplication = deduplicateOrders(downstreamInput);
+        List<ExternalOrderRecord> dedupedOrders = deduplication.orders();
+        if (deduplication.removedCount() > 0) {
+            log.info("入口去重: input={}, unique={}, removed={}, duplicateKeys={}, samples={}",
+                    deduplication.inputCount(), dedupedOrders.size(), deduplication.removedCount(),
+                    deduplication.duplicateKeyCount(), deduplication.sampleDuplicateKeys());
+        }
+        if (traceEnabled) {
+            pipeline.put("deduplication", deduplication.toMap());
+        }
+
+        List<ExternalOrderRecord> expandedOrders = downstreamInputAlreadyExpanded
+                ? dedupedOrders
+                : middleLayer.expandVehicleInstances(dedupedOrders);
+        Map<String, Object> positionWarmup;
+        if (vehicleOrderChainContext != null && vehicleOrderChainContext.eligibility().enabled()) {
+            // 车辆链判定阶段已经批量预热了供应商位置，直接复用，避免重复请求。
+            positionWarmup = vehicleOrderChainContext.eligibility().positionWarmup();
+        } else {
+            Set<String> planningLineIds = new LinkedHashSet<>();
+            for (ExternalOrderRecord order : expandedOrders) {
+                if (order == null || order.vehicle() == null) continue;
+                String instanceId = middleLayer.instanceIdFor(order);
+                if (routePushService.prepareProviderPositionVehicle(
+                        instanceId, order.vehicle().plate(), order.vehicle().carId())) {
+                    planningLineIds.add(instanceId);
+                }
+            }
+            positionWarmup = routePushService.warmPositionCacheForLineIds(planningLineIds);
+        }
+        // 批量位置先到、订单路线后处理；已有路线也必须立即用本批真实位置覆盖旧时间线。
+        int preCalibrationCount = routePushService.calibratePreparedRoutesFromCache();
+        // 注册装载中车辆的初始位置，后续位置刷新时检测是否出发
+        for (ExternalOrderRecord order : expandedOrders) {
+            if (order == null || order.vehicle() == null) continue;
+            if (!"待装载".equals(order.status())) continue;
+            double[] currentCoords = order.vehicle().currentCoords();
+            if (currentCoords != null && currentCoords.length >= 2) {
+                routePushService.trackLoadingVehicle(
+                        middleLayer.instanceIdFor(order),
+                        order.vehicle().plate(), order.vehicle().carId(), currentCoords);
+            }
+        }
+        List<ExternalOrderRecord> planningOrders = expandedOrders.stream()
+                .map(this::withFreshProviderPosition)
+                .toList();
+
+        long middleLayerStartedAt = System.currentTimeMillis();
+        ExternalOrderSnapshotResult result = compositeRouteWaypoints.isEmpty()
+                ? middleLayer.processSnapshot(planningOrders)
+                : middleLayer.processSnapshot(planningOrders, compositeRouteWaypoints);
+        broadcastDailyKpisIfChanged();
+        long middleLayerFinishedAt = System.currentTimeMillis();
+        if (traceEnabled) {
+            pipeline.put("middleLayer", middleLayerSummary(result, middleLayerFinishedAt - middleLayerStartedAt));
+            pipeline.put("preCalibrationCount", preCalibrationCount);
+        }
+
+        // 构造 RM2 分组和索引
+        List<NormalizedTownRoadOrder> eligibleShortHaulOrders = result.shortHaulOrders().stream()
+                .filter(this::shouldIncludeOrderForRealPositionMode)
+                .toList();
+        // 先注册运行路线，后续 routes 快照直接使用同一运行池计算出的速度、距离和时长。
+        int townRouteDispatchCount = registerShortHaulRoutesForPositions(eligibleShortHaulOrders);
+        List<RenderRouteDTO> rm2Routes = RouteDtoConverter.shortHaulOrdersToRoutes(eligibleShortHaulOrders).stream()
+                .map(this::withRuntimeMetrics)
+                .filter(route -> route != null)
+                .filter(this::isPublishableRm2Route)
+                .toList();
+        List<Rm2RouteGroupDTO> rm2Groups = RouteDtoConverter.buildStableGroups(rm2Routes, RM2_GROUP_SIZE);
+        com.jushen.digitaltwin.dto.Rm2ChainStructureDTO rm2ChainStructure =
+                RouteDtoConverter.buildRm2ChainStructure(rm2Groups);
+
+        Map<String, RenderRouteDTO> routeByLineId = new LinkedHashMap<>();
+        for (RenderRouteDTO r : rm2Routes) routeByLineId.put(r.lineId(), r);
+
+        Map<String, List<RenderRouteDTO>> routesByGroupId = new LinkedHashMap<>();
+        Map<String, String> groupIdByLineId = new LinkedHashMap<>();
+        for (Rm2RouteGroupDTO group : rm2Groups) {
+            List<RenderRouteDTO> groupRoutes = new ArrayList<>();
+            for (String lineId : group.vehicleLineIds()) {
+                RenderRouteDTO route = routeByLineId.get(lineId);
+                if (route == null) continue;
+                RenderRouteDTO withGroupId = new RenderRouteDTO(
+                        route.lineId(), route.orderId(), route.businessLineId(), route.plate(), route.vehicleId(),
+                        route.from(), route.to(), route.fromCoords(), route.toCoords(),
+                        route.coordinates(), route.routeLengthKm(), route.speedKmh(),
+                        route.status(), route.cargo(), route.cargoWeight(), route.cargoUnit(), route.travelDurationMs(),
+                        route.pathKey(), route.scope(), group.groupId(), route.role(),
+                        route.coordinateSystem(), route.updatedAt(), route.routeSignature(),
+                        route.meta()
+                );
+                groupRoutes.add(withGroupId);
+                groupIdByLineId.put(lineId, group.groupId());
+            }
+            routesByGroupId.put(group.groupId(), List.copyOf(groupRoutes));
+        }
+        Map<String, List<RenderRouteDTO>> immutableRoutesByGroupId = Map.copyOf(routesByGroupId);
+        Map<String, String> immutableGroupIdByLineId = Map.copyOf(groupIdByLineId);
+
+        // SHA-256 内容指纹，只有 RM2 变化才更新快照和广播
+        String version = rm2Fingerprint(rm2Groups, routeByLineId);
+        boolean rm2SnapshotChanged = !version.equals(previousFingerprint);
+
+        if (rm2SnapshotChanged) {
+            this.previousFingerprint = version;
+
+            List<RenderRouteDTO> assignedRoutes = routesByGroupId.values().stream()
+                    .flatMap(List::stream).toList();
+            this.latestRm2Snapshot = new Rm2Snapshot(version, Instant.now(),
+                    List.copyOf(assignedRoutes), List.copyOf(rm2Groups), rm2ChainStructure,
+                    immutableRoutesByGroupId, immutableGroupIdByLineId);
+            routePushService.syncRm2PositionGroups(immutableGroupIdByLineId, version);
+
+            Set<String> currentGroupIds = new LinkedHashSet<>();
+            for (Rm2RouteGroupDTO g : rm2Groups) currentGroupIds.add(g.groupId());
+            Set<String> changedGroupIds = collectChangedGroupIds(result.diff(), groupIdByLineId, previousGroupIdByLineId);
+            Set<String> removedGroupIds = new LinkedHashSet<>(previousRm2GroupIds);
+            removedGroupIds.removeAll(currentGroupIds);
+            this.previousRm2GroupIds = currentGroupIds;
+            this.previousGroupIdByLineId = immutableGroupIdByLineId;
+
+            // 快照变了就必须广播：changedGroupIds 为空时兜底为全部 currentGroupIds
+            if (changedGroupIds.isEmpty() && removedGroupIds.isEmpty()) {
+                changedGroupIds = new LinkedHashSet<>(currentGroupIds);
+            }
+            Map<String, Object> event = new LinkedHashMap<>();
+            event.put("type", "route_snapshot_changed");
+            event.put("scope", "rm2");
+            event.put("snapshotVersion", version);
+            event.put("changedGroupIds", new ArrayList<>(changedGroupIds));
+            event.put("removedGroupIds", new ArrayList<>(removedGroupIds));
+            event.put("serverTime", Instant.now().toString());
+            realtimeWebSocketHandler.broadcastToScopeSubscribers("rm2", event);
+        }
+
+        // RM1 长途 + RM2 短途车辆注册。RM2 必须从与 REST groups/routes
+        // 完全相同的 eligibleShortHaulOrders 来源注册，保证 lineId 可被位置接口查到。
+        int deletedOrCancelled = result.diff().deletedOrCancelled();
+        int rawCount = result.rawCount();
+        int normalizedCount = result.normalizedCount();
+        int shortHaulCount = result.shortHaulCount();
+        int longHaulCount = result.longHaulCount();
+        int skippedInvalid = result.diff().skippedInvalid();
+        int skippedNotRenderable = result.diff().skippedNotRenderable();
+        int skippedLongHaul = result.diff().skippedLongHaul();
+        int roadMapRouteCount = dispatchLongHaulRoutesToRoadMap(result.longHaulOrders());
+
+        String snapshotVersion = latestRm2Snapshot.snapshotVersion();
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("ok", true);
+        response.put("type", "town_road_render");
+        response.put("message", "town_road_render commands broadcasted");
+        response.put("rawCount", rawCount);
+        response.put("normalizedCount", normalizedCount);
+        response.put("shortHaulCount", shortHaulCount);
+        response.put("longHaulCount", longHaulCount);
+        response.put("roadMapRouteCount", roadMapRouteCount);
+        response.put("commandCount", result.commands().size());
+        response.put("displayMode", result.commands().size() > 1 ? "multi_source_rotation" : "single_source");
+        response.put("diff", result.diff().toMap());
+        response.put("snapshotVersion", snapshotVersion);
+        response.put("rm2SnapshotChanged", rm2SnapshotChanged);
+        response.put("rm2Routes", rm2Groups.stream().mapToInt(Rm2RouteGroupDTO::count).sum());
+        response.put("rm2Vehicles", rm2Routes.size());
+        response.put("rm2Groups", rm2Groups.size());
+        response.put("deduplication", deduplication.toMap());
+        response.put("rm2PositionWarmup", positionWarmup);
+        if (vehicleOrderChainContext != null) {
+            response.put("vehicleOrderChainExperiment", true);
+            response.put("pipelineCut", false);
+            response.put("inputRawCount", inputRawCount);
+            response.put("expandedVehicleRecordCount", vehicleOrderChainContext.expandedVehicleRecordCount());
+            response.put("downstreamEligibleCount", vehicleOrderChainContext.downstreamEligibleCount());
+            response.put("store", vehicleOrderChainContext.store());
+            response.put("eligibility", vehicleOrderChainContext.eligibility());
+        }
+
+        int skippedByStatus = normalizedCount - shortHaulCount - skippedNotRenderable - skippedLongHaul;
+        Map<String, Object> accounting = new LinkedHashMap<>();
+        accounting.put("rawCount", rawCount);
+        accounting.put("    ─ skippedInvalid (基础校验失败)", skippedInvalid);
+        accounting.put("    ─ deletedOrCancelled (已删除/已取消)", deletedOrCancelled);
+        accounting.put("    = normalizedCount (有效订单)", normalizedCount);
+        accounting.put("        ─ skippedNotRenderable (缺坐标)", skippedNotRenderable);
+        accounting.put("        ─ skippedLongHaul (非短途)", skippedLongHaul);
+        accounting.put("            └ roadMapRouteCount (发送 RoadMap)", roadMapRouteCount);
+        accounting.put("        ─ skippedByStatus (已完成/待装载)", skippedByStatus);
+        accounting.put("        = shortHaulCount (最终渲染)", shortHaulCount);
+        accounting.put("校验", rawCount + " = " + skippedInvalid + " + " + deletedOrCancelled + " + " + normalizedCount
+                + (rawCount == skippedInvalid + deletedOrCancelled + normalizedCount ? " ✅" : " ❌ 对不上!"));
+        accounting.put("渲染过滤", normalizedCount + " = " + skippedNotRenderable + " + " + skippedLongHaul + " + " + skippedByStatus + " + " + shortHaulCount
+                + (normalizedCount == skippedNotRenderable + skippedLongHaul + skippedByStatus + shortHaulCount ? " ✅" : " ❌ 对不上!"));
+        response.put("accounting", accounting);
+
+        log.info(coordinateResolver.getStatsAndReset());
+        log.info(amapGeocodeClient.getStatsAndReset());
+
+        response.put("rm2PositionRouteCount", townRouteDispatchCount);
+
+        if (traceEnabled) {
+            pipeline.put("output", outputSummary(result, roadMapRouteCount, townRouteDispatchCount));
+            Map<String, Object> timings = new LinkedHashMap<>();
+            timings.put("inputRawCount", inputRawCount);
+            timings.put("middleLayerMs", middleLayerFinishedAt - middleLayerStartedAt);
+            timings.put("totalMs", System.currentTimeMillis() - startedAt);
+            pipeline.put("timings", timings);
+            response.put("pipeline", pipeline);
+        }
+
+        this.lastResult = response;
+        return response;
+    }
+
+    // ---------------------------------------------------------------
+    // 指纹与变化检测
+    // ---------------------------------------------------------------
+
+    private EligiblePipelineInput eligibleVehicleOrdersForPipeline(
+            VehicleOrderEligibilityService.EligibilityReport eligibility
+    ) {
+        Map<String, VehicleOrderEligibilityService.VehicleDecision> eligibleByInstanceId =
+                new LinkedHashMap<>();
+        for (VehicleOrderEligibilityService.VehicleDecision decision : eligibility.decisions()) {
+            if (decision != null && (!eligibility.enabled() || decision.groupEligible())
+                    && decision.lineId() != null && !decision.lineId().isBlank()) {
+                eligibleByInstanceId.put(decision.lineId(), decision);
+            }
+        }
+
+        List<VehicleOrderChainStore.StoredOrder> storedOrders = vehicleOrderChainStore.recentStoredOrders();
+        Map<String, VehicleOrderChainStore.StoredOrder> storedByKey = new LinkedHashMap<>();
+        for (VehicleOrderChainStore.StoredOrder stored : storedOrders) {
+            if (stored != null && stored.record() != null) storedByKey.put(stored.key(), stored);
+        }
+
+        List<ExternalOrderRecord> result = new ArrayList<>();
+        Map<String, List<double[]>> routeWaypointsByInstanceId = new LinkedHashMap<>();
+        Map<String, VehicleOrderEligibilityService.VehicleDecision> decisionsByRuntimeLine = new LinkedHashMap<>();
+        Map<String, TripOrderIdentity> identitiesByRuntimeLine = new LinkedHashMap<>();
+        Set<String> emittedCompositeTripIds = new LinkedHashSet<>();
+        for (VehicleOrderChainStore.StoredOrder stored : storedOrders) {
+            if (stored == null || stored.record() == null) continue;
+            ExternalOrderRecord order = stored.record();
+            String instanceId = middleLayer.instanceIdFor(order);
+            VehicleOrderEligibilityService.VehicleDecision decision = eligibleByInstanceId.get(instanceId);
+            if (decision == null || !safeEquals(decision.orderId(), order.orderId())) continue;
+
+            if (isCompositeTrip(decision)) {
+                if (!emittedCompositeTripIds.add(decision.tripId())) continue;
+                ExternalOrderRecord merged = mergedCompositeOrder(decision, storedByKey, order);
+                if (merged == null) {
+                    log.warn("[VehicleOrderChain] composite trip has insufficient resolved stops: trip={}",
+                            decision.tripId());
+                    continue;
+                }
+                result.add(merged);
+                String mergedInstanceId = middleLayer.instanceIdFor(merged);
+                List<double[]> stopCoordinates = decision.tripStops().stream()
+                        .map(VehicleTripRuntimeService.CompositeStopView::coordinates)
+                        .filter(this::hasCoordinates)
+                        .map(this::copyCoordinate)
+                        .toList();
+                List<double[]> routingCoordinates = distinctConsecutiveCoordinates(stopCoordinates);
+                routeWaypointsByInstanceId.put(mergedInstanceId,
+                        routingCoordinates.size() <= 2
+                                ? List.of()
+                                : List.copyOf(routingCoordinates.subList(1, routingCoordinates.size() - 1)));
+                for (String memberId : decision.tripOrderInstanceIds()) {
+                    VehicleOrderChainStore.StoredOrder member = storedByKey.get(memberId);
+                    if (member == null || member.record() == null) continue;
+                    routePushService.aliasFreshProviderPosition(
+                            middleLayer.instanceIdFor(member.record()), mergedInstanceId,
+                            merged.vehicle() == null ? null : merged.vehicle().plate(),
+                            merged.vehicle() == null ? null : merged.vehicle().carId());
+                }
+                decisionsByRuntimeLine.put(mergedInstanceId, decision);
+                identitiesByRuntimeLine.put(mergedInstanceId,
+                        tripOrderIdentity(decision, storedByKey, merged.orderId()));
+                log.info("[VehicleOrderChain] merged composite trip for rendering: trip={}, orders={}, stops={}, waypoints={}, lineId={}",
+                        decision.tripId(), decision.tripOrderInstanceIds().size(), stopCoordinates.size(),
+                        routeWaypointsByInstanceId.get(mergedInstanceId).size(), mergedInstanceId);
+                continue;
+            }
+
+            ExternalOrderRecord effective = withEffectiveVehicleChainStatus(order, decision);
+            result.add(effective);
+            String runtimeInstanceId = middleLayer.instanceIdFor(effective);
+            routePushService.aliasFreshProviderPosition(
+                    instanceId, runtimeInstanceId,
+                    effective.vehicle() == null ? null : effective.vehicle().plate(),
+                    effective.vehicle() == null ? null : effective.vehicle().carId());
+            decisionsByRuntimeLine.put(runtimeInstanceId, decision);
+            identitiesByRuntimeLine.put(runtimeInstanceId,
+                    tripOrderIdentity(decision, storedByKey, null));
+        }
+        this.tripDecisionByLineId = Map.copyOf(decisionsByRuntimeLine);
+        this.tripOrderIdentityByLineId = Map.copyOf(identitiesByRuntimeLine);
+        return new EligiblePipelineInput(List.copyOf(result), Map.copyOf(routeWaypointsByInstanceId));
+    }
+
+    private boolean isCompositeTrip(VehicleOrderEligibilityService.VehicleDecision decision) {
+        if (decision == null || decision.tripId() == null || decision.tripStops() == null) return false;
+        return decision.tripStops().stream()
+                .map(VehicleTripRuntimeService.CompositeStopView::orderInstanceId)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct().limit(2).count() > 1;
+    }
+
+    private ExternalOrderRecord mergedCompositeOrder(
+            VehicleOrderEligibilityService.VehicleDecision decision,
+            Map<String, VehicleOrderChainStore.StoredOrder> storedByKey,
+            ExternalOrderRecord fallbackOrder
+    ) {
+        List<VehicleTripRuntimeService.CompositeStopView> stops = decision.tripStops().stream()
+                .filter(stop -> stop != null && hasCoordinates(stop.coordinates()))
+                .toList();
+        if (stops.size() < 2) return null;
+        ExternalOrderRecord.Location from = compositeStopLocation(stops.get(0), storedByKey);
+        ExternalOrderRecord.Location to = compositeStopLocation(stops.get(stops.size() - 1), storedByKey);
+        if (from == null || to == null) return null;
+
+        List<ExternalOrderRecord> members = decision.tripOrderInstanceIds().stream()
+                .map(storedByKey::get)
+                .filter(java.util.Objects::nonNull)
+                .map(VehicleOrderChainStore.StoredOrder::record)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        ExternalOrderRecord.Vehicle baseVehicle = fallbackOrder.vehicle();
+        double totalWeight = members.stream()
+                .map(ExternalOrderRecord::vehicle)
+                .filter(java.util.Objects::nonNull)
+                .map(ExternalOrderRecord.Vehicle::cargoWeight)
+                .filter(java.util.Objects::nonNull)
+                .filter(Double::isFinite)
+                .mapToDouble(Double::doubleValue)
+                .sum();
+        String cargo = members.stream()
+                .map(ExternalOrderRecord::vehicle)
+                .filter(java.util.Objects::nonNull)
+                .map(ExternalOrderRecord.Vehicle::cargo)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct()
+                .reduce((left, right) -> left + " / " + right)
+                .orElse(baseVehicle == null ? null : baseVehicle.cargo());
+        ExternalOrderRecord.Vehicle vehicle = baseVehicle == null ? null : new ExternalOrderRecord.Vehicle(
+                baseVehicle.plate(), baseVehicle.carId(), cargo,
+                totalWeight > 0 ? totalWeight : baseVehicle.cargoWeight(), baseVehicle.cargoUnit(),
+                hasCoordinates(decision.currentPosition()) ? copyCoordinate(decision.currentPosition()) : baseVehicle.currentCoords(),
+                baseVehicle.speedKmh());
+        String status = effectiveVehicleStatus(fallbackOrder, decision);
+        String transportOrderId = stableIntermodalOrderId(decision.tripOrderInstanceIds());
+        return new ExternalOrderRecord(
+                transportOrderId, "intermodal::" + transportOrderId, null, from, to, vehicle,
+                status, decision.orderUpdatedAt(), false, true, 0, 0);
+    }
+
+    private String stableIntermodalOrderId(List<String> orderInstanceIds) {
+        String identity = (orderInstanceIds == null ? List.<String>of() : orderInstanceIds).stream()
+                .filter(value -> value != null && !value.isBlank())
+                .sorted()
+                .collect(java.util.stream.Collectors.joining("|"));
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(identity.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder("LY-");
+            for (int i = 0; i < 6; i++) hex.append(String.format("%02X", digest[i]));
+            return hex.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            return "LY-" + Integer.toUnsignedString(identity.hashCode(), 16).toUpperCase();
+        }
+    }
+
+    private TripOrderIdentity tripOrderIdentity(
+            VehicleOrderEligibilityService.VehicleDecision decision,
+            Map<String, VehicleOrderChainStore.StoredOrder> storedByKey,
+            String transportOrderId
+    ) {
+        List<String> originalOrderIds = (decision.tripOrderInstanceIds() == null
+                ? List.<String>of() : decision.tripOrderInstanceIds()).stream()
+                .map(storedByKey::get)
+                .filter(java.util.Objects::nonNull)
+                .map(VehicleOrderChainStore.StoredOrder::record)
+                .filter(java.util.Objects::nonNull)
+                .map(ExternalOrderRecord::orderId)
+                .filter(value -> value != null && !value.isBlank())
+                .distinct()
+                .sorted()
+                .toList();
+        if (originalOrderIds.isEmpty() && decision.orderId() != null && !decision.orderId().isBlank()) {
+            originalOrderIds = List.of(decision.orderId());
+        }
+        return new TripOrderIdentity(originalOrderIds, transportOrderId);
+    }
+
+    private ExternalOrderRecord.Location compositeStopLocation(
+            VehicleTripRuntimeService.CompositeStopView stop,
+            Map<String, VehicleOrderChainStore.StoredOrder> storedByKey
+    ) {
+        VehicleOrderChainStore.StoredOrder stored = storedByKey.get(stop.orderInstanceId());
+        ExternalOrderRecord record = stored == null ? null : stored.record();
+        ExternalOrderRecord.Location source = record == null ? null
+                : stop.action() == VehicleTripTopologyService.StopAction.PICKUP ? record.from() : record.to();
+        if (source == null) source = amapGeocodeClient.reverseGeocode(stop.coordinates());
+        return new ExternalOrderRecord.Location(
+                stop.locationName(), source == null ? null : source.province(),
+                source == null ? null : source.city(), source == null ? null : source.district(),
+                source == null ? null : source.adcode(), copyCoordinate(stop.coordinates()));
+    }
+
+    private boolean hasCoordinates(double[] coordinates) {
+        return coordinates != null && coordinates.length >= 2
+                && Double.isFinite(coordinates[0]) && Double.isFinite(coordinates[1]);
+    }
+
+    private double[] copyCoordinate(double[] coordinates) {
+        return new double[]{coordinates[0], coordinates[1]};
+    }
+
+    private List<double[]> distinctConsecutiveCoordinates(List<double[]> coordinates) {
+        List<double[]> result = new ArrayList<>();
+        for (double[] coordinate : coordinates == null ? List.<double[]>of() : coordinates) {
+            if (!hasCoordinates(coordinate)) continue;
+            if (result.isEmpty()
+                    || VehicleTripTopologyService.haversineKm(result.get(result.size() - 1), coordinate) > 0.01d) {
+                result.add(copyCoordinate(coordinate));
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private String effectiveVehicleStatus(
+            ExternalOrderRecord order,
+            VehicleOrderEligibilityService.VehicleDecision decision
+    ) {
+        String reason = decision.reason() == null ? "" : decision.reason();
+        if (!decision.onboardOrderIds().isEmpty()
+                || "DEPARTED".equals(decision.decision()) || reason.contains("在途-2")
+                || "TRANSPORTING".equals(decision.decision()) || reason.contains("在途-1")) {
+            return "运输中";
+        }
+        return order.status();
+    }
+
+    private ExternalOrderRecord withEffectiveVehicleChainStatus(
+            ExternalOrderRecord order,
+            VehicleOrderEligibilityService.VehicleDecision decision
+    ) {
+        String effectiveStatus = effectiveVehicleStatus(order, decision);
+        // 在途-1/2 的区别保留在车辆状态链和 eligibility 诊断中；
+        // 进入原后续协议时统一映射为“运输中”，避免破坏旧前端和调度统计。
+        if (decision.runtimeLineId() != null
+                && decision.currentLegOriginPosition() != null
+                && decision.currentLegDestinationPosition() != null) {
+            ExternalOrderRecord.Vehicle vehicle = order.vehicle() == null ? null : new ExternalOrderRecord.Vehicle(
+                    order.vehicle().plate(), order.vehicle().carId(), order.vehicle().cargo(),
+                    order.vehicle().cargoWeight(), order.vehicle().cargoUnit(),
+                    decision.currentPosition(), order.vehicle().speedKmh());
+            // 单订单进入 Trip 后仍必须保留稳定的业务 OD 作为完整路线基线。
+            // currentLeg 只描述“车辆当前位置 -> 当前目标”，若用它覆盖 from/to，刷新或重启后
+            // 本地轨迹会因 pathKey 改变而无法接回，地图也只剩当前位置之后的路线。
+            // RoutePushService 会基于该完整基线校准当前位置；确认偏航时再通过道路规划拼接
+            // “订单起点 -> 车辆当前位置 -> 订单终点”，不会退化成直线。
+            return new ExternalOrderRecord(
+                    order.orderId(), order.lineId(), order.lines(), order.from(), order.to(), vehicle,
+                    effectiveStatus, order.updatedAt(), order.deleted(), order.upToDate(),
+                    order.lineIndex(), order.vehicleIndex());
+        }
+        if (safeEquals(effectiveStatus, order.status())) return order;
+        return new ExternalOrderRecord(
+                order.orderId(), order.lineId(), order.lines(), order.from(), order.to(), order.vehicle(),
+                effectiveStatus, order.updatedAt(), order.deleted(), order.upToDate(),
+                order.lineIndex(), order.vehicleIndex());
+    }
+
+    private Map<String, Object> vehicleOrderChainSummary(VehicleOrderChainPipelineContext context) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("pipelineCut", false);
+        summary.put("expandedVehicleRecordCount", context.expandedVehicleRecordCount());
+        summary.put("downstreamEligibleCount", context.downstreamEligibleCount());
+        summary.put("store", context.store());
+        summary.put("eligibility", context.eligibility());
+        return summary;
+    }
+
+    private boolean safeEquals(String left, String right) {
+        return left == null ? right == null : left.equals(right);
+    }
+
+    /**
+     * 完整渲染字段 SHA-256，取前 16 位 hex。
+     * 包含：groupId, lineId, routeSignature, status, updatedAt,
+     * plate, vehicleId, cargo, speedKmh, routeLengthKm, from, to, role, coordinateSystem
+     */
+    private String rm2Fingerprint(List<Rm2RouteGroupDTO> groups, Map<String, RenderRouteDTO> routeByLineId) {
+        StringBuilder sb = new StringBuilder();
+        for (Rm2RouteGroupDTO g : groups) {
+            sb.append(g.groupId()).append('|');
+            for (String lineId : g.vehicleLineIds()) {
+                RenderRouteDTO r = routeByLineId.get(lineId);
+                if (r == null) continue;
+                sb.append(r.lineId()).append('|')
+                        .append(r.routeSignature()).append('|')
+                        .append(r.status()).append('|')
+                        .append(r.updatedAt()).append('|')
+                        .append(r.plate()).append('|')
+                        .append(r.vehicleId()).append('|')
+                        .append(r.cargo()).append('|')
+                        .append(r.speedKmh()).append('|')
+                        .append(r.routeLengthKm()).append('|')
+                        .append(r.from()).append('|')
+                        .append(r.to()).append('|')
+                        .append(r.role()).append('|')
+                        .append(r.coordinateSystem()).append('|')
+                        .append(metaFingerprint(r.meta())).append('|');
+            }
+        }
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(sb.toString().getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (int i = 0; i < 8; i++) { // 前 16 位 hex
+                hex.append(String.format("%02x", digest[i]));
+            }
+            return "rm2-" + hex;
+        } catch (NoSuchAlgorithmException e) {
+            // fallback to hashCode
+            return "rm2-" + Integer.toHexString(sb.toString().hashCode());
+        }
+    }
+
+    /**
+     * 从 diff 的 changed lineIds 反查 groupId。
+     * 新增/更新/路线变化用新 groupIdByLineId，删除用旧 previousGroupIdByLineId。
+     */
+    private Set<String> collectChangedGroupIds(
+            OrderSnapshotDiff diff,
+            Map<String, String> groupIdByLineId,
+            Map<String, String> previousGroupIdByLineId
+    ) {
+        Set<String> result = new LinkedHashSet<>();
+        for (String lineId : diff.addedLineIds()) {
+            String gid = groupIdByLineId.get(lineId);
+            if (gid != null) result.add(gid);
+        }
+        for (String lineId : diff.updatedLineIds()) {
+            String gid = groupIdByLineId.get(lineId);
+            if (gid != null) result.add(gid);
+        }
+        for (String lineId : diff.routeChangedLineIds()) {
+            String gid = groupIdByLineId.get(lineId);
+            if (gid != null) result.add(gid);
+        }
+        for (String lineId : diff.deletedLineIds()) {
+            String gid = previousGroupIdByLineId.get(lineId);
+            if (gid != null) result.add(gid);
+        }
+        return result;
+    }
+
+    // ---------------------------------------------------------------
+    // 入口去重
+    // ---------------------------------------------------------------
+
+    /**
+     * 同订单(orderId)+同线路(lineId)+同车牌号(vehicle.plate) → 保留 updatedAt 最晚的记录。
+     */
+    private DeduplicationResult deduplicateOrders(List<ExternalOrderRecord> orders) {
+        if (orders == null || orders.isEmpty()) {
+            return new DeduplicationResult(0, List.of(), 0, 0, List.of());
+        }
+
+        List<ExternalOrderRecord> sorted = new ArrayList<>(orders);
+        sorted.sort(Comparator.comparing(
+                r -> r.updatedAt() != null ? r.updatedAt() : "",
+                Comparator.reverseOrder()
+        ));
+
+        Map<String, ExternalOrderRecord> seen = new LinkedHashMap<>();
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (ExternalOrderRecord r : sorted) {
+            String key = dedupeKey(r);
+            counts.merge(key, 1, Integer::sum);
+            seen.putIfAbsent(key, r);
+        }
+        List<String> duplicateSamples = counts.entrySet().stream()
+                .filter(entry -> entry.getValue() > 1)
+                .limit(8)
+                .map(entry -> entry.getKey() + " x" + entry.getValue())
+                .toList();
+        int duplicateKeyCount = (int) counts.values().stream().filter(count -> count > 1).count();
+        List<ExternalOrderRecord> deduped = List.copyOf(seen.values());
+        return new DeduplicationResult(
+                orders.size(),
+                deduped,
+                orders.size() - deduped.size(),
+                duplicateKeyCount,
+                duplicateSamples
+        );
+    }
+
+    private synchronized void broadcastDailyKpisIfChanged() {
+        DailyOrderStatisticsService.DailyOrderStatistics statistics = dailyOrderStatisticsService.snapshot();
+        if (statistics.revision() == lastBroadcastDailyKpiRevision) {
+            return;
+        }
+        lastBroadcastDailyKpiRevision = statistics.revision();
+
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("type", "daily_kpis");
+        event.put("businessDate", statistics.businessDate());
+        event.put("deliveryTotalTons", statistics.deliveryTotalTons());
+        event.put("dispatchedVehicleCount", statistics.dispatchedVehicleCount());
+        event.put("totalOrderCount", statistics.totalOrderCount());
+        event.put("arrivedVehicleCount", statistics.arrivedVehicleCount());
+        event.put("revision", statistics.revision());
+        event.put("windowStartedAt", statistics.windowStartedAt());
+        event.put("lastUpdatedAt", statistics.lastUpdatedAt());
+        realtimeWebSocketHandler.broadcast(event);
+    }
+
+    private String dedupeKey(ExternalOrderRecord record) {
+        if (record == null) return "null|null|null";
+        ExternalOrderRecord.Vehicle vehicle = record.vehicle();
+        String plateCandidate = vehicle == null ? "" : firstNonBlank(vehicle.plate(), vehicle.carId());
+        return safeDedupePart(record.orderId())
+                + "|" + safeDedupePart(record.lineId())
+                + "|" + normalizePlateForDedupe(plateCandidate);
+    }
+
+    private String firstNonBlank(String first, String second) {
+        if (first != null && !first.isBlank()) return first;
+        return second == null ? "" : second;
+    }
+
+    private String safeDedupePart(String value) {
+        return value == null || value.isBlank() ? "" : value.trim();
+    }
+
+    private String normalizePlateForDedupe(String value) {
+        if (value == null || value.isBlank()) return "";
+        String normalized = value.trim().replace(" ", "").toUpperCase(java.util.Locale.ROOT);
+        int separatorIndex = normalized.indexOf('-');
+        return separatorIndex > 0 ? normalized.substring(0, separatorIndex) : normalized;
+    }
+
+    // ---------------------------------------------------------------
+    // helpers (unchanged)
+    // ---------------------------------------------------------------
+
+    private Map<String, Object> inputSummary(List<ExternalOrderRecord> rawOrders) {
+        List<ExternalOrderRecord> safeRawOrders = rawOrders == null ? List.of() : rawOrders;
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("rawCount", safeRawOrders.size());
+        summary.put("samples", safeRawOrders.stream().limit(5).map(this::rawOrderSample).toList());
+        return summary;
+    }
+
+    private Map<String, Object> rawOrderSample(ExternalOrderRecord order) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        if (order == null) { sample.put("null", true); return sample; }
+        sample.put("orderId", order.orderId());
+        sample.put("lineId", order.lineId());
+        sample.put("status", order.status());
+        sample.put("from", locationSample(order.from()));
+        sample.put("to", locationSample(order.to()));
+        sample.put("vehicle", vehicleSample(order.vehicle()));
+        sample.put("lineCount", order.lines() == null ? 0 : order.lines().size());
+        return sample;
+    }
+
+    private Map<String, Object> locationSample(ExternalOrderRecord.Location location) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        if (location == null) { sample.put("null", true); return sample; }
+        sample.put("name", location.name());
+        sample.put("province", location.province());
+        sample.put("city", location.city());
+        sample.put("district", location.district());
+        sample.put("adcode", location.adcode());
+        sample.put("hasCoords", location.coords() != null && location.coords().length >= 2);
+        return sample;
+    }
+
+    private Map<String, Object> vehicleSample(ExternalOrderRecord.Vehicle vehicle) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        if (vehicle == null) { sample.put("null", true); return sample; }
+        sample.put("plate", vehicle.plate());
+        sample.put("carId", vehicle.carId());
+        sample.put("hasCurrentCoords", vehicle.currentCoords() != null && vehicle.currentCoords().length >= 2);
+        sample.put("speedKmh", vehicle.speedKmh());
+        return sample;
+    }
+
+    private Map<String, Object> middleLayerSummary(ExternalOrderSnapshotResult result, long elapsedMs) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("elapsedMs", elapsedMs);
+        summary.put("rawCount", result.rawCount());
+        summary.put("normalizedCount", result.normalizedCount());
+        summary.put("shortHaulCount", result.shortHaulCount());
+        summary.put("longHaulCount", result.longHaulCount());
+        summary.put("diff", result.diff().toMap());
+        summary.put("longHaulSamples", result.longHaulOrders() == null ? List.of()
+                : result.longHaulOrders().stream().limit(5).map(this::normalizedOrderSample).toList());
+        return summary;
+    }
+
+    private Map<String, Object> normalizedOrderSample(NormalizedTownRoadOrder order) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        if (order == null) { sample.put("null", true); return sample; }
+        sample.put("instanceId", order.instanceId());
+        sample.put("orderId", order.orderId());
+        sample.put("lineId", order.lineId());
+        sample.put("status", order.status());
+        sample.put("fromProvinceKey", order.fromProvinceKey());
+        sample.put("toProvinceKey", order.toProvinceKey());
+        sample.put("provincePathKeys", order.provincePathKeys());
+        sample.put("cityPath", order.cityPath());
+        sample.put("cityNames", order.cityNames());
+        sample.put("routeCoordinateCount", order.routeCoordinates() == null ? 0 : order.routeCoordinates().size());
+        sample.put("routeLengthKm", order.routeLengthKm());
+        return sample;
+    }
+
+    private Map<String, Object> outputSummary(ExternalOrderSnapshotResult result, int roadMapRouteCount, int townRouteDispatchCount) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("broadcastCommandCount", result.commands().size());
+        summary.put("roadMapRouteCount", roadMapRouteCount);
+        summary.put("townRouteDispatchCount", townRouteDispatchCount);
+        summary.put("commands", result.commands().stream().map(this::commandSample).toList());
+        return summary;
+    }
+
+    private Map<String, Object> commandSample(TownRoadRenderCommand command) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        sample.put("commandId", command.commandId());
+        sample.put("sourceProvince", command.sourceProvince());
+        sample.put("renderProvinces", command.renderProvinces());
+        sample.put("routeGroupCount", command.routeGroups() == null ? 0 : command.routeGroups().size());
+        sample.put("displayRouteGroupCount", command.displayRouteGroups() == null ? 0 : command.displayRouteGroups().size());
+        sample.put("provinceEdgeCount", command.provinceEdges() == null ? 0 : command.provinceEdges().size());
+        sample.put("orderCount", command.orders() == null ? 0 : command.orders().size());
+        sample.put("routeGroups", command.routeGroups() == null ? List.of()
+                : command.routeGroups().stream().limit(5).map(this::routeGroupSample).toList());
+        return sample;
+    }
+
+    private Map<String, Object> routeGroupSample(TownRoadRenderCommand.TownRoadRouteGroup group) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        sample.put("groupId", group.groupId());
+        sample.put("fromProvinceKey", group.fromProvinceKey());
+        sample.put("toProvinceKey", group.toProvinceKey());
+        sample.put("primaryOrderLineIds", group.primaryOrderLineIds());
+        sample.put("alongOrderLineIds", group.alongOrderLineIds());
+        sample.put("candidatePathCount", group.candidatePaths() == null ? 0 : group.candidatePaths().size());
+        sample.put("candidatePaths", group.candidatePaths() == null ? List.of()
+                : group.candidatePaths().stream().limit(3).map(this::candidatePathSample).toList());
+        return sample;
+    }
+
+    private Map<String, Object> candidatePathSample(TownRoadRenderCommand.ProvincePathCandidate candidate) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        sample.put("pathId", candidate.pathId());
+        sample.put("provincePath", candidate.provincePath());
+        sample.put("cityNames", candidate.cityNames());
+        sample.put("cityCoordinateCount", candidate.cityCoordinates() == null ? 0 : candidate.cityCoordinates().size());
+        sample.put("pathCost", candidate.pathCost());
+        sample.put("bestPath", candidate.bestPath());
+        return sample;
+    }
+
+    private int dispatchLongHaulRoutesToRoadMap(List<NormalizedTownRoadOrder> longHaulOrders) {
+        if (longHaulOrders == null || longHaulOrders.isEmpty()) return 0;
+        int dispatched = 0;
+        for (NormalizedTownRoadOrder order : longHaulOrders) {
+            if (order == null || order.from() == null || order.to() == null) continue;
+            if (!shouldIncludeOrderForRealPositionMode(order)) continue;
+            double[] fc = order.from().coords();
+            double[] tc = order.to().coords();
+            if (fc == null || tc == null || fc.length < 2 || tc.length < 2) continue;
+            ExternalOrderRecord.Vehicle vehicle = order.vehicle();
+            Double cargoWeight = vehicle == null ? null : vehicle.cargoWeight();
+            Integer orderTotalTons = cargoWeight == null ? null : Math.max(0, (int) Math.round(cargoWeight));
+            routePushService.dispatchExternalOrderRoute(
+                    order.instanceId(), order.orderId() != null ? order.orderId() : order.instanceId(), order.lineId(),
+                    order.groupName(), orderTotalTons,
+                    order.from().name(), order.to().name(),
+                    order.from().province(), order.to().province(),
+                    fc, tc, order.routeCoordinates(), order.matchingCoordinates(), order.travelDurationMs(),
+                    vehicle == null ? null : vehicle.currentCoords(),
+                    vehicle == null ? null : vehicle.plate(),
+                    vehicle == null ? null : vehicle.carId(),
+                    vehicle == null ? null : vehicle.speedKmh(),
+                    order.updatedAt(), order.status()
+            );
+            dispatched++;
+        }
+        return dispatched;
+    }
+
+    private RenderRouteDTO withRuntimeMetrics(RenderRouteDTO route) {
+        RoutePushService.RouteRuntimeMetrics metrics = routePushService.routeRuntimeMetrics(route.lineId());
+        if (metrics == null) {
+            log.info("[TownRoad] filtered RM2 route without registered runtime: lineId={}", route.lineId());
+            return null;
+        }
+        Map<String, Object> meta = new LinkedHashMap<>();
+        if (route.meta() != null) {
+            meta.putAll(route.meta());
+        }
+        List<double[]> baselineCoordinates = middleLayer.baselineRouteCoordinates(route.lineId());
+        if (!baselineCoordinates.isEmpty()) {
+            meta.put("baselineCoordinates", baselineCoordinates);
+            meta.put("initializationUsesVehicleWaypoints",
+                    String.valueOf(meta.getOrDefault("routeProvider", "")).endsWith("-waypoints"));
+        }
+        VehicleOrderEligibilityService.VehicleDecision tripDecision = tripDecisionByLineId.get(route.lineId());
+        if (tripDecision != null) {
+            meta.putAll(tripMetadata(tripDecision, tripOrderIdentityByLineId.get(route.lineId())));
+        }
+        return new RenderRouteDTO(
+                route.lineId(), route.orderId(), route.businessLineId(),
+                coalesce(metrics.plate(), route.plate()), metrics.vehicleId(),
+                route.from(), route.to(), route.fromCoords(), route.toCoords(), metrics.coordinates(),
+                metrics.routeLengthKm(), metrics.speedKmh(), route.status(), route.cargo(),
+                route.cargoWeight(), route.cargoUnit(),
+                metrics.travelDurationMs(), metrics.pathKey(), route.scope(), route.groupId(), route.role(),
+                route.coordinateSystem(), route.updatedAt(), route.routeSignature(),
+                Collections.unmodifiableMap(meta)
+        );
+    }
+
+    private Map<String, Object> tripMetadata(
+            VehicleOrderEligibilityService.VehicleDecision decision,
+            TripOrderIdentity identity
+    ) {
+        if (decision == null) return Map.of();
+        Map<String, Object> meta = new LinkedHashMap<>();
+        if (identity != null) {
+            meta.put("originalOrderIds", identity.originalOrderIds());
+            putIfNotNull(meta, "transportOrderId", identity.transportOrderId());
+            meta.put("orderIdentityLevel", identity.transportOrderId() == null ? "ORIGINAL" : "INTERMODAL");
+            meta.put("routeCombinationEligible", identity.transportOrderId() == null);
+        }
+        putIfNotNull(meta, "tripId", decision.tripId());
+        putIfNotNull(meta, "visualKey", decision.tripId());
+        putIfNotNull(meta, "runtimeLineId", decision.runtimeLineId());
+        putIfNotNull(meta, "currentLegId", decision.currentLegId());
+        meta.put("planVersion", decision.planVersion());
+        putIfNotNull(meta, "tripPhase", decision.tripPhase() == null ? null : decision.tripPhase().name());
+        putIfNotNull(meta, "tripDecision", decision.decision());
+        putIfNotNull(meta, "positionQuality",
+                decision.positionQuality() == null ? null : decision.positionQuality().name());
+        putIfNotNull(meta, "targetStopId", decision.targetStopId());
+        putIfNotNull(meta, "targetOrderInstanceId", decision.targetOrderInstanceId());
+        putIfNotNull(meta, "targetAction", decision.targetAction());
+        putIfNotNull(meta, "tripStatusText", decision.tripStatusText());
+        meta.put("tripStops", decision.tripStops() == null ? List.of() : decision.tripStops());
+        meta.put("pendingOrderCount", decision.pendingPickupOrderIds().size());
+        meta.put("onboardOrderCount", decision.onboardOrderIds().size());
+        meta.put("completedOrderCount", decision.completedOrderIds().size());
+        return Collections.unmodifiableMap(meta);
+    }
+
+    private void putIfNotNull(Map<String, Object> target, String key, Object value) {
+        if (value != null) target.put(key, value);
+    }
+
+    private boolean isPublishableRm2Route(RenderRouteDTO route) {
+        if (route == null || !"rm2".equals(route.scope())) return false;
+        if (route.speedKmh() == null || route.travelDurationMs() == null || route.routeLengthKm() == null) {
+            log.info("[TownRoad] filtered RM2 route without runtime metrics: lineId={}", route == null ? null : route.lineId());
+            return false;
+        }
+        if (!externalOrderProperties.isIgnoreOrdersWithoutRealPosition()) {
+            return true;
+        }
+        boolean publishable = route.vehicleId() != null && !route.vehicleId().isBlank()
+                && routePushService.hasFreshProviderPosition(route.lineId());
+        if (!publishable) {
+            log.info("[TownRoad] filtered RM2 route before publish: lineId={}, plate={}, vehicleId={}, hasProviderVehicleId={}, hasFreshProviderPosition={}",
+                    route.lineId(), route.plate(), route.vehicleId(),
+                    routePushService.hasProviderVehicleId(route.lineId()),
+                    routePushService.hasFreshProviderPosition(route.lineId()));
+        }
+        return publishable;
+    }
+
+    private ExternalOrderRecord withFreshProviderPosition(ExternalOrderRecord order) {
+        if (order == null || order.vehicle() == null) return order;
+        String instanceId = middleLayer.instanceIdFor(order);
+        PositionSnapshot snapshot = routePushService.freshProviderPosition(instanceId);
+        if (snapshot == null) return order;
+
+        ExternalOrderRecord.Vehicle vehicle = order.vehicle();
+        ExternalOrderRecord.Vehicle enrichedVehicle = new ExternalOrderRecord.Vehicle(
+                vehicle.plate(), vehicle.carId(), vehicle.cargo(),
+                vehicle.cargoWeight(), vehicle.cargoUnit(),
+                snapshot.position(), snapshot.speedKmh()
+        );
+        return new ExternalOrderRecord(
+                order.orderId(), order.lineId(), null,
+                order.from(), order.to(), enrichedVehicle,
+                order.status(), order.updatedAt(), order.deleted(), order.upToDate(),
+                order.lineIndex(), order.vehicleIndex()
+        );
+    }
+
+    private String coalesce(String first, String second) {
+        return first != null && !first.isBlank() ? first : second;
+    }
+
+    /**
+     * RM2 groups/routes 与位置运行池使用同一批短途订单和同一个 instanceId。
+     * 不能再从 render commands 二次取数，否则两套 lineId 可能产生分叉。
+     */
+    private int registerShortHaulRoutesForPositions(List<NormalizedTownRoadOrder> shortHaulOrders) {
+        if (shortHaulOrders == null || shortHaulOrders.isEmpty()) return 0;
+        int registered = 0;
+        for (NormalizedTownRoadOrder order : shortHaulOrders) {
+            if (order == null || !isTransitPipelineStatus(order.status())
+                    || order.from() == null || order.to() == null) continue;
+            double[] fromCoords = order.from().coords();
+            double[] toCoords = order.to().coords();
+            if (fromCoords == null || toCoords == null || fromCoords.length < 2 || toCoords.length < 2) continue;
+
+            ExternalOrderRecord.Vehicle vehicle = order.vehicle();
+            routePushService.setTripRuntimeMetadata(
+                    order.instanceId(), tripMetadata(
+                            tripDecisionByLineId.get(order.instanceId()),
+                            tripOrderIdentityByLineId.get(order.instanceId())));
+            routePushService.dispatchTownRoute(
+                    order.instanceId(),
+                    order.orderId() != null ? order.orderId() : order.instanceId(),
+                    order.lineId(),
+                    order.from().name(), order.to().name(),
+                    fromCoords, toCoords, order.routeCoordinates(), order.matchingCoordinates(), order.travelDurationMs(),
+                    vehicle == null ? null : vehicle.currentCoords(),
+                    vehicle == null ? null : vehicle.plate(),
+                    vehicle == null ? null : vehicle.carId(),
+                    vehicle == null ? order.speedKmh() : vehicle.speedKmh(),
+                    order.updatedAt(), order.status()
+            );
+            registered++;
+        }
+        return registered;
+    }
+
+    private String metaFingerprint(Map<String, Object> meta) {
+        if (meta == null || meta.isEmpty()) return "";
+        return List.of(
+                        "tripId", "visualKey", "currentLegId", "planVersion", "tripPhase",
+                        "tripDecision", "positionQuality", "targetAction", "pendingOrderCount",
+                        "onboardOrderCount", "completedOrderCount", "tripStops", "originalOrderIds",
+                        "transportOrderId", "orderIdentityLevel", "routeCombinationEligible")
+                .stream()
+                .map(key -> key + "=" + String.valueOf(meta.get(key)))
+                .collect(java.util.stream.Collectors.joining(","));
+    }
+
+    static boolean isTransitPipelineStatus(String status) {
+        if (status == null) return false;
+        String normalized = status.trim().replace(" ", "");
+        return normalized.contains("运输中") || normalized.contains("运行中")
+                || normalized.equals("在途-1") || normalized.equals("在途-2");
+    }
+
+    private record TripOrderIdentity(List<String> originalOrderIds, String transportOrderId) {}
+
+    private boolean shouldIncludeOrderForRealPositionMode(NormalizedTownRoadOrder order) {
+        return order != null && shouldIncludeOrderForRealPositionMode(order.instanceId(), order.vehicle());
+    }
+
+    private boolean shouldIncludeOrderForRealPositionMode(String lineId, ExternalOrderRecord.Vehicle vehicle) {
+        if (!externalOrderProperties.isIgnoreOrdersWithoutRealPosition()) {
+            return true;
+        }
+        boolean providerVehicleReady = routePushService.prepareProviderPositionVehicle(
+                lineId,
+                vehicle == null ? null : vehicle.plate(),
+                vehicle == null ? null : vehicle.carId()
+        );
+        boolean eligible = isEligibleForRealPositionMode(
+                true, providerVehicleReady, routePushService.hasFreshProviderPosition(lineId));
+        if (!eligible) {
+            log.info("[TownRoad] waiting for fresh provider position: lineId={}, plate={}, providerVehicleReady={}, state=WAITING_POSITION",
+                    lineId, vehicle == null ? null : vehicle.plate(), providerVehicleReady);
+        }
+        return eligible;
+    }
+
+    static boolean isEligibleForRealPositionMode(
+            boolean ignoreOrdersWithoutRealPosition,
+            boolean providerVehicleReady,
+            boolean hasFreshProviderPosition
+    ) {
+        return !ignoreOrdersWithoutRealPosition || (providerVehicleReady && hasFreshProviderPosition);
+    }
+
+    public TownRoadMiddleLayer middleLayer() {
+        return middleLayer;
+    }
+
+    private record DeduplicationResult(
+            int inputCount,
+            List<ExternalOrderRecord> orders,
+            int removedCount,
+            int duplicateKeyCount,
+            List<String> sampleDuplicateKeys
+    ) {
+        Map<String, Object> toMap() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("inputCount", inputCount);
+            map.put("uniqueCount", orders.size());
+            map.put("removedCount", removedCount);
+            map.put("duplicateKeyCount", duplicateKeyCount);
+            map.put("sampleDuplicateKeys", sampleDuplicateKeys);
+            return map;
+        }
+    }
+
+    private record VehicleOrderChainPipelineContext(
+            VehicleOrderChainStore.IngestResult store,
+            VehicleOrderEligibilityService.EligibilityReport eligibility,
+            int expandedVehicleRecordCount,
+            int downstreamEligibleCount
+    ) {}
+
+    private record EligiblePipelineInput(
+            List<ExternalOrderRecord> orders,
+            Map<String, List<double[]>> routeWaypointsByInstanceId
+    ) {}
+}

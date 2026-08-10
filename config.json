@@ -1,10 +1,10 @@
 {
-  "roadGroupSize" : 24,
+  "roadGroupSize" : 12,
   "roadGroupDisplayBaseMs" : 8000,
   "roadGroupDisplayAddMs" : 200,
   "defaultGroupStrategy" : "business-priority",
   "simulationProfile" : "test",
-  "testSimulationSpeedKmh" : 4500.0,
+  "testSimulationSpeedKmh" : 15000.0,
   "realSimulationSpeedKmh" : 80.0,
   "passivePositionPushEnabled" : false,
   "truckPositionPushRateMs" : 60000,
@@ -13,7 +13,7 @@
   "cameraHeadquartersDurationMs" : 20000,
   "warehousePanelWidth" : 180,
   "warehousePanelMaxHeight" : 240,
-  "autoCarouselRoadGroupCycles" : 1,
+  "autoCarouselRoadGroupCycles" : 2,
   "autoCarouselChinaMapLoops" : 1,
   "autoCarouselChinaMapDurationMs" : 30000,
   "autoCarouselEnabled" : true

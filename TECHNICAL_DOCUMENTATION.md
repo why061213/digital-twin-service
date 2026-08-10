@@ -1,5 +1,7 @@
 # 巨神数字孪生大屏技术文档
 
+> **历史基线文档（2026-06）**：本文件描述早期纯模拟架构，固定 Token、项目路径和道路模块说明已不适用于当前 dashboard-v2。当前系统总览见仓库上级的 TECHNICAL_DOCUMENTATION.md；RM2 多订单实现与排障见 docs/RM2_COMPOSITE_TRIP_TECHNICAL_GUIDE.md。
+
 ## 1. 项目概述
 
 本项目由 Spring Boot 后端和 React + Three.js 前端组成，用于构建物流数字孪生大屏。
