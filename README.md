@@ -1,20 +1,26 @@
 # 聚申数字孪生后端
 
-Spring Boot 3.3.5 / Java 17 后端，为数字孪生大屏提供订单同步、RM1/RM2 路线、车辆位置、仓储数据、REST API 与 WebSocket 推送。
+Spring Boot 后端，为数字孪生大屏提供鉴权、订单同步、路线规划、RM1/RM2 分组、车辆位置、仓储管理、REST API 和 WebSocket 推送。
 
 ## 文档
 
-- 系统总览与完整交接：../TECHNICAL_DOCUMENTATION.md
-- RM2 多订单复合行程：docs/RM2_COMPOSITE_TRIP_TECHNICAL_GUIDE.md
-- ChinaMap 仓库六接口：docs/CHINA_MAP_MANAGEMENT_API.md
-- 仓库聚焦协议：docs/WAREHOUSE_FOCUS_TECHNICAL_DOCUMENTATION.md
-- 早期阶段文档：TECHNICAL_DOCUMENTATION.md、docs/PROJECT_TECHNICAL_DOCUMENTATION.md（仅供追溯）
+- 本文件：运行、配置、接口入口和发布。
+- `TECHNICAL_DOCUMENTATION.md`：后端架构、数据管线、领域模型、接口和排障。
+- 跨前后端协议见工作区根目录 `TECHNICAL_DOCUMENTATION.md`。
+
+原有阶段记录、专项指南和案例 Markdown 已合并到技术文档，不再单独维护。
+
+## 环境要求
+
+- JDK 17
+- Maven 3.9 或更高版本
+- 可选：外部订单、车辆位置、百度地图和高德地图凭据
 
 ## 本地运行
 
-~~~powershell
+```powershell
 mvn spring-boot:run
-~~~
+```
 
 默认地址：
 
@@ -22,52 +28,78 @@ mvn spring-boot:run
 - 健康检查：http://localhost:8080/api/health
 - WebSocket：ws://localhost:8080/ws/realtime
 
-真实密钥和外部接口配置放在 src/main/resources/application-private.yml，不要提交到仓库。
+## 私有配置
 
-## 鉴权
+公开默认值在 `src/main/resources/application.yml`。真实值写入被忽略的：
 
-本机或白名单设备通过以下接口取得会话：
+```text
+src/main/resources/application-private.yml
+```
 
-~~~http
-POST /api/auth/session
-~~~
+常见私有项：
 
-后续 REST 请求携带：
+```yaml
+dashboard:
+  access:
+    allowed-mac-addresses: []
+    device-token: ""
+  route:
+    auth-enabled: false
+    auth-url: ""
+    auth-id: ""
+    auth-secret: ""
+    external-position-url: ""
+    external-position-token: ""
+  coord-db:
+    amap-key: ""
+    amap-secret: ""
+  route-plan:
+    baidu-ak: ""
+    amap-key: ""
+```
 
-~~~http
-Authorization: Bearer <accessToken>
-~~~
+不得把真实值写入 README、技术文档、测试 fixture 或公开 YAML。
 
-WebSocket 使用同一会话密钥。会话校验和刷新接口分别是 GET /api/auth/session、POST /api/auth/session/refresh。
+## 常用接口
 
-## RM2 常用接口
+- `POST /api/auth/session`
+- `GET /api/bootstrap/status`
+- `GET /api/road/groups?scope=rm1`
+- `GET /api/road/groups/structure?scope=rm2`
+- `GET /api/road/groups/{groupId}/routes?scope=rm2`
+- `GET /api/warehouse/snapshot`
+- `GET /api/public/vehicle-order-chain/trips`
+- `GET /api/public/vehicle-order-chain/transit-metrics`
 
-- GET /api/road/groups/structure?scope=rm2
-- GET /api/road/groups?scope=rm2&snapshotVersion={version}
-- GET /api/road/groups/{groupId}/routes?scope=rm2&snapshotVersion={version}
-- GET /api/public/vehicle-order-chain/trips
-- GET /api/public/vehicle-order-chain/transit-metrics
-- POST /api/road/town/provinces/raw
+完整接口表见技术文档。
 
 ## 测试与打包
 
-~~~powershell
+```powershell
 mvn test
 mvn -DskipTests package
-~~~
+```
 
-可执行包生成在 target/digital-twin-service-0.0.1-SNAPSHOT.jar。
+可执行 JAR：
+
+```text
+target/digital-twin-service-0.0.1-SNAPSHOT.jar
+```
+
+运行：
+
+```powershell
+java -jar target\digital-twin-service-0.0.1-SNAPSHOT.jar
+```
 
 ## 运行数据
 
-~~~text
-runtime-data/
-  daily-order-statistics.json
-  vehicle-order-chain/
-    records/
-    vehicles/
-    trips/
-  vehicle-position-history/
-~~~
+`runtime-data/` 保存订单差分、Trip、车辆位置历史和 KPI 缓存。它不属于发布包源码，也不能随意清空。排障或迁移前应停止服务并备份。
 
-运行数据属于业务缓存和审计证据。排障前先核对文件更新时间，不要直接删除 Trip 或位置历史。
+## 发布前检查
+
+1. `mvn test` 全部通过。
+2. `mvn -DskipTests package` 成功。
+3. 公开配置中的密钥字段为空。
+4. `application-private.yml`、`runtime-data/` 和 `target/` 未被 Git 跟踪。
+5. 健康检查、鉴权、RM1/RM2 快照、仓储快照和 WebSocket 完成冒烟。

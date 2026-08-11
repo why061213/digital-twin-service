@@ -1,570 +1,303 @@
-# 巨神数字孪生大屏技术文档
+# 聚申数字孪生后端技术文档
 
-> **历史基线文档（2026-06）**：本文件描述早期纯模拟架构，固定 Token、项目路径和道路模块说明已不适用于当前 dashboard-v2。当前系统总览见仓库上级的 TECHNICAL_DOCUMENTATION.md；RM2 多订单实现与排障见 docs/RM2_COMPOSITE_TRIP_TECHNICAL_GUIDE.md。
+> 更新日期：2026-08-11
+>
+> 适用分支：`main`
 
-## 1. 项目概述
-
-本项目由 Spring Boot 后端和 React + Three.js 前端组成，用于构建物流数字孪生大屏。
-
-后端负责生成模拟业务数据，并通过 WebSocket 主动推送给前端。前端负责展示 KPI、库存、车辆调度、车流能耗、三维仓库、中国城市三维地图、业务线路飞线和镜头联动。
-
-当前核心能力：
-
-- 后端每 3 秒推送 KPI、库存、车辆、车流能耗模拟数据。
-- 后端每 5 到 10 秒生成一条随机城市货运线路。
-- 前端收到 `city_raise` 后，抬升起点和目的地城市，并生成对应飞线。
-- 前端收到 `city_fall` 后，下落对应城市，并移除对应飞线。
-- 佛山作为总部节点，永久高亮和抬升。
-- 右侧车辆调度面板保留最近 8 条线路记录，先进先出。
-- 镜头自动平滑框选佛山和所有活跃货运节点。
-
-## 2. 项目目录
-
-后端项目：
+## 1. 模块结构
 
 ```text
-E:\wendang\jushen-digital-twin
+com.jushen.digitaltwin/
+  bootstrap/       Dashboard 验证、会话和启动状态
+  baidu/           百度/高德路线规划统一入口
+  externalorder/   外部订单同步与查询
+  grouping/        RM1 路线分组策略
+  routeanalysis/   共享路段和偏航分析
+  service/         路线推送、位置缓存、RM2 查询、仓储
+  townroad/        正式订单管线、坐标库、Trip 和运行存储
+  web/             REST Controller 与异常处理
+  websocket/       握手、会话和广播
 ```
 
-前端项目：
+Controller 只做参数转换和响应；业务规则放 service/townroad；领域纯算法尽量无 Spring 依赖并由单元测试覆盖。
+
+## 2. 启动与调度
+
+`DigitalTwinBackendApplication` 启用 Spring Scheduling。启动时配置按以下顺序导入：
+
+1. `simulation.yml`
+2. `temp.yml`
+3. `warehouse.yml`
+4. `camera.yml`
+5. 可选 `application-private.yml`
+
+主要后台任务：
+
+- 外部订单首次同步及固定间隔更新。
+- 车辆位置批量刷新。
+- 仓储和 KPI 推送。
+- 运行缓存保存、清理和恢复。
+
+调度任务必须避免重入，外部调用必须有连接、请求超时和限速。
+
+## 3. 正式订单与 RM2 管线
+
+主入口是 `TownRoadRenderService`。处理阶段：
 
 ```text
-E:\jushen\data-showing-web\jishen-digital-twin
+外部订单
+ -> 字段归一化与入口去重
+ -> VehicleOrderChain 日库差分
+ -> 地址/坐标解析
+ -> 车辆位置预热
+ -> 资格判定
+ -> Trip 拓扑与运行状态
+ -> 路线规划/动态修正
+ -> 稳定分组与快照指纹
+ -> REST 快照 + WebSocket 变更通知
 ```
 
-后端主要文件：
+### VehicleOrderChainStore
 
-```text
-src/main/java/com/jushen/digitaltwin/DigitalTwinBackendApplication.java
-src/main/java/com/jushen/digitaltwin/config/WebSocketConfig.java
-src/main/java/com/jushen/digitaltwin/websocket/RealtimeWebSocketHandler.java
-src/main/java/com/jushen/digitaltwin/websocket/TokenHandshakeInterceptor.java
-src/main/java/com/jushen/digitaltwin/service/RealtimePushService.java
-src/main/java/com/jushen/digitaltwin/service/SimulationDataFactory.java
-src/main/resources/application.yml
-```
+按日期保存原始差分、车辆索引和 Trip。启动时只加载配置范围内的今昨记录。写入要求：
 
-前端主要文件：
+- 同一订单重复拉取为 `unchanged`，不重复触发下游。
+- 字段变化为 `updated`，保留旧记录用于审计。
+- 完成订单仍可参与历史和 KPI，但不重新进入活动路线。
+- 运行目录只由服务管理，测试使用临时目录。
 
-```text
-src/pages/Dashboard/DashboardPage.tsx
-src/pages/Dashboard/hooks/useDashboardRealtime.ts
-src/pages/Dashboard/modules/ChinaMap3D.tsx
-src/pages/Dashboard/modules/VehicleSchedule.tsx
-src/pages/Dashboard/modules/InventoryStats.tsx
-src/pages/Dashboard/modules/TrafficMonitor.tsx
-src/pages/Dashboard/modules/Warehouse3D.tsx
-```
+### 资格判定
 
-## 3. 技术栈
+`VehicleOrderEligibilityService` 结合订单状态、真实车辆、位置和前序订单决定是否进入地图。不能仅凭单个状态字符串判断“运输中”。装卸状态需要结合距离、轨迹分位和上一单上下文。
 
-后端：
+### Trip 模型
 
-- Java 17+
-- Spring Boot
-- Spring WebSocket
-- Spring Scheduling
-- Maven
+关键身份：
 
-前端：
+| 字段 | 含义 |
+|---|---|
+| `orderInstanceId` | 一次订单实例 |
+| `businessLineId` | 业务线路原子单元，可含多车 |
+| `tripId` | 一辆车的复合行程 |
+| `lineId` | 对前端暴露的路线实例 |
 
-- React
-- TypeScript
-- Vite
-- Three.js
-- ECharts
-- Tailwind CSS
+`VehicleTripTopologyService` 维护装货/卸货节点，`VehicleTripRuntimeService` 维护到站、驻留、离站和里程碑。到站半径、离站半径和驻留时间分别配置，避免 GPS 抖动。
 
-## 4. 后端设计
+### 动态重规划
 
-### 4.1 启动入口
+重规划只能替换尚未完成的路线段，必须保留：
 
-后端启动类：
+- 已走完的路线基线。
+- 所有未完成业务节点。
+- 同址但不同业务动作的 Stop 信息。
+- 原有订单和 Trip 身份。
 
-```text
-DigitalTwinBackendApplication.java
-```
+固定车辆案例已固化为 `YueE55170SnapshotReplayTest`，不再维护案例 Markdown。
 
-该类启用 Spring Boot 和定时任务：
+## 4. RM1 与 grouping
 
-```java
-@EnableScheduling
-@SpringBootApplication
-```
+`grouping/` 使用策略模式。核心输入是 `RouteInfo` 及其 order/path/province 扩展，输出 `RouteGroupingResult` 和 `GroupSummary`。
 
-### 4.2 WebSocket 地址
+常用策略：
 
-前端连接地址：
+- sequential：顺序分组。
+- by-order：按订单。
+- by-path / by-route：按路线关系。
+- province-path：按省域和方向路径。
+- business-priority：业务优先组合策略。
 
-```text
-ws://localhost:8080/ws/realtime?token=jushen-screen-token
-```
+分组字段职责必须明确：订单键、路线键、业务线路键和车辆键不能互相替代。新策略先增加纯单元测试，再接入 Controller 查询参数。
 
-### 4.3 Token 校验
+## 5. 路线与坐标
 
-后端通过 `TokenHandshakeInterceptor` 校验固定 token。
+### 坐标库
 
-配置位置：
+`LocalCoordDb` 读取 `src/main/resources/coord-db/`。路径按省、市、区县组织，JSON 必须保持 UTF-8 和合法格式。缺失坐标通过 `AmapGeocodeClient` 补全，真实 Key/Secret 只放私有配置。
 
-```text
-src/main/resources/application.yml
-```
+### 路线规划
 
-当前 token：
+`RoutePlanningService` 是统一入口：
 
-```yaml
-dashboard:
-  websocket:
-    token: jushen-screen-token
-```
+1. 命中本地/内存缓存则直接返回。
+2. 调用百度规划。
+3. 百度失败时调用高德回退。
+4. 两者不可用时返回受约束的本地几何兜底。
 
-如果 token 不正确，WebSocket 握手会返回未授权。
+所有供应商调用共用全局最小间隔并设置超时。路线缓存键必须包含起终点和影响规划结果的选项。
 
-### 4.4 WebSocket 会话管理
+### 边界修复与分析
 
-`RealtimeWebSocketHandler` 负责：
+`ChinaBoundaryConstraint` 防止兜底路线穿越明显非陆地区域。`RouteAnalysisService` 使用米制重采样分析共享路段和偏航，不依赖前端渲染采样数。
 
-- 保存当前在线 WebSocket 会话。
-- 在连接建立后加入会话集合。
-- 在连接关闭或异常时移除会话。
-- 将后端生成的消息序列化为 JSON 并广播给所有在线前端。
+## 6. 车辆位置
 
-### 4.5 定时推送服务
-
-`RealtimePushService` 负责两类定时任务。
-
-实时数据推送：
-
-```text
-每 3 秒推送一次
-```
-
-消息类型：
-
-```text
-kpi
-inventory
-vehicle
-traffic_energy
-```
-
-业务线路推送：
-
-```text
-每 5 到 10 秒随机生成一条城市对线路
-```
-
-生成后立即推送：
-
-```text
-city_raise
-```
-
-线路到期后推送：
-
-```text
-city_fall
-```
-
-当前策略：
-
-- 支持随机城市对，不固定从佛山出发。
-- 佛山只是总部常亮节点。
-- 最后一条线路在无新订单时可以保持展示。
-- 多条线路短时间堆积时可并发存在。
-
-### 4.6 模拟数据工厂
-
-`SimulationDataFactory` 负责生成所有模拟数据：
-
-- KPI 数据
-- 库存数据
-- 车辆数据
-- 车流能耗数据
-- 城市线路数据
-- 城市经纬度
-
-后续如需接入真实数据，优先替换该类的数据来源，尽量保持 WebSocket 消息协议不变。
-
-## 5. WebSocket 消息协议
-
-### 5.1 KPI 数据
-
-```json
-{
-  "type": "kpi",
-  "revenue": 128.5,
-  "orderCount": 387,
-  "completionRate": 94.2,
-  "punctualityRate": 97.8
-}
-```
-
-字段说明：
-
-- `revenue`：今日产值，单位万元。
-- `orderCount`：运输单量。
-- `completionRate`：完成率。
-- `punctualityRate`：准点率。
-
-### 5.2 库存数据
-
-```json
-{
-  "type": "inventory",
-  "total": 12980,
-  "todayIn": 345,
-  "todayOut": 278,
-  "categoryPie": [
-    { "name": "铝锭", "value": 3200 },
-    { "name": "铜材", "value": 2800 }
-  ],
-  "hourlyTrend": [
-    { "time": "10:00", "in": 65, "out": 52 }
-  ]
-}
-```
-
-### 5.3 车辆数据
-
-```json
-{
-  "type": "vehicle",
-  "inUse": 24,
-  "idle": 8,
-  "queueList": [
-    {
-      "plate": "粤A·HQ7832",
-      "cargo": "铝锭",
-      "estimated": "14:20",
-      "status": "装载中"
-    }
-  ]
-}
-```
-
-说明：当前右侧车辆调度面板主要使用 `city_raise` 线路消息驱动，不依赖该静态队列字段。
-
-### 5.4 车流能耗数据
-
-```json
-{
-  "type": "traffic_energy",
-  "trafficData": {
-    "times": ["10:00", "10:10", "10:20"],
-    "in": [42, 78, 115],
-    "out": [35, 67, 98]
-  },
-  "energyData": {
-    "times": ["10:00", "10:10", "10:20"],
-    "electricity": [210, 280, 340],
-    "water": [5.2, 6.1, 7.8]
-  }
-}
-```
-
-### 5.5 城市升起和飞线生成
-
-```json
-{
-  "type": "city_raise",
-  "from": "北京市",
-  "to": "上海市",
-  "fromCoords": [116.4074, 39.9042],
-  "toCoords": [121.4737, 31.2304],
-  "lineId": "uuid"
-}
-```
-
-前端行为：
-
-- 抬升 `from` 城市。
-- 抬升 `to` 城市。
-- 在右侧车辆调度面板追加一条线路记录。
-- 根据 `fromCoords` 和 `toCoords` 生成三维飞线。
-- 镜头平滑移动，使佛山和所有活跃货运节点均在视野内。
-
-### 5.6 城市下降和飞线移除
-
-```json
-{
-  "type": "city_fall",
-  "from": "北京市",
-  "to": "上海市",
-  "lineId": "uuid"
-}
-```
-
-前端行为：
-
-- 按 `lineId` 移除对应飞线。
-- 下落线路两端城市。
-- 如果某城市仍被其他活跃线路使用，则不会提前下落。
-- 佛山不会下落。
-- 右侧车辆调度记录不删除，仅当记录超过 8 条时按先进先出删除最早记录。
-
-## 6. 前端设计
-
-### 6.1 DashboardPage
-
-`DashboardPage.tsx` 是大屏主页面，负责：
-
-- 管理仓库视图和地图视图切换。
-- 持有 `ChinaMap3D` 的组件引用。
-- 接收 WebSocket Hook 派发的事件。
-- 将线路数据传给 `VehicleSchedule`。
-- 调用地图组件的城市抬升、城市下降、飞线生成、飞线移除方法。
-
-### 6.2 WebSocket Hook
-
-`useDashboardRealtime.ts` 负责：
-
-- 建立 WebSocket 连接。
-- 自动携带 token。
-- 解析后端 JSON 消息。
-- 根据 `message.type` 分发不同事件。
-- 维护城市活跃计数，避免多条线路共用同一城市时提前下降。
-
-关键事件：
-
-```ts
-onCityRaise(cityName)
-onCityFall(cityName)
-onRouteRaise(order)
-onRouteFall(lineId)
-```
-
-### 6.3 右侧车辆调度面板
-
-`VehicleSchedule.tsx` 当前展示最近 8 条线路记录。
-
-列结构：
-
-```text
-车牌号 / 货物 / 起点——目的地 / 状态
-```
+`VehiclePositionCacheService` 是位置读取边界，`RoutePushService` 编排主动刷新、模拟和推送。
 
 规则：
 
-- “起点——目的地”列文字过长时在所在格子内横向滚动。
-- 线路下落后不删除历史记录。
-- 超过 8 条时删除最早记录。
+- 批量接口优先，避免逐车穿透供应商。
+- 样本携带服务器时间和供应商时间，旧样本不得覆盖新样本。
+- 超过可信速度的跳点丢弃或降级。
+- 死推仅用于短时平滑，不写回为真实供应商位置。
+- RM1/RM2 通过 `scope` 隔离订阅和广播。
 
-## 7. 三维地图和飞线
+位置接口：
 
-### 7.1 城市地图加载
+- `GET /api/road/routes/{lineId}/position`
+- `POST /api/road/vehicles/positions/query`
+- `POST /api/road/routes/query-position`
 
-`ChinaMap3D.tsx` 从阿里云行政区 GeoJSON 数据加载全国城市边界。
+## 7. REST API
 
-加载逻辑：
+### 鉴权与基础
 
-- 先加载全国省级数据。
-- 直辖市直接作为城市要素。
-- 其他省份继续加载地级市数据。
-- 使用 `d3-geo` 将经纬度投影到 Three.js 世界坐标。
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/health` | 健康检查 |
+| GET | `/api/bootstrap/status` | 启动和验证状态 |
+| POST | `/api/auth/session` | 签发会话 |
+| GET | `/api/auth/session` | 校验会话 |
+| POST | `/api/auth/session/refresh` | 刷新会话 |
 
-### 7.2 城市抬升与下落
+### 路线
 
-城市对象使用 `THREE.ExtrudeGeometry` 挤出为三维区域块。
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/road/dispatch` | 模拟派发 |
+| POST | `/api/road/dispatch/bulk` | 模拟批量派发 |
+| GET | `/api/road/groups` | 分组列表 |
+| GET | `/api/road/groups/structure` | RM2 结构 |
+| GET | `/api/road/groups/{groupId}/routes` | 组路线 |
+| GET | `/api/road/rm2/groups` | RM2 组别名 |
+| GET | `/api/road/rm2/groups/structure` | RM2 结构别名 |
+| GET | `/api/road/rm2/groups/{groupId}/routes` | RM2 路线别名 |
 
-城市状态：
+查询 RM2 时携带 `snapshotVersion`，版本变化应重新拉取结构，避免跨快照混用组 ID。
 
-```text
-0：地面状态
-1：抬升状态
+### TownRoad 和外部订单
+
+| 前缀 | 主要用途 |
+|---|---|
+| `/api/road/town` | 省域订单、同 OD、方向路径和最新快照 |
+| `/api/road/external-orders` | 主动同步、订单查询、分组和沿途插单 |
+| `/api/public/vehicle-order-chain` | Trip 与运输指标公开诊断 |
+| `/api/dashboard/daily-kpis` | 每日 KPI |
+
+### 仓储
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/warehouse/snapshot` | 当前快照 |
+| POST | `/api/warehouse/snapshot/push` | 生成并广播 |
+| GET | `/api/warehouse/focus/{cityName}` | 城市面板 |
+| POST | `/api/warehouse/focus/{cityName}/push` | 模拟推送 |
+| POST | `/api/warehouse/focus/{cityName}/panels` | 外部 JSON 面板 |
+| POST | `/api/warehouse/focus/{cityName}/upload` | CSV 上传 |
+
+ChinaMap 维护接口分三组：
+
+- 城市：`GET /china-map/cities/sync`、`POST /china-map/cities`
+- 图表结构：`GET /china-map/charts/sync`、`POST /china-map/charts`
+- 图表数据：`GET /china-map/data/sync`、`POST /china-map/data`
+
+完整路径均以 `/api/warehouse` 开头。GET `/sync` 从 `warehouse.yml` 配置的外部 URL 拉取；POST 直接应用请求体。批量修改不是数据库事务，调用方应在失败后回读并按幂等键重试。
+
+## 8. WebSocket
+
+端点：`/ws/realtime`。
+
+`TokenHandshakeInterceptor` 校验会话，`RealtimeWebSocketHandler` 管理连接、scope 订阅、心跳和广播。
+
+服务端消息：
+
+- `route_snapshot_changed`
+- `road_path`
+- `truck_position`
+- `vehicle_positions`
+- `city_raise` / `city_fall`
+- `warehouse_update`
+- `warehouse_focus`
+- `camera_control`
+- `daily_kpis`
+- `pong`
+
+客户端消息：`ping`、`vehicle_position_subscription`。广播方法不得在业务线程中因单个慢连接阻塞全部会话。
+
+## 9. 鉴权
+
+`DashboardAccessService` 通过回环信任、局域网 MAC 白名单或设备令牌批准客户端。`DashboardAccessTokenService` 签发有 TTL、刷新阈值和宽限期的内存会话。
+
+REST 读取：
+
+- `Authorization: Bearer <access-token>`
+- `X-Dashboard-Access-Key: <access-token>`
+
+固定 WebSocket 口令仅为关闭默认的兼容模式。生产环境不应启用公开固定口令。
+
+## 10. 仓储配置
+
+`warehouse.yml` 定义：
+
+- 仓库城市和标签。
+- 聚焦面板数量、布局、主题和字号。
+- 每个面板的 `id`、`chart-type`、高度、列和 `required-columns`。
+- cities/charts/data 三个外部同步 URL。
+
+外部 JSON 和 CSV 必须先按 required columns 校验，再转换为统一 `warehouse_focus` 消息。面板顺序使用 position，重复位置或未知城市应拒绝。
+
+## 11. 配置参考
+
+主要前缀：
+
+| 前缀 | 作用 |
+|---|---|
+| `dashboard.access` | 白名单、设备令牌和会话 |
+| `dashboard.websocket` | WebSocket 和外部订单同步 |
+| `dashboard.route` | 分组、位置刷新、外部位置和模拟速度 |
+| `dashboard.coord-db` | 高德地理编码 |
+| `dashboard.route-plan` | 百度/高德规划、缓存、限速和超时 |
+| `dashboard.route-analysis` | 共享路段与偏航阈值 |
+| `dashboard.daily-statistics` | KPI 缓存 |
+
+配置类使用 Spring `@ConfigurationProperties` 或 `@Value` 绑定。新增字段必须给出安全默认值、更新公开 YAML 和私有模板说明，并增加绑定或行为测试。
+
+## 12. 测试与排障
+
+命令：
+
+```powershell
+mvn test
+mvn -DskipTests package
 ```
 
-佛山规则：
-
-- 初始即抬升。
-- 金色高亮。
-- 不响应下降逻辑。
-
-其他业务城市：
-
-- 收到 `city_raise` 后变为青色并抬升。
-- 收到 `city_fall` 且没有其他活跃线路占用时恢复默认颜色并下降。
-
-### 7.3 飞线生命周期
-
-飞线由 `lineId` 管理：
-
-```ts
-addFlyLine(lineId, fromCoords, toCoords)
-removeFlyLine(lineId)
-```
-
-飞线生成时序：
-
-1. WebSocket 收到 `city_raise`。
-2. 两端城市先开始抬升。
-3. 等城市抬升动画完成后，再生成飞线和小球。
-
-当前飞线由多层对象组成：
-
-- 暗色底线。
-- 低饱和蓝紫色主流动管线。
-- 淡蓝紫外层辉光。
-- 冷白小球。
-- 小球拖尾粒子。
-
-小球动画：
-
-- 首次生成时跟随线条生长从起点移动到终点。
-- 线条完整后，小球从起点重新开始循环运动。
-- 小球不会在终点隐藏。
-
-### 7.4 镜头控制
-
-镜头控制目标：
-
-```text
-始终让佛山 + 所有活跃货运节点处于视野内
-```
-
-实现逻辑：
-
-- 使用佛山坐标和当前所有活跃线路的起终点坐标生成点集合。
-- 计算点集合的 `Box3` 包围盒。
-- 根据包围盒宽度、深度和相机 FOV 计算所需高度。
-- 使用缓动函数平滑插值相机位置和 OrbitControls target。
-
-初始化逻辑：
-
-- 切换到地图视图时，相机初始落在佛山上方。
-- 后续有订单时，再平滑扩展视野到佛山和所有活跃节点。
-
-朝向规则：
-
-- 相机 `up` 方向设置为世界 Z 正向。
-- 屏幕上方对应地图北方，避免南北颠倒。
-
-## 8. 运行方式
-
-### 8.1 后端运行
-
-使用 IntelliJ IDEA 2023 打开：
-
-```text
-E:\wendang\jushen-digital-twin
-```
-
-运行：
-
-```text
-DigitalTwinBackendApplication.java
-```
-
-健康检查：
-
-```text
-http://localhost:8080/api/health
-```
-
-### 8.2 前端运行
-
-进入前端项目：
-
-```text
-E:\jushen\data-showing-web\jishen-digital-twin
-```
-
-开发运行：
-
-```bash
-npm.cmd run dev
-```
-
-构建检查：
-
-```bash
-npm.cmd run build
-```
-
-前端默认地址：
-
-```text
-http://localhost:5173
-```
-
-### 8.3 前端环境变量
-
-`.env`：
-
-```text
-VITE_API_BASE_URL=http://localhost:8080/api
-VITE_WS_URL=ws://localhost:8080/ws
-```
-
-实际连接地址由前端拼接为：
-
-```text
-ws://localhost:8080/ws/realtime?token=jushen-screen-token
-```
-
-## 9. 安全与跨域
-
-当前安全策略较简单：
-
-- 使用固定 token 校验 WebSocket 连接。
-- 开发阶段允许任意来源连接 WebSocket。
-
-上线建议：
-
-- 将 token 改为后端可配置的正式密钥。
-- 前端从登录态或配置接口获取 token。
-- 限制 `allowed-origin-patterns` 为正式大屏域名。
-- 如接入真实业务数据，应增加鉴权、审计和异常限流。
-
-## 10. 后续扩展建议
-
-### 10.1 接入真实数据
-
-优先替换：
-
-```text
-SimulationDataFactory
-```
-
-建议保留当前 WebSocket 协议，避免前端大面积改动。
-
-### 10.2 完善业务线路
-
-可扩展字段：
-
-```json
-{
-  "lineId": "uuid",
-  "orderNo": "SO202606260001",
-  "cargo": "铝锭",
-  "weight": 32.5,
-  "vehiclePlate": "粤A·HQ7832",
-  "status": "运输中"
-}
-```
-
-### 10.3 增强右侧调度面板
-
-可增加：
-
-- 当前活跃线路数量。
-- 历史线路状态。
-- 点击某条记录后镜头聚焦对应线路。
-- 按货物类型或城市筛选。
-
-### 10.4 优化三维性能
-
-当前地图使用城市级 GeoJSON 直接挤出，后续可考虑：
-
-- 缓存 GeoJSON。
-- 简化边界点数量。
-- 合并静态材质。
-- 对飞线对象做对象池复用。
-- 将大图表或 3D 模块按需加载。
-
-## 11. 当前已知注意事项
-
-- 前端构建会提示包体较大，这是 Three.js、ECharts、ECharts GL 等三维和图表依赖带来的常见提示，不影响运行。
-- 当前后端数据为模拟数据，不能代表真实业务。
-- 当前 WebSocket token 为固定值，仅适合开发和演示阶段。
-- 如果本地 PowerShell 禁止执行 `npm.ps1`，可使用 `npm.cmd run build` 或 `npm.cmd run dev`。
+重点测试族：
+
+- `VehicleOrderChainStoreTest`
+- `VehicleOrderEligibilityServiceTest`
+- `VehicleTripRuntimeServiceTest`
+- `VehicleTripTopologyServiceTest`
+- `TownRoadRenderService*Test`
+- `RoutePlanningServiceTest`
+- `Rm2StableGroupsTest`
+- `DashboardAccess*Test`
+- `WarehousePushServiceManagementTest`
+
+排障顺序：
+
+1. 健康检查和启动日志。
+2. 鉴权会话及请求状态码。
+3. 外部订单同步数量和差分结果。
+4. `/api/public/vehicle-order-chain/trips` 的 Trip/Stop 状态。
+5. 坐标解析和路线供应商回退日志。
+6. RM2 snapshotVersion 与组数量。
+7. WebSocket 订阅 scope 和前端网络面板。
+
+不要用删除 `runtime-data` 作为第一排障手段。需要清理时先停止服务、备份目录并记录原因。
+
+## 13. 维护规则
+
+- 不再新建阶段文档、专项接口文档或单车辆案例文档。
+- 使用方式写 README；开发设计和协议只更新本文件。
+- 单一案例转为 fixture 和自动化测试。
+- Controller 注解、配置字段或 WebSocket type 变化时更新接口章节。
+- 任何真实凭据泄露后必须立即吊销，删除当前文件不足以解决历史泄露。
